@@ -1,18 +1,15 @@
 import { useState } from 'react'
 import { ArrowLeft, Copy, Download, FolderOpen } from 'lucide-react'
 import type { WorkflowResult } from '../state/workflow'
-import { textMetrics, iocMetrics } from '../state/metrics'
+import { iocMetrics } from '../state/metrics'
+import { CodeArea } from './CodeArea'
 
-function Metric({ label, value, tone }: { label: string; value: number; tone?: string }): JSX.Element {
+function IocStat({ label, n, tone }: { label: string; n: number; tone: string }): JSX.Element {
   return (
-    <div className="rounded px-1 py-1 text-center bg-citrus-sand/30 dark:bg-citrus-night/40">
-      <div className="text-[9px] uppercase font-bold tracking-wide text-citrus-muted dark:text-citrus-night-muted">
-        {label}
-      </div>
-      <div className={`text-xs font-bold ${value > 0 && tone ? tone : 'text-citrus-dark dark:text-citrus-night-text'}`}>
-        {value}
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1">
+      <span className="uppercase tracking-wide text-citrus-muted/80 dark:text-citrus-night-muted/80">{label}</span>
+      <strong className={n > 0 ? tone : 'text-citrus-muted dark:text-citrus-night-muted'}>{n}</strong>
+    </span>
   )
 }
 
@@ -28,16 +25,14 @@ export function Workbench({
   const [copied, setCopied] = useState(false)
   const [wrap, setWrap] = useState(true)
 
-  const tm = textMetrics(input)
   const im = iocMetrics(result.output)
-
-  const textClass = `flex-1 w-full p-3 rounded-lg text-xs font-mono leading-relaxed border border-citrus-border bg-citrus-cream/60 text-citrus-dark outline-none focus:border-citrus-pink resize-none transition-colors dark:bg-citrus-night dark:border-citrus-night-border dark:text-citrus-night-text ${
-    wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre overflow-x-auto'
-  }`
 
   const pill =
     'px-2.5 py-1 rounded-md text-[11px] font-bold text-citrus-muted hover:bg-citrus-sand/60 transition-colors dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev'
-  const pillActive = 'px-2.5 py-1 rounded-md text-[11px] font-bold bg-citrus-pink-light text-citrus-pink border border-citrus-pink/20'
+  const pillActive =
+    'px-2.5 py-1 rounded-md text-[11px] font-bold bg-citrus-pink-light text-citrus-pink border border-citrus-pink/20'
+  const cardClass =
+    'flex flex-col min-h-0 min-w-0 rounded-xl border border-citrus-border bg-citrus-card p-3 shadow-sm dark:border-citrus-night-border dark:bg-citrus-night-card'
 
   async function copyOutput(): Promise<void> {
     try {
@@ -57,9 +52,6 @@ export function Workbench({
   async function saveFile(): Promise<void> {
     await window.api?.saveFile(result.output)
   }
-
-  const cardClass =
-    'flex flex-col min-h-0 min-w-0 rounded-xl border border-citrus-border bg-citrus-card p-3 shadow-sm dark:border-citrus-night-border dark:bg-citrus-night-card'
 
   return (
     <div className="flex-1 grid grid-cols-2 gap-3 p-3 min-h-0 bg-citrus-cream/30 dark:bg-citrus-night">
@@ -82,19 +74,13 @@ export function Workbench({
             </button>
           </div>
         </div>
-        <textarea
-          className={`pane__text ${textClass}`}
-          wrap={wrap ? 'soft' : 'off'}
+        <CodeArea
+          className="pane__text"
           value={input}
-          spellCheck={false}
+          onChange={onInput}
+          wrap={wrap}
           placeholder="Paste data here…"
-          onChange={(e) => onInput(e.target.value)}
         />
-        <div className="mt-2.5 pt-2.5 border-t border-citrus-border/40 grid grid-cols-3 gap-2 dark:border-citrus-night-border/40">
-          <Metric label="Lines" value={tm.lines} />
-          <Metric label="Words" value={tm.words} />
-          <Metric label="Chars" value={tm.chars} />
-        </div>
       </div>
 
       {/* OUTPUT */}
@@ -130,19 +116,19 @@ export function Workbench({
         {result.error && (
           <div className="mb-2 text-[11px] font-medium text-citrus-pink-hover">{result.error}</div>
         )}
-        <textarea
-          className={`pane__text pane__text--out ${textClass}`}
-          wrap={wrap ? 'soft' : 'off'}
+        <CodeArea
+          className="pane__text pane__text--out"
           value={result.output}
+          wrap={wrap}
           readOnly
-          spellCheck={false}
           placeholder="Output appears here."
         />
-        <div className="mt-2.5 pt-2.5 border-t border-citrus-border/40 grid grid-cols-4 gap-2 dark:border-citrus-night-border/40">
-          <Metric label="IPs" value={im.ipv4} tone="text-red-600 dark:text-red-400" />
-          <Metric label="Domains" value={im.domains} tone="text-blue-600 dark:text-blue-400" />
-          <Metric label="URLs" value={im.urls} tone="text-indigo-600 dark:text-indigo-400" />
-          <Metric label="Hashes" value={im.hashes} tone="text-amber-600 dark:text-amber-400" />
+        {/* slim IOC counts */}
+        <div className="mt-2 pt-2 border-t border-citrus-border/40 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] font-mono dark:border-citrus-night-border/40">
+          <IocStat label="IPs" n={im.ipv4} tone="text-red-600 dark:text-red-400" />
+          <IocStat label="Domains" n={im.domains} tone="text-blue-600 dark:text-blue-400" />
+          <IocStat label="URLs" n={im.urls} tone="text-indigo-600 dark:text-indigo-400" />
+          <IocStat label="Hashes" n={im.hashes} tone="text-amber-600 dark:text-amber-400" />
         </div>
       </div>
     </div>

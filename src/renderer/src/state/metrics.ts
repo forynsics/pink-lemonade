@@ -6,26 +6,11 @@ function count(text: string, pattern: RegExp): number {
   return (text.match(new RegExp(pattern.source, pattern.flags)) ?? []).length
 }
 
-export interface TextMetrics {
-  lines: number
-  words: number
-  chars: number
-}
-
 export interface IocMetrics {
   ipv4: number
   domains: number
   urls: number
   hashes: number
-}
-
-/** Cheap text counters for the input pane. */
-export function textMetrics(input: string): TextMetrics {
-  return {
-    lines: input === '' ? 0 : input.split(/\r?\n/).length,
-    words: input.trim() === '' ? 0 : input.trim().split(/\s+/).length,
-    chars: input.length
-  }
 }
 
 /** Live IOC counters for the output pane — reuses the shared regexes in patterns.ts. */

@@ -85,6 +85,14 @@ export function Workbench({
             >
               Wrap
             </button>
+            <button
+              className="btn btn--ghost"
+              onClick={() => onInput(result.output)}
+              disabled={result.output === ''}
+              title="Replace the input with this output"
+            >
+              Use as Input
+            </button>
             <button className="btn btn--ghost" onClick={saveFile}>
               Save…
             </button>

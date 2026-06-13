@@ -27,9 +27,9 @@ function wrapWildcard(value: string, mode: WildcardMode): string {
 
 register({
   id: 'query.crowdstrike.cql',
-  name: 'CrowdStrike CQL',
+  name: 'CQL',
   category: 'query',
-  description: 'Build a CrowdStrike CQL in() clause from a list of objects.',
+  description: 'Build a CrowdStrike Query Language (CQL) in() clause from a list of objects.',
   options: [
     { key: 'field', label: 'Field name', type: 'string', default: 'source.ip' },
     {

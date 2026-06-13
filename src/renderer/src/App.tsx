@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Sun, Moon } from 'lucide-react'
 import { Logo } from './components/Logo'
 import { ToolPalette } from './components/ToolPalette'
 import { WorkflowBar } from './components/WorkflowBar'
@@ -77,11 +78,19 @@ export default function App(): JSX.Element {
   function addTool(toolId: string): void {
     const tool = getById(toolId)
     if (!tool) return
-    patchActive({ steps: [...active.steps, { uid: newId(), toolId, options: defaultOptions(tool) }] })
+    patchActive({
+      steps: [...active.steps, { uid: newId(), toolId, options: defaultOptions(tool), enabled: true }]
+    })
   }
 
   function removeStep(uid: string): void {
     patchActive({ steps: active.steps.filter((s) => s.uid !== uid) })
+  }
+
+  function toggleStepEnabled(uid: string): void {
+    patchActive({
+      steps: active.steps.map((s) => (s.uid === uid ? { ...s, enabled: s.enabled === false } : s))
+    })
   }
 
   function updateOptions(uid: string, options: ToolOptions): void {
@@ -98,27 +107,30 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <div className="app">
-      <header className="app__header">
-        <div className="app__brand">
+    <div className="app flex flex-col h-full">
+      <header className="flex items-center justify-between px-4 py-2.5 border-b border-citrus-border bg-citrus-card dark:border-citrus-night-border dark:bg-citrus-night-card">
+        <div className="flex items-center gap-2.5">
           <Logo />
-          <span className="app__title">
-            pink<span className="app__title-accent">lemonade</span>
+          <span className="text-lg font-bold tracking-tight text-citrus-dark dark:text-citrus-night-text">
+            pink<span className="text-citrus-pink">lemonade</span>
           </span>
-          <span className="app__tag">local investigation toolkit</span>
+          <span className="text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted">
+            local investigation toolkit
+          </span>
         </div>
         <button
-          className="theme-toggle"
+          className="theme-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
           onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
           title="Toggle light / dark"
         >
-          {theme === 'dark' ? '☀ Light' : '☾ Dark'}
+          {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+          {theme === 'dark' ? 'Light' : 'Dark'}
         </button>
       </header>
 
-      <div className="app__body">
+      <div className="flex flex-1 min-h-0">
         <ToolPalette onPick={addTool} />
-        <main className="app__main">
+        <main className="flex flex-col flex-1 min-w-0 min-h-0">
           <DocTabs
             docs={docs}
             activeId={activeId}
@@ -133,6 +145,7 @@ export default function App(): JSX.Element {
             onRemove={removeStep}
             onMove={moveStep}
             onOptions={updateOptions}
+            onToggleEnabled={toggleStepEnabled}
             onClear={() => patchActive({ steps: [] })}
           />
           <Workbench input={active.input} onInput={(v) => patchActive({ input: v })} result={result} />

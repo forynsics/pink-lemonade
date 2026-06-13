@@ -5,6 +5,8 @@ import type { ToolOptions } from '../tools/types'
 export interface RunStep {
   toolId: string
   options: ToolOptions
+  /** When false, the step is bypassed (output passes through unchanged). Defaults to enabled. */
+  enabled?: boolean
 }
 
 /** A step as held in UI state (adds a stable key for React + reordering). */
@@ -36,6 +38,12 @@ export function runWorkflow(input: string, steps: RunStep[]): WorkflowResult {
   const results: StepResult[] = []
 
   for (const step of steps) {
+    // A bypassed step passes the current value through, keeping result indices aligned
+    // with the UI step list (so error/output mapping by index stays correct).
+    if (step.enabled === false) {
+      results.push({ toolId: step.toolId, output: current })
+      continue
+    }
     const tool = getById(step.toolId)
     if (!tool) {
       const error = `Unknown tool: ${step.toolId}`

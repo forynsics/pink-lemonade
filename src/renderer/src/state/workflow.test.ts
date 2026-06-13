@@ -31,4 +31,16 @@ describe('runWorkflow', () => {
     const res = runWorkflow('x', [{ toolId: 'does.not.exist', options: {} }])
     expect(res.error).toContain('Unknown tool')
   })
+
+  it('bypasses a disabled step (passthrough) and continues the chain', () => {
+    const res = runWorkflow('see 8.8.8.8 here', [
+      { toolId: 'ioc.extract.ipv4', options: {}, enabled: false },
+      { toolId: 'text.case', options: { mode: 'upper' } }
+    ])
+    expect(res.error).toBeUndefined()
+    // The extractor was skipped, so the uppercase step acts on the original input.
+    expect(res.output).toBe('SEE 8.8.8.8 HERE')
+    expect(res.steps).toHaveLength(2)
+    expect(res.steps[0].output).toBe('see 8.8.8.8 here') // passthrough
+  })
 })

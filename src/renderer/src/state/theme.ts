@@ -9,7 +9,7 @@ export function loadTheme(): Theme {
   } catch {
     /* ignore */
   }
-  return 'dark'
+  return 'light'
 }
 
 export function saveTheme(theme: Theme): void {

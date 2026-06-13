@@ -14,9 +14,10 @@ type MatchMode = 'in' | 'has_any'
 
 register({
   id: 'query.mde.kql',
-  name: 'Microsoft Defender KQL',
+  name: 'KQL',
   category: 'query',
-  description: 'Build a Defender Advanced Hunting (KQL) where-clause from a list of objects.',
+  description:
+    'Build a Microsoft Defender Advanced Hunting (KQL) where-clause from a list of objects.',
   options: [
     { key: 'field', label: 'Field name', type: 'string', default: 'RemoteUrl' },
     { key: 'match', label: 'Match', type: 'select', default: 'in', choices: ['in', 'has_any'] },

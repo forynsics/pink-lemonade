@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+.venv/
+*.log
+.DS_Store
+.claude/
+CLAUDE.md
+*.tsbuildinfo
+.vscode/

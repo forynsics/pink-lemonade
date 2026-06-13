@@ -1,0 +1,15 @@
+appId: com.pinklemonade.app
+productName: pink-lemonade
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

@@ -5,7 +5,7 @@ import type { Tool, ToolCategory } from '../tools/types'
 const CATEGORY_LABELS: Record<ToolCategory, string> = {
   text: 'Text',
   ioc: 'IOC Extract',
-  siem: 'SIEM',
+  query: 'Query',
   enrich: 'Enrich'
 }
 

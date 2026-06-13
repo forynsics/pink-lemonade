@@ -42,3 +42,14 @@ export function refang(text: string): string {
     .replace(/\[@\]|\(at\)|\[at\]/gi, '@')
     .replace(/hxxps?/gi, (m) => (m.length === 5 ? 'https' : 'http'))
 }
+
+/**
+ * Defang indicators so they're safe to paste into chat/tickets/reports:
+ * http -> hxxp, 1.2.3.4 -> 1[.]2[.]3[.]4. The conservative inverse of refang() —
+ * scheme first (so the dots in http:// aren't yet bracketed), then every dot.
+ */
+export function defang(text: string): string {
+  return text
+    .replace(/https?/gi, (m) => (m.length === 5 ? 'hxxps' : 'hxxp'))
+    .replace(/\./g, '[.]')
+}

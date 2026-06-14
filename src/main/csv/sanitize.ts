@@ -5,11 +5,15 @@
 // to weird/duplicate/SQL-keyword headers and is the SQL-injection boundary: only `c0..cN`
 // ever reaches a query (see sql.ts assertCol).
 
+import type { TimeKind } from './coltypes'
+
 export interface ColumnMap {
   /** Safe positional SQL identifier: c0, c1, … */
   name: string
   /** Original header text, for display (de-duplicated, never empty). */
   original: string
+  /** Detected timestamp kind, if this column reads as a time column (set after sampling). */
+  time?: TimeKind
 }
 
 /** Map raw header cells to positional column ids, with cleaned, de-duplicated display names. */

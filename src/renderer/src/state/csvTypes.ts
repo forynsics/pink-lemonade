@@ -1,9 +1,13 @@
 // Renderer-side mirror of the csv:* IPC shapes (see src/preload/index.d.ts CsvApi).
 // Kept here so renderer modules import from one place without reaching into preload.
 
+export type TimeKind = 'iso' | 'epoch_s' | 'epoch_ms'
+
 export interface CsvColumn {
   name: string // c0..cN
   original: string
+  /** Detected timestamp kind, if this is a time column. */
+  time?: TimeKind
 }
 
 export interface CsvOpenResult {
@@ -21,8 +25,10 @@ export interface CsvSort {
 }
 
 export type CsvFilter =
-  | { col: string; op: 'eq' | 'like'; value: string }
+  | { col: string; op: 'eq' | 'like' | 'neq'; value: string }
   | { col: string; op: 'in'; values: string[] }
+  | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
+  | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
 
 export interface CsvQueryOpts {
   sort?: CsvSort

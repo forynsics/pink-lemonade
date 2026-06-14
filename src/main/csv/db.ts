@@ -5,6 +5,7 @@ import { randomBytes } from 'crypto'
 import { statSync, unlinkSync, readdirSync } from 'fs'
 import { parseCsvStream } from './parser'
 import type { ColumnMap } from './sanitize'
+import { detectColumnTime } from './coltypes'
 import {
   buildCreateTable,
   buildInsertSql,
@@ -95,6 +96,11 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
   let rowCount = 0
   const total = statSizeSafe(filePath)
 
+  // Sample the first rows per column to detect time columns (see coltypes.detectColumnTime).
+  const SAMPLE_ROWS = 200
+  const samples: string[][] = []
+  let sampled = 0
+
   const insertBatch = db.transaction((rows: string[][]) => {
     let i = 0
     while (i + multiN <= rows.length) {
@@ -116,6 +122,7 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
         onHeader: ({ columns: cols }) => {
           columns = cols
           numCols = cols.length
+          for (let c = 0; c < numCols; c++) samples.push([])
           db.exec(buildCreateTable(cols))
           multiN = maxRowsPerInsert(numCols)
           insertMulti = db.prepare(buildInsertSql(cols, multiN))
@@ -127,6 +134,13 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
             if (row.length < numCols) while (row.length < numCols) row.push('')
             else if (row.length > numCols) row.length = numCols
           }
+          if (sampled < SAMPLE_ROWS) {
+            for (const row of batch) {
+              if (sampled >= SAMPLE_ROWS) break
+              for (let c = 0; c < numCols; c++) samples[c].push(row[c] ?? '')
+              sampled++
+            }
+          }
           insertBatch(batch)
           rowCount += batch.length
         },
@@ -137,6 +151,12 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
 
     if (res.canceled) throw new CsvIngestCanceled()
     if (columns.length === 0) throw new Error('No header row found in file')
+
+    // Tag detected time columns from the sampled rows.
+    columns = columns.map((c, i) => {
+      const kind = detectColumnTime(samples[i] ?? [], c.original)
+      return kind ? { ...c, time: kind } : c
+    })
 
     applyQueryPragmas(db)
     const meta: CsvTableMeta = { tabId, dbPath, sourceName, columns, rowCount }

@@ -5,6 +5,7 @@
 // as parameters. This is the single SQL-injection boundary.
 
 import type { ColumnMap } from './sanitize'
+import type { TimeKind } from './coltypes'
 
 const COL_RE = /^c\d+$/
 function assertCol(name: string): void {
@@ -16,11 +17,30 @@ export const MAX_ROWS_LIMIT = 10_000
 export const DISTINCT_CAP = 100_000
 export const VALUES_CAP = 1_000_000
 
-// A row filter is either a single-value predicate (equals / contains) or a multi-value set
-// membership (`in`) — the latter is one chip holding several values for the same column.
+// A row filter is one of:
+//  • single-value predicate (equals / contains)
+//  • multi-value set membership (`in`) — one chip holding several values for a column
+//  • `timearound` — rows whose (epoch-normalised) time column is within ±deltaSec of `value`
 export type Filter =
-  | { col: string; op: 'eq' | 'like'; value: string }
+  | { col: string; op: 'eq' | 'like' | 'neq'; value: string }
   | { col: string; op: 'in'; values: string[] }
+  | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
+  // Open/closed range on a time column in epoch seconds: from→`>=`, to→`<=`, both→between.
+  | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
+
+/** SQL expression turning a time column into epoch seconds, per its detected kind. */
+function colTimeExpr(col: string, kind: TimeKind): string {
+  if (kind === 'iso') return `unixepoch(${col})`
+  if (kind === 'epoch_ms') return `(CAST(${col} AS INTEGER) / 1000)`
+  return `CAST(${col} AS INTEGER)`
+}
+
+/** Same conversion for a bound value passed as a parameter. */
+function valTimeExpr(kind: TimeKind): string {
+  if (kind === 'iso') return `unixepoch(?)`
+  if (kind === 'epoch_ms') return `(CAST(? AS INTEGER) / 1000)`
+  return `CAST(? AS INTEGER)`
+}
 
 export interface Sort {
   col: string
@@ -67,19 +87,38 @@ export function buildInsertSql(cols: ColumnMap[], rowsInBatch: number): string {
 function buildWhere(
   filters?: Filter[],
   search?: { term: string; cols: ColumnMap[] }
-): { sql: string; params: string[] } {
+): { sql: string; params: (string | number)[] } {
   const clauses: string[] = []
-  const params: string[] = []
+  const params: (string | number)[] = []
   if (filters) {
     for (const f of filters) {
       assertCol(f.col)
       if (f.op === 'like') {
         clauses.push(`${f.col} LIKE ? ESCAPE '\\'`)
         params.push(`%${escapeLike(f.value)}%`)
+      } else if (f.op === 'neq') {
+        clauses.push(`${f.col} <> ?`)
+        params.push(f.value)
       } else if (f.op === 'in') {
         if (f.values.length === 0) continue // an empty set adds no constraint
         clauses.push(`${f.col} IN (${f.values.map(() => '?').join(', ')})`)
         for (const v of f.values) params.push(v)
+      } else if (f.op === 'timearound') {
+        const colE = colTimeExpr(f.col, f.tkind)
+        const valE = valTimeExpr(f.tkind)
+        clauses.push(`${colE} BETWEEN (${valE}) - ? AND (${valE}) + ?`)
+        params.push(f.value, f.deltaSec, f.value, f.deltaSec)
+      } else if (f.op === 'timerange') {
+        if (f.from == null && f.to == null) continue // no bound → no constraint
+        const colE = colTimeExpr(f.col, f.tkind)
+        if (f.from != null) {
+          clauses.push(`${colE} >= ?`)
+          params.push(f.from)
+        }
+        if (f.to != null) {
+          clauses.push(`${colE} <= ?`)
+          params.push(f.to)
+        }
       } else {
         clauses.push(`${f.col} = ?`)
         params.push(f.value)

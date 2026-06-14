@@ -1,6 +1,8 @@
+export type TimeKind = 'iso' | 'epoch_s' | 'epoch_ms'
 export interface CsvColumn {
   name: string
   original: string
+  time?: TimeKind
 }
 export interface CsvOpenResult {
   tabId: string
@@ -15,8 +17,10 @@ export interface CsvSort {
   numeric?: boolean
 }
 export type CsvFilter =
-  | { col: string; op: 'eq' | 'like'; value: string }
+  | { col: string; op: 'eq' | 'like' | 'neq'; value: string }
   | { col: string; op: 'in'; values: string[] }
+  | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
+  | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
 export interface CsvQueryOpts {
   sort?: CsvSort
   filters?: CsvFilter[]

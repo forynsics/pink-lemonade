@@ -56,6 +56,16 @@ describe('buildQueryRowsSql', () => {
     )
   })
 
+  it('renders a `neq` (exclude) filter as <> ?', () => {
+    const { sql, params } = buildQueryRowsSql(cols, {
+      limit: 10,
+      offset: 0,
+      filters: [{ col: 'c1', op: 'neq', value: 'HackTool' }]
+    })
+    expect(sql).toBe('SELECT c0, c1 FROM data WHERE c1 <> ? LIMIT ? OFFSET ?')
+    expect(params).toEqual(['HackTool', 10, 0])
+  })
+
   it('renders a multi-value `in` filter as one IN (...) clause with bound params', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 100,
@@ -64,6 +74,47 @@ describe('buildQueryRowsSql', () => {
     })
     expect(sql).toBe('SELECT c0, c1 FROM data WHERE c0 IN (?, ?, ?) LIMIT ? OFFSET ?')
     expect(params).toEqual(['1.1.1.1', '8.8.8.8', '9.9.9.9', 100, 0])
+  })
+
+  it('renders a `timearound` ISO filter via unixepoch ± delta', () => {
+    const { sql, params } = buildQueryRowsSql(cols, {
+      limit: 100,
+      offset: 0,
+      filters: [{ col: 'c0', op: 'timearound', value: '2026-06-13T21:14:00Z', tkind: 'iso', deltaSec: 300 }]
+    })
+    expect(sql).toBe(
+      'SELECT c0, c1 FROM data WHERE unixepoch(c0) BETWEEN (unixepoch(?)) - ? AND (unixepoch(?)) + ? LIMIT ? OFFSET ?'
+    )
+    expect(params).toEqual(['2026-06-13T21:14:00Z', 300, '2026-06-13T21:14:00Z', 300, 100, 0])
+  })
+
+  it('renders a `timearound` epoch_ms filter dividing by 1000', () => {
+    const { sql } = buildQueryRowsSql(cols, {
+      limit: 10,
+      offset: 0,
+      filters: [{ col: 'c0', op: 'timearound', value: '1718313258123', tkind: 'epoch_ms', deltaSec: 60 }]
+    })
+    expect(sql).toContain('(CAST(c0 AS INTEGER) / 1000) BETWEEN ((CAST(? AS INTEGER) / 1000)) - ? AND')
+  })
+
+  it('renders `timerange` bounds as >= / <= on the epoch expression', () => {
+    const gte = buildQueryRowsSql(cols, { limit: 5, offset: 0, filters: [{ col: 'c0', op: 'timerange', tkind: 'iso', from: 100 }] })
+    expect(gte.sql).toBe('SELECT c0, c1 FROM data WHERE unixepoch(c0) >= ? LIMIT ? OFFSET ?')
+    expect(gte.params).toEqual([100, 5, 0])
+
+    const between = buildQueryRowsSql(cols, {
+      limit: 5,
+      offset: 0,
+      filters: [{ col: 'c0', op: 'timerange', tkind: 'epoch_s', from: 100, to: 200 }]
+    })
+    expect(between.sql).toBe('SELECT c0, c1 FROM data WHERE CAST(c0 AS INTEGER) >= ? AND CAST(c0 AS INTEGER) <= ? LIMIT ? OFFSET ?')
+    expect(between.params).toEqual([100, 200, 5, 0])
+  })
+
+  it('drops a `timerange` with no bounds', () => {
+    expect(buildQueryRowsSql(cols, { limit: 5, offset: 0, filters: [{ col: 'c0', op: 'timerange', tkind: 'iso' }] }).sql).toBe(
+      'SELECT c0, c1 FROM data LIMIT ? OFFSET ?'
+    )
   })
 
   it('drops an empty `in` filter (no constraint)', () => {

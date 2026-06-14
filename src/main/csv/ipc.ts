@@ -161,8 +161,23 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
     if (f.op === 'in') {
       const values = Array.isArray(f.values) ? f.values.map(String) : []
       if (values.length > 0) out.push({ col: f.col, op: 'in', values })
+    } else if (f.op === 'timearound') {
+      const tkind = f.tkind === 'iso' || f.tkind === 'epoch_ms' ? f.tkind : 'epoch_s'
+      const deltaSec = Math.max(0, Math.trunc(Number(f.deltaSec)) || 0)
+      if (deltaSec > 0) out.push({ col: f.col, op: 'timearound', value: String(f.value ?? ''), tkind, deltaSec })
+    } else if (f.op === 'timerange') {
+      const tkind = f.tkind === 'iso' || f.tkind === 'epoch_ms' ? f.tkind : 'epoch_s'
+      const num = (v: unknown): number | undefined => {
+        if (v == null) return undefined
+        const n = Number(v)
+        return Number.isFinite(n) ? n : undefined
+      }
+      const from = num(f.from)
+      const to = num(f.to)
+      if (from != null || to != null) out.push({ col: f.col, op: 'timerange', tkind, from, to })
     } else {
-      out.push({ col: f.col, op: f.op === 'eq' ? 'eq' : 'like', value: String(f.value ?? '') })
+      const op = f.op === 'eq' ? 'eq' : f.op === 'neq' ? 'neq' : 'like'
+      out.push({ col: f.col, op, value: String(f.value ?? '') })
     }
   }
   return out.length > 0 ? out : undefined

@@ -41,7 +41,13 @@ export default function App(): JSX.Element {
   const [{ docs, activeId }, setState] = useState<DocsState>(initialDocs)
   const [theme, setTheme] = useState<Theme>(loadTheme)
   // Tracks an in-flight CSV ingest (for the import overlay + cancel).
-  const [csvImport, setCsvImport] = useState<{ tabId: string; name: string; rows: number } | null>(null)
+  const [csvImport, setCsvImport] = useState<{
+    tabId: string
+    name: string
+    rows: number
+    bytes: number
+    total: number
+  } | null>(null)
   // Recently-opened CSV files (welcome-screen quick pivot) + whether the welcome screen is showing.
   const [recent, setRecent] = useState<RecentFile[]>(loadRecent)
   // The app opens on the Home/welcome screen by default (the user's saved tabs stay in the
@@ -56,7 +62,11 @@ export default function App(): JSX.Element {
   // Live ingest progress for the active import.
   useEffect(() => {
     return window.api.csv.onProgress((p) => {
-      setCsvImport((cur) => (cur && p.tabId === cur.tabId && p.phase !== 'done' ? { ...cur, rows: p.rows } : cur))
+      setCsvImport((cur) =>
+        cur && p.tabId === cur.tabId && p.phase !== 'done'
+          ? { ...cur, rows: p.rows, bytes: p.bytes, total: p.total }
+          : cur
+      )
     })
   }, [])
 
@@ -123,7 +133,7 @@ export default function App(): JSX.Element {
   /** Ingest a file at `path` into a fresh CSV tab. Shared by the picker and recent-file pivots. */
   async function ingestNewTab(path: string, sourceName: string): Promise<void> {
     const tabId = newId()
-    setCsvImport({ tabId, name: sourceName, rows: 0 })
+    setCsvImport({ tabId, name: sourceName, rows: 0, bytes: 0, total: 0 })
     try {
       const res = await window.api.csv.ingest(tabId, path)
       if (res) {
@@ -155,7 +165,7 @@ export default function App(): JSX.Element {
     const picked = await window.api.csv.pick()
     if (!picked) return
     const tabId = newId()
-    setCsvImport({ tabId, name: picked.sourceName, rows: 0 })
+    setCsvImport({ tabId, name: picked.sourceName, rows: 0, bytes: 0, total: 0 })
     try {
       const res = await window.api.csv.ingest(tabId, picked.path)
       if (res) {
@@ -335,8 +345,18 @@ export default function App(): JSX.Element {
             <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
               Importing {csvImport.name}…
             </div>
+            {csvImport.total > 0 && (
+              <div className="h-1.5 w-56 overflow-hidden rounded-full bg-citrus-sand dark:bg-citrus-night-elev">
+                <div
+                  className="h-full rounded-full bg-citrus-pink transition-[width] duration-150"
+                  style={{ width: `${Math.min(100, Math.round((csvImport.bytes / csvImport.total) * 100))}%` }}
+                />
+              </div>
+            )}
             <div className="text-xs font-mono text-citrus-muted dark:text-citrus-night-muted">
               {csvImport.rows.toLocaleString()} rows
+              {csvImport.total > 0 &&
+                ` · ${Math.min(100, Math.round((csvImport.bytes / csvImport.total) * 100))}%`}
             </div>
             <button
               className="mt-1 px-3 py-1 rounded-md text-[11px] font-bold border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:border-citrus-pink/40 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted"

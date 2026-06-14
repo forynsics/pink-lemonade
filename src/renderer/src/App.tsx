@@ -1,15 +1,13 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Sun, Moon, Loader2 } from 'lucide-react'
 import { Logo } from './components/Logo'
 import { ToolPalette } from './components/ToolPalette'
-import { WorkflowBar } from './components/WorkflowBar'
-import { Workbench } from './components/Workbench'
+import { ScratchEditor } from './components/ScratchEditor'
 import { DocTabs } from './components/DocTabs'
 import { Welcome } from './components/Welcome'
 import { CsvViewer } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
 import { getById, defaultOptions } from './tools/registry'
-import { runWorkflow, type WorkflowStep } from './state/workflow'
 import {
   createDoc,
   createCsvDoc,
@@ -24,8 +22,6 @@ import {
 import { loadTheme, saveTheme, type Theme } from './state/theme'
 import { addRecent, loadRecent, removeRecent, saveRecent, type RecentFile } from './state/recent'
 import type { ToolOptions } from './tools/types'
-
-const NO_STEPS: WorkflowStep[] = []
 
 function initialDocs(): DocsState {
   const loaded = loadDocs()
@@ -82,16 +78,6 @@ export default function App(): JSX.Element {
   }, [docs, activeId])
 
   const active = docs.find((d) => d.id === activeId) ?? docs[0]
-  // Workflow runs only for scratch docs. Hooks must run unconditionally, so derive scratch
-  // input/steps (falling back to empties for a CSV doc) and run the workflow on a deferred
-  // copy of the input so the textarea stays responsive while a heavy pipeline catches up.
-  const scratchInput = active.kind === 'scratch' ? active.input : ''
-  const scratchSteps = active.kind === 'scratch' ? active.steps : NO_STEPS
-  const deferredInput = useDeferredValue(scratchInput)
-  const result = useMemo(
-    () => runWorkflow(deferredInput, scratchSteps),
-    [deferredInput, scratchSteps]
-  )
 
   function updateActive(fn: (d: PinkDoc) => PinkDoc): void {
     setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === s.activeId ? fn(d) : d)) }))
@@ -99,6 +85,14 @@ export default function App(): JSX.Element {
 
   function patchScratch(patch: Partial<ScratchDoc>): void {
     updateActive((d) => (d.kind === 'scratch' ? { ...d, ...patch } : d))
+  }
+
+  // Patch a specific scratch doc by id (each mounted editor edits its own doc, not just the active).
+  function patchScratchById(id: string, patch: Partial<ScratchDoc>): void {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => (d.id === id && d.kind === 'scratch' ? { ...d, ...patch } : d))
+    }))
   }
 
   function patchCsv(patch: Partial<CsvDoc>): void {
@@ -299,7 +293,7 @@ export default function App(): JSX.Element {
             onClose={closeDoc}
             onRename={renameDoc}
           />
-          {home ? (
+          {home && (
             <Welcome
               recent={recent}
               onOpenRecent={openRecent}
@@ -311,29 +305,30 @@ export default function App(): JSX.Element {
                 saveRecent([])
               }}
             />
-          ) : active.kind === 'csv' ? (
-            active.needsReopen ? (
+          )}
+          {!home &&
+            active.kind === 'csv' &&
+            (active.needsReopen ? (
               <CsvPlaceholder doc={active} onReopen={reopenCsv} />
             ) : (
               <CsvViewer doc={active} onPivot={pivotToScratch} onReorderColumns={reorderCsvColumns} />
-            )
-          ) : (
-            <>
-              <WorkflowBar
-                steps={active.steps}
-                result={result}
-                onRemove={removeStep}
-                onMove={moveStep}
-                onOptions={updateOptions}
-                onToggleEnabled={toggleStepEnabled}
-                onClear={() => patchScratch({ steps: [] })}
+            ))}
+          {/* Every scratch doc keeps its own mounted editor (hidden when inactive) so caret,
+              scroll, and find state survive tab switches and CSV detours. */}
+          {docs.map((d) =>
+            d.kind === 'scratch' ? (
+              <ScratchEditor
+                key={d.id}
+                doc={d}
+                visible={!home && active.kind === 'scratch' && active.id === d.id}
+                onInput={(v) => patchScratchById(d.id, { input: v })}
+                onRemoveStep={removeStep}
+                onMoveStep={moveStep}
+                onUpdateOptions={updateOptions}
+                onToggleStepEnabled={toggleStepEnabled}
+                onClearSteps={() => patchScratch({ steps: [] })}
               />
-              <Workbench
-                input={active.input}
-                onInput={(v) => patchScratch({ input: v })}
-                result={result}
-              />
-            </>
+            ) : null
           )}
         </main>
       </div>

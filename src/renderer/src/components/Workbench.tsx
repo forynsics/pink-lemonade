@@ -43,11 +43,15 @@ function IocStat({ label, n, tone }: { label: string; n: number; tone: string })
 export function Workbench({
   input,
   onInput,
-  result
+  result,
+  active = true
 }: {
   input: string
   onInput: (v: string) => void
   result: WorkflowResult
+  /** Whether this is the visible/active editor — only the active one handles the Ctrl+F shortcut
+   *  (every scratch doc keeps a mounted Workbench, so the window listener must be gated). */
+  active?: boolean
 }): JSX.Element {
   const [copied, setCopied] = useState(false)
   const [wrap, setWrap] = useState(true)
@@ -122,6 +126,7 @@ export function Workbench({
   // Ctrl/Cmd+F opens the find bar over the focused pane (this component only mounts for the
   // notepad, so the listener is naturally scoped to it).
   useEffect(() => {
+    if (!active) return // only the visible editor responds to Ctrl+F
     const onKey = (e: KeyboardEvent): void => {
       if (!((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F'))) return
       e.preventDefault()
@@ -133,7 +138,7 @@ export function Workbench({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [active])
 
   // A fresh output invalidates any on-demand IOC count.
   useEffect(() => setManualIoc(null), [out])

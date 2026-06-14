@@ -18,6 +18,8 @@ const api = {
     ingest: (tabId: string, path: string) => ipcRenderer.invoke('csv:ingest', { tabId, path }),
     cancel: (tabId: string) => ipcRenderer.invoke('csv:cancel', { tabId }),
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
+    count: (tabId: string, reqId: number, filters?: unknown, search?: string) =>
+      ipcRenderer.invoke('csv:count', { tabId, reqId, filters, search }),
     distinct: (tabId: string, col: string, filters?: unknown, limit?: number) =>
       ipcRenderer.invoke('csv:distinct', { tabId, col, filters, limit }),
     longest: (tabId: string, col: string) => ipcRenderer.invoke('csv:longest', { tabId, col }),
@@ -30,6 +32,12 @@ const api = {
       const h = (_e: unknown, p: unknown): void => cb(p)
       ipcRenderer.on('csv:progress', h)
       return () => ipcRenderer.removeListener('csv:progress', h)
+    },
+    // Subscribe to live match-count progress (Scale #2). Returns a disposer.
+    onCountProgress: (cb: (p: unknown) => void) => {
+      const h = (_e: unknown, p: unknown): void => cb(p)
+      ipcRenderer.on('csv:count-progress', h)
+      return () => ipcRenderer.removeListener('csv:count-progress', h)
     }
   }
 }

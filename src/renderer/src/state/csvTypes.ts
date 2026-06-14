@@ -41,8 +41,16 @@ export interface CsvQueryOpts {
 
 export interface CsvRowsResult {
   rows: string[][]
-  total: number
 }
+/** Live progress of a chunked match count (Scale #2). */
+export interface CsvCountProgress {
+  tabId: string
+  reqId: number
+  count: number
+  scanned: number
+  max: number
+}
+export type CsvCountResult = { count: number } | { canceled: true }
 
 export interface CsvDistinctRow {
   val: string

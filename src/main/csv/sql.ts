@@ -184,6 +184,26 @@ export function buildCountSql(
   return { sql: `SELECT COUNT(*) AS n FROM data${where.sql}`, params: where.params }
 }
 
+/**
+ * Count matches within a rowid slice `(loExclusive, hiInclusive]`, ANDed with the predicate.
+ * Used to count a filtered/searched result set in chunks so the main process can yield between
+ * slices (stays responsive + cancelable) instead of one blocking full-table scan.
+ */
+export function buildCountChunkSql(
+  cols: ColumnMap[],
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  loExclusive: number,
+  hiInclusive: number
+): { sql: string; params: unknown[] } {
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined)
+  const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
+  return {
+    sql: `SELECT COUNT(*) AS n FROM data WHERE rowid > ? AND rowid <= ?${extra}`,
+    params: [loExclusive, hiInclusive, ...where.params]
+  }
+}
+
 export function buildDistinctSql(
   col: string,
   filters: Filter[] | undefined,

@@ -79,8 +79,9 @@ export function CsvViewer({
     })
   }
 
-  const { rows, baseOffset, total, loading, error, ensureRange } = useCsvQuery(
+  const { rows, baseOffset, total, counting, loading, error, ensureRange } = useCsvQuery(
     doc.tabId,
+    doc.rowCount,
     sort,
     filters,
     search
@@ -186,10 +187,12 @@ export function CsvViewer({
           {doc.sourceName}
         </span>
         <span className="text-citrus-muted dark:text-citrus-night-muted font-mono">
-          {doc.columns.length} cols · {total.toLocaleString()} rows
+          {doc.columns.length} cols · {total.toLocaleString()}
+          {counting ? '+' : ''} rows
+          {counting && ' (counting…)'}
           {(filters.length > 0 || search !== '') && ` (of ${doc.rowCount.toLocaleString()})`}
         </span>
-        {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
+        {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
       </div>
 
@@ -197,6 +200,7 @@ export function CsvViewer({
         value={searchInput}
         active={search !== ''}
         matches={total}
+        counting={counting && search !== ''}
         position={matchIndex < 0 ? 0 : matchIndex + 1}
         loading={loading && search !== ''}
         onChange={setSearchInput}

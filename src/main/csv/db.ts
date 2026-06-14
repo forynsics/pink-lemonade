@@ -10,7 +10,7 @@ import {
   buildCreateTable,
   buildInsertSql,
   buildQueryRowsSql,
-  buildCountSql,
+  buildCountChunkSql,
   buildDistinctSql,
   buildDistinctCountSql,
   buildLongestSql,
@@ -180,13 +180,40 @@ export class CsvIngestCanceled extends Error {
   }
 }
 
-export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][]; total: number } {
+export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][] } {
   const e = get(tabId)
   const q = buildQueryRowsSql(e.meta.columns, opts)
   const rows = e.db.prepare(q.sql).raw(true).all(...q.params) as string[][]
-  const c = buildCountSql(e.meta.columns, opts.filters, opts.search)
-  const total = (e.db.prepare(c.sql).get(...c.params) as { n: number }).n
-  return { rows, total }
+  return { rows }
+}
+
+const COUNT_CHUNK = 1_000_000
+
+/**
+ * Count a filtered/searched result set in rowid chunks, yielding to the event loop between each
+ * so the main process stays responsive (window fetches, other tabs) and the run can be aborted
+ * mid-flight. `onPartial` reports the running total after each chunk (for a live count + scrollbar
+ * that grows as it scans). Returns the final count, or null if `shouldAbort` tripped (superseded).
+ */
+export async function countMatches(
+  tabId: string,
+  filters: Filter[] | undefined,
+  search: string,
+  onPartial: (count: number, scanned: number, max: number) => void,
+  shouldAbort: () => boolean
+): Promise<number | null> {
+  const e = get(tabId)
+  const max = e.meta.rowCount
+  let total = 0
+  for (let lo = 0; lo < max; lo += COUNT_CHUNK) {
+    if (shouldAbort()) return null
+    const hi = Math.min(lo + COUNT_CHUNK, max)
+    const q = buildCountChunkSql(e.meta.columns, filters, search || undefined, lo, hi)
+    total += (e.db.prepare(q.sql).get(...q.params) as { n: number }).n
+    onPartial(total, hi, max)
+    await new Promise((resolve) => setImmediate(resolve)) // yield between chunks
+  }
+  return total
 }
 
 export function getColumnUniqueValues(

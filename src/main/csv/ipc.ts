@@ -4,6 +4,7 @@ import { basename } from 'path'
 import {
   ingestCsv,
   queryRows,
+  countMatches,
   getColumnUniqueValues,
   getColumnDistinctCount,
   getColumnLongest,
@@ -27,6 +28,8 @@ interface OpenResult {
 }
 
 const controllers = new Map<string, AbortController>()
+// Latest count request id per tab — a newer csv:count supersedes (aborts) the running one.
+const countReq = new Map<string, number>()
 
 export function registerCsvIpc(): void {
   // Pick (dialog) and ingest are separate so the renderer shows an import overlay only
@@ -47,6 +50,35 @@ export function registerCsvIpc(): void {
 
   ipcMain.handle('csv:query', (_e, { tabId, opts }: { tabId: string; opts: QueryOpts }) =>
     queryRows(tabId, normalizeOpts(opts))
+  )
+
+  // Count a filtered/searched result set off the window fetch, chunked + cancelable. Reports the
+  // running total over 'csv:count-progress' (live count + a scrollbar that grows as it scans);
+  // resolves with the final count, or { canceled } if a newer request superseded it.
+  ipcMain.handle(
+    'csv:count',
+    async (
+      e,
+      { tabId, reqId, filters, search }: { tabId: string; reqId: number; filters?: Filter[]; search?: string }
+    ) => {
+      countReq.set(tabId, reqId)
+      const f = normalizeFilters(filters)
+      const current = (): boolean => countReq.get(tabId) === reqId && !e.sender.isDestroyed()
+      try {
+        const count = await countMatches(
+          tabId,
+          f,
+          search ?? '',
+          (c, scanned, max) => {
+            if (current()) e.sender.send('csv:count-progress', { tabId, reqId, count: c, scanned, max })
+          },
+          () => countReq.get(tabId) !== reqId
+        )
+        return count == null ? { canceled: true } : { count }
+      } catch {
+        return { canceled: true }
+      }
+    }
   )
 
   ipcMain.handle(

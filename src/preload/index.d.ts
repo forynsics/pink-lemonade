@@ -30,8 +30,16 @@ export interface CsvQueryOpts {
 }
 export interface CsvRowsResult {
   rows: string[][]
-  total: number
 }
+/** Live progress of a chunked match count (Scale #2). */
+export interface CsvCountProgress {
+  tabId: string
+  reqId: number
+  count: number
+  scanned: number
+  max: number
+}
+export type CsvCountResult = { count: number } | { canceled: true }
 export interface CsvDistinctRow {
   val: string
   cnt: number
@@ -54,6 +62,12 @@ export interface CsvApi {
   ingest: (tabId: string, path: string) => Promise<CsvOpenResult | null>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
+  count: (
+    tabId: string,
+    reqId: number,
+    filters?: CsvFilter[],
+    search?: string
+  ) => Promise<CsvCountResult>
   distinct: (
     tabId: string,
     col: string,
@@ -69,6 +83,7 @@ export interface CsvApi {
   stats: (tabId: string, col: string) => Promise<CsvColumnStats>
   close: (tabId: string) => Promise<null>
   onProgress: (cb: (p: CsvProgress) => void) => () => void
+  onCountProgress: (cb: (p: CsvCountProgress) => void) => () => void
 }
 
 export interface Api {

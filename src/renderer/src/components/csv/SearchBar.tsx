@@ -9,6 +9,7 @@ export function SearchBar({
   value,
   active,
   matches,
+  counting = false,
   position,
   loading,
   onChange,
@@ -18,8 +19,10 @@ export function SearchBar({
   value: string
   /** true once the debounced term is actually applied to the query */
   active: boolean
-  /** matching row count for the applied term (only meaningful when `active`) */
+  /** matching row count for the applied term (only meaningful when `active`); provisional while counting */
   matches: number
+  /** true while the chunked counter is still scanning — the match count is partial (shown as "N+") */
+  counting?: boolean
   /** 1-based index of the currently-focused match, or 0 before any stepping */
   position: number
   loading: boolean
@@ -61,10 +64,11 @@ export function SearchBar({
       ) : (
         active && (
           <div className="flex items-center gap-1.5 whitespace-nowrap">
+            {counting && <Loader2 className="w-3 h-3 animate-spin text-citrus-pink" />}
             <span className="text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted">
               {position > 0
-                ? `${position.toLocaleString()} / ${matches.toLocaleString()}`
-                : `${matches.toLocaleString()} ${matches === 1 ? 'match' : 'matches'}`}
+                ? `${position.toLocaleString()} / ${matches.toLocaleString()}${counting ? '+' : ''}`
+                : `${matches.toLocaleString()}${counting ? '+' : ''} ${matches === 1 && !counting ? 'match' : 'matches'}`}
             </span>
             {matches > 0 && (
               <>

@@ -5,6 +5,7 @@ import {
   buildInsertSql,
   buildQueryRowsSql,
   buildCountSql,
+  buildCountChunkSql,
   buildDistinctSql,
   buildDistinctCountSql,
   buildLongestSql,
@@ -199,6 +200,20 @@ describe('global search', () => {
     const { sql, params } = buildCountSql(cols, undefined, '185.220')
     expect(sql).toBe("SELECT COUNT(*) AS n FROM data WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')")
     expect(params).toEqual(['%185.220%', '%185.220%'])
+  })
+
+  it('count chunk: bounds by a rowid slice and ANDs the predicate (params rowid-first)', () => {
+    const { sql, params } = buildCountChunkSql(cols, undefined, '185.220', 1_000_000, 2_000_000)
+    expect(sql).toBe(
+      "SELECT COUNT(*) AS n FROM data WHERE rowid > ? AND rowid <= ? AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')"
+    )
+    expect(params).toEqual([1_000_000, 2_000_000, '%185.220%', '%185.220%'])
+  })
+
+  it('count chunk: with no predicate, just the rowid slice', () => {
+    const { sql, params } = buildCountChunkSql(cols, undefined, undefined, 0, 1_000_000)
+    expect(sql).toBe('SELECT COUNT(*) AS n FROM data WHERE rowid > ? AND rowid <= ?')
+    expect(params).toEqual([0, 1_000_000])
   })
 
   it('an empty search term adds no predicate', () => {

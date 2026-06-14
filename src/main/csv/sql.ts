@@ -12,6 +12,18 @@ function assertCol(name: string): void {
   if (!COL_RE.test(name)) throw new Error(`Invalid column identifier: ${JSON.stringify(name)}`)
 }
 
+// A source's data table is `data` (legacy single-table) or `data_<id>` (a workspace source); its
+// materialized filter index is `_pl_filt` / `_pl_filt_<id>`. These are interpolated into SQL, so —
+// like column names — they must come from this whitelist, never user text.
+const TABLE_RE = /^data(_\d+)?$/
+const FILT_RE = /^_pl_filt(_\d+)?$/
+function assertTable(name: string): void {
+  if (!TABLE_RE.test(name)) throw new Error(`Invalid table identifier: ${JSON.stringify(name)}`)
+}
+function assertFilt(name: string): void {
+  if (!FILT_RE.test(name)) throw new Error(`Invalid filter-index identifier: ${JSON.stringify(name)}`)
+}
+
 export const HOST_PARAM_LIMIT = 32766
 export const MAX_ROWS_LIMIT = 10_000
 export const DISTINCT_CAP = 100_000
@@ -62,17 +74,19 @@ export function maxRowsPerInsert(numCols: number): number {
   return Math.max(1, Math.floor(HOST_PARAM_LIMIT / Math.max(1, numCols)))
 }
 
-export function buildCreateTable(cols: ColumnMap[]): string {
+export function buildCreateTable(cols: ColumnMap[], table = 'data'): string {
+  assertTable(table)
   const defs = cols
     .map((c) => {
       assertCol(c.name)
       return `${c.name} TEXT`
     })
     .join(', ')
-  return `CREATE TABLE data (rowid INTEGER PRIMARY KEY, ${defs})`
+  return `CREATE TABLE ${table} (rowid INTEGER PRIMARY KEY, ${defs})`
 }
 
-export function buildInsertSql(cols: ColumnMap[], rowsInBatch: number): string {
+export function buildInsertSql(cols: ColumnMap[], rowsInBatch: number, table = 'data'): string {
+  assertTable(table)
   const names = cols
     .map((c) => {
       assertCol(c.name)
@@ -81,7 +95,7 @@ export function buildInsertSql(cols: ColumnMap[], rowsInBatch: number): string {
     .join(', ')
   const oneRow = `(${cols.map(() => '?').join(', ')})`
   const values = Array(Math.max(1, rowsInBatch)).fill(oneRow).join(', ')
-  return `INSERT INTO data (${names}) VALUES ${values}`
+  return `INSERT INTO ${table} (${names}) VALUES ${values}`
 }
 
 function buildWhere(
@@ -144,7 +158,8 @@ function escapeLike(v: string): string {
   return v.replace(/[\\%_]/g, (m) => `\\${m}`)
 }
 
-export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts): { sql: string; params: unknown[] } {
+export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts, table = 'data'): { sql: string; params: unknown[] } {
+  assertTable(table)
   const names = cols
     .map((c) => {
       assertCol(c.name)
@@ -169,19 +184,21 @@ export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts): { sql: strin
   // Filtered/sorted/searched views keep OFFSET (their result sets are smaller, and the
   // ordinal→rowid mapping no longer holds).
   if (where.sql === '' && order === '') {
-    return { sql: `SELECT ${names} FROM data WHERE rowid > ? LIMIT ?`, params: [offset, limit] }
+    return { sql: `SELECT ${names} FROM ${table} WHERE rowid > ? LIMIT ?`, params: [offset, limit] }
   }
-  const sql = `SELECT ${names} FROM data${where.sql}${order} LIMIT ? OFFSET ?`
+  const sql = `SELECT ${names} FROM ${table}${where.sql}${order} LIMIT ? OFFSET ?`
   return { sql, params: [...where.params, limit, offset] }
 }
 
 export function buildCountSql(
   cols: ColumnMap[],
   filters?: Filter[],
-  search?: string
+  search?: string,
+  table = 'data'
 ): { sql: string; params: unknown[] } {
+  assertTable(table)
   const where = buildWhere(filters, search ? { term: search, cols } : undefined)
-  return { sql: `SELECT COUNT(*) AS n FROM data${where.sql}`, params: where.params }
+  return { sql: `SELECT COUNT(*) AS n FROM ${table}${where.sql}`, params: where.params }
 }
 
 /**
@@ -194,12 +211,14 @@ export function buildCountChunkSql(
   filters: Filter[] | undefined,
   search: string | undefined,
   loExclusive: number,
-  hiInclusive: number
+  hiInclusive: number,
+  table = 'data'
 ): { sql: string; params: unknown[] } {
+  assertTable(table)
   const where = buildWhere(filters, search ? { term: search, cols } : undefined)
   const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
   return {
-    sql: `SELECT COUNT(*) AS n FROM data WHERE rowid > ? AND rowid <= ?${extra}`,
+    sql: `SELECT COUNT(*) AS n FROM ${table} WHERE rowid > ? AND rowid <= ?${extra}`,
     params: [loExclusive, hiInclusive, ...where.params]
   }
 }
@@ -217,12 +236,16 @@ export function buildFilterInsertChunkSql(
   filters: Filter[] | undefined,
   search: string | undefined,
   loExclusive: number,
-  hiInclusive: number
+  hiInclusive: number,
+  table = 'data',
+  filtTable = FILT_TABLE
 ): { sql: string; params: unknown[] } {
+  assertTable(table)
+  assertFilt(filtTable)
   const where = buildWhere(filters, search ? { term: search, cols } : undefined)
   const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
   return {
-    sql: `INSERT INTO ${FILT_TABLE} (rid) SELECT rowid FROM data WHERE rowid > ? AND rowid <= ?${extra} ORDER BY rowid`,
+    sql: `INSERT INTO ${filtTable} (rid) SELECT rowid FROM ${table} WHERE rowid > ? AND rowid <= ?${extra} ORDER BY rowid`,
     params: [loExclusive, hiInclusive, ...where.params]
   }
 }
@@ -231,12 +254,16 @@ export function buildFilterInsertChunkSql(
 export function buildFiltPageSql(
   cols: ColumnMap[],
   offset: number,
-  limit: number
+  limit: number,
+  table = 'data',
+  filtTable = FILT_TABLE
 ): { sql: string; params: unknown[] } {
+  assertTable(table)
+  assertFilt(filtTable)
   const names = cols
     .map((c) => {
       assertCol(c.name)
-      return `data.${c.name}`
+      return `${table}.${c.name}`
     })
     .join(', ')
   const lim = clamp(limit, 0, MAX_ROWS_LIMIT)
@@ -244,7 +271,7 @@ export function buildFiltPageSql(
   // ORDER BY the index rowid (its gapless sequence) so the page is in result-set order — the grid
   // positions these rows at absolute offsets. It's a no-op cost: the WHERE already scans that PK.
   return {
-    sql: `SELECT ${names} FROM ${FILT_TABLE} JOIN data ON data.rowid = ${FILT_TABLE}.rid WHERE ${FILT_TABLE}.rowid > ? ORDER BY ${FILT_TABLE}.rowid LIMIT ?`,
+    sql: `SELECT ${names} FROM ${filtTable} JOIN ${table} ON ${table}.rowid = ${filtTable}.rid WHERE ${filtTable}.rowid > ? ORDER BY ${filtTable}.rowid LIMIT ?`,
     params: [off, lim]
   }
 }
@@ -252,29 +279,37 @@ export function buildFiltPageSql(
 export function buildDistinctSql(
   col: string,
   filters: Filter[] | undefined,
-  limit: number
+  limit: number,
+  table = 'data'
 ): { sql: string; params: unknown[] } {
+  assertTable(table)
   assertCol(col)
   const where = buildWhere(filters)
   const lim = clamp(limit, 1, DISTINCT_CAP)
   const sql =
-    `SELECT ${col} AS val, COUNT(*) AS cnt FROM data${where.sql}` +
+    `SELECT ${col} AS val, COUNT(*) AS cnt FROM ${table}${where.sql}` +
     ` GROUP BY ${col} ORDER BY cnt DESC, val ASC LIMIT ?`
   return { sql, params: [...where.params, lim] }
 }
 
 /** True number of distinct values in a column (honours filters) — not capped by the list limit. */
-export function buildDistinctCountSql(col: string, filters?: Filter[]): { sql: string; params: unknown[] } {
+export function buildDistinctCountSql(
+  col: string,
+  filters?: Filter[],
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
   assertCol(col)
   const where = buildWhere(filters)
-  return { sql: `SELECT COUNT(DISTINCT ${col}) AS n FROM data${where.sql}`, params: where.params }
+  return { sql: `SELECT COUNT(DISTINCT ${col}) AS n FROM ${table}${where.sql}`, params: where.params }
 }
 
 /** The longest value in a column (for auto-fit column width), truncated to `cap` chars. */
-export function buildLongestSql(col: string, cap = 256): { sql: string; params: unknown[] } {
+export function buildLongestSql(col: string, cap = 256, table = 'data'): { sql: string; params: unknown[] } {
+  assertTable(table)
   assertCol(col)
   return {
-    sql: `SELECT SUBSTR(${col}, 1, ?) AS val FROM data ORDER BY LENGTH(${col}) DESC LIMIT 1`,
+    sql: `SELECT SUBSTR(${col}, 1, ?) AS val FROM ${table} ORDER BY LENGTH(${col}) DESC LIMIT 1`,
     params: [clamp(cap, 1, 4096)]
   }
 }
@@ -282,21 +317,24 @@ export function buildLongestSql(col: string, cap = 256): { sql: string; params: 
 export function buildColumnValuesSql(
   col: string,
   filters?: Filter[],
-  cap = VALUES_CAP
+  cap = VALUES_CAP,
+  table = 'data'
 ): { sql: string; params: unknown[] } {
+  assertTable(table)
   assertCol(col)
   const where = buildWhere(filters)
   const lim = clamp(cap, 1, VALUES_CAP)
-  return { sql: `SELECT ${col} AS val FROM data${where.sql} LIMIT ?`, params: [...where.params, lim] }
+  return { sql: `SELECT ${col} AS val FROM ${table}${where.sql} LIMIT ?`, params: [...where.params, lim] }
 }
 
-export function buildStatsSql(col: string): { sql: string; params: unknown[] } {
+export function buildStatsSql(col: string, table = 'data'): { sql: string; params: unknown[] } {
+  assertTable(table)
   assertCol(col)
   const sql =
     `SELECT COUNT(*) AS count,` +
     ` SUM(CASE WHEN ${col} IS NULL OR ${col} = '' THEN 1 ELSE 0 END) AS nullCount,` +
     ` COUNT(DISTINCT ${col}) AS distinct_` +
-    ` FROM data`
+    ` FROM ${table}`
   return { sql, params: [] }
 }
 

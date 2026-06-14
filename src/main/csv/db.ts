@@ -53,11 +53,15 @@ export interface IngestArgs {
 interface Entry {
   db: Database.Database
   meta: CsvTableMeta
-  // The materialized filter index currently in the tab's _pl_filt table (Scale #1b): which
-  // predicate it holds, how many rows so far, and whether the build finished.
+  // The materialized filter index currently in the tab's filt table (Scale #1b): which predicate
+  // it holds, how many rows so far, and whether the build finished.
   filt?: { token: string; count: number; complete: boolean }
   // Keys of column indexes already built on demand for sorting (Scale #3), e.g. "c3:n".
   indexes: Set<string>
+  // The data table this entry queries ('data' legacy single-table, or 'data_<id>' for a workspace
+  // source) and its materialized-filter table — so one connection can serve many source tables.
+  table: string
+  filtTable: string
 }
 
 const TEMP_PREFIX = 'pl_csv_' // legacy temp-db prefix (older builds) — still swept at startup
@@ -179,7 +183,7 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
 
     applyQueryPragmas(db)
     const meta: CsvTableMeta = { tabId, dbPath, sourceName, columns, rowCount }
-    tables.set(tabId, { db, meta, indexes: new Set() })
+    tables.set(tabId, { db, meta, indexes: new Set(), table: 'data', filtTable: FILT_TABLE })
     return meta
   } catch (e) {
     try {
@@ -250,7 +254,7 @@ export function openDb(tabId: string, dbPath: string): CsvTableMeta {
     columns,
     rowCount: Number(m.row_count ?? 0)
   }
-  tables.set(tabId, { db, meta, indexes: new Set() })
+  tables.set(tabId, { db, meta, indexes: new Set(), table: 'data', filtTable: FILT_TABLE })
   return meta
 }
 
@@ -277,10 +281,10 @@ export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][] } 
   // (O(1) anywhere in the result set) instead of re-scanning the predicate with OFFSET. Used only
   // when the index holds exactly this predicate; otherwise fall back (correct, just slower).
   if (!opts.sort && hasPredicate(opts) && e.filt?.token === filterToken(opts.filters, opts.search)) {
-    const q = buildFiltPageSql(e.meta.columns, opts.offset, opts.limit)
+    const q = buildFiltPageSql(e.meta.columns, opts.offset, opts.limit, e.table, e.filtTable)
     return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
   }
-  const q = buildQueryRowsSql(e.meta.columns, opts)
+  const q = buildQueryRowsSql(e.meta.columns, opts, e.table)
   return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
 }
 
@@ -300,7 +304,8 @@ export function ensureSortIndex(tabId: string, col: string, numeric: boolean): v
   const key = `${col}:${numeric ? 'n' : 't'}`
   if (e.indexes.has(key)) return
   const expr = numeric ? `CAST(${col} AS REAL)` : `${col} COLLATE NOCASE`
-  e.db.exec(`CREATE INDEX IF NOT EXISTS ix_${col}_${numeric ? 'n' : 't'} ON data (${expr})`)
+  // Index name includes the table so sources in one workspace db don't collide.
+  e.db.exec(`CREATE INDEX IF NOT EXISTS ix_${e.table}_${col}_${numeric ? 'n' : 't'} ON ${e.table} (${expr})`)
   e.indexes.add(key)
 }
 
@@ -328,14 +333,14 @@ export async function buildFilterIndex(
     onPartial(e.filt.count, max, max)
     return e.filt.count
   }
-  e.db.exec(`DROP TABLE IF EXISTS ${FILT_TABLE}`)
-  e.db.exec(`CREATE TABLE ${FILT_TABLE} (rid INTEGER)`)
+  e.db.exec(`DROP TABLE IF EXISTS ${e.filtTable}`)
+  e.db.exec(`CREATE TABLE ${e.filtTable} (rid INTEGER)`)
   e.filt = { token, count: 0, complete: false }
   let total = 0
   for (let lo = 0; lo < max; lo += FILT_CHUNK) {
     if (shouldAbort()) return null
     const hi = Math.min(lo + FILT_CHUNK, max)
-    const q = buildFilterInsertChunkSql(e.meta.columns, filters, search || undefined, lo, hi)
+    const q = buildFilterInsertChunkSql(e.meta.columns, filters, search || undefined, lo, hi, e.table, e.filtTable)
     total += e.db.prepare(q.sql).run(...q.params).changes
     e.filt.count = total
     onPartial(total, hi, max)
@@ -352,33 +357,33 @@ export function getColumnUniqueValues(
   limit?: number
 ): Array<{ val: string; cnt: number }> {
   const e = get(tabId)
-  const q = buildDistinctSql(col, filters, limit ?? 1000)
+  const q = buildDistinctSql(col, filters, limit ?? 1000, e.table)
   return e.db.prepare(q.sql).all(...q.params) as Array<{ val: string; cnt: number }>
 }
 
 export function getColumnDistinctCount(tabId: string, col: string, filters?: Filter[]): number {
   const e = get(tabId)
-  const q = buildDistinctCountSql(col, filters)
+  const q = buildDistinctCountSql(col, filters, e.table)
   return (e.db.prepare(q.sql).get(...q.params) as { n: number }).n
 }
 
 export function getColumnLongest(tabId: string, col: string): string {
   const e = get(tabId)
-  const q = buildLongestSql(col)
+  const q = buildLongestSql(col, 256, e.table)
   const r = e.db.prepare(q.sql).get(...q.params) as { val: string | null } | undefined
   return r?.val ?? ''
 }
 
 export function getColumnValues(tabId: string, col: string, filters?: Filter[]): string[] {
   const e = get(tabId)
-  const q = buildColumnValuesSql(col, filters)
+  const q = buildColumnValuesSql(col, filters, undefined, e.table)
   const rows = e.db.prepare(q.sql).raw(true).all(...q.params) as unknown[][]
   return rows.map((r) => String(r[0] ?? ''))
 }
 
 export function getColumnStats(tabId: string, col: string): CsvColumnStats {
   const e = get(tabId)
-  const q = buildStatsSql(col)
+  const q = buildStatsSql(col, e.table)
   const r = e.db.prepare(q.sql).get(...q.params) as {
     count: number
     nullCount: number

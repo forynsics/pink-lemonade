@@ -52,6 +52,29 @@ describe('buildQueryRowsSql', () => {
     expect(params).toEqual([40, MAX_ROWS_LIMIT])
   })
 
+  it('queries a workspace source table (data_<id>) when given one', () => {
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0 }, 'data_3').sql).toBe(
+      'SELECT c0, c1 FROM data_3 WHERE rowid > ? LIMIT ?'
+    )
+    expect(buildQueryRowsSql(cols, { limit: 5, offset: 0, search: 'x' }, 'data_3').sql).toBe(
+      "SELECT c0, c1 FROM data_3 WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\') LIMIT ? OFFSET ?"
+    )
+  })
+
+  it('rejects a table identifier that is not data / data_<id> (injection guard)', () => {
+    expect(() => buildQueryRowsSql(cols, { limit: 1, offset: 0 }, 'data; DROP TABLE x')).toThrow(
+      /Invalid table identifier/
+    )
+    expect(() => buildCountSql(cols, undefined, undefined, 'sqlite_master')).toThrow(/Invalid table identifier/)
+  })
+
+  it('filt page joins the given source + filt tables', () => {
+    const { sql } = buildFiltPageSql(cols, 0, 200, 'data_2', '_pl_filt_2')
+    expect(sql).toBe(
+      'SELECT data_2.c0, data_2.c1 FROM _pl_filt_2 JOIN data_2 ON data_2.rowid = _pl_filt_2.rid WHERE _pl_filt_2.rowid > ? ORDER BY _pl_filt_2.rowid LIMIT ?'
+    )
+  })
+
   it('falls back to LIMIT/OFFSET once a filter/sort/search narrows the set', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 10,

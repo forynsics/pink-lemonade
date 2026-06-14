@@ -34,7 +34,7 @@ export const VALUES_CAP = 1_000_000
 //  • multi-value set membership (`in`) — one chip holding several values for a column
 //  • `timearound` — rows whose (epoch-normalised) time column is within ±deltaSec of `value`
 export type Filter =
-  | { col: string; op: 'eq' | 'like' | 'neq'; value: string }
+  | { col: string; op: 'eq' | 'like' | 'neq' | 'nlike'; value: string }
   | { col: string; op: 'in'; values: string[] }
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   // Open/closed range on a time column in epoch seconds: from→`>=`, to→`<=`, both→between.
@@ -109,6 +109,9 @@ function buildWhere(
       assertCol(f.col)
       if (f.op === 'like') {
         clauses.push(`${f.col} LIKE ? ESCAPE '\\'`)
+        params.push(`%${escapeLike(f.value)}%`)
+      } else if (f.op === 'nlike') {
+        clauses.push(`${f.col} NOT LIKE ? ESCAPE '\\'`)
         params.push(`%${escapeLike(f.value)}%`)
       } else if (f.op === 'neq') {
         clauses.push(`${f.col} <> ?`)

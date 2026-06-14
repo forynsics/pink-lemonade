@@ -304,7 +304,26 @@ export default function App(): JSX.Element {
   }
 
   function renameDoc(id: string, name: string): void {
+    const doc = docs.find((d) => d.id === id)
     setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === id ? { ...d, name } : d)) }))
+    // Persist a workspace rename to its db (ws_meta) so it survives reopen.
+    if (doc?.kind === 'workspace') void window.api.csv.wsRename(doc.wsId, name)
+  }
+
+  /** Remove a source (imported file) from a workspace (drops its data table). */
+  async function removeSource(docId: string, wsId: string, sourceId: number): Promise<void> {
+    if (!window.confirm('Remove this imported file from the workspace? Its data is dropped.')) return
+    await window.api.csv.wsRemoveSource(wsId, sourceId)
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId || d.kind !== 'workspace') return d
+        const sources = d.sources.filter((src) => src.sourceId !== sourceId)
+        const activeSourceId =
+          d.activeSourceId === sourceId ? (sources[0]?.sourceId ?? null) : d.activeSourceId
+        return { ...d, sources, activeSourceId }
+      })
+    }))
   }
 
   // ---- workflow operations (act on the active scratch document) ----
@@ -374,6 +393,7 @@ export default function App(): JSX.Element {
             importing={csvImport?.tabId === active.wsId}
             onSelectSource={(sid) => selectSource(active.id, sid)}
             onImport={addSourceToActive}
+            onRemoveSource={(sid) => void removeSource(active.id, active.wsId, sid)}
           />
         )}
         <main className="flex flex-col flex-1 min-w-0 min-h-0">

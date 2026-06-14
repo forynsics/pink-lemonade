@@ -31,7 +31,7 @@ export interface CsvSort {
   numeric?: boolean
 }
 export type CsvFilter =
-  | { col: string; op: 'eq' | 'like' | 'neq'; value: string }
+  | { col: string; op: 'eq' | 'like' | 'neq' | 'nlike'; value: string }
   | { col: string; op: 'in'; values: string[] }
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
@@ -82,6 +82,8 @@ export interface CsvApi {
   wsClose: (wsId: string) => Promise<null>
   wsDelete: (dbPath: string) => Promise<null>
   wsAddSource: (wsId: string, path: string) => Promise<SourceInfo | null>
+  wsRename: (wsId: string, name: string) => Promise<null>
+  wsRemoveSource: (wsId: string, sourceId: number) => Promise<null>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
   count: (

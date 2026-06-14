@@ -10,6 +10,8 @@ import {
   openWorkspace,
   closeWorkspace,
   deleteWorkspace,
+  renameWorkspace,
+  removeSource,
   queryRows,
   ensureSortIndex,
   buildFilterIndex,
@@ -146,6 +148,14 @@ export function registerCsvIpc(): void {
   ipcMain.handle('ws:addSource', (e, { wsId, path }: { wsId: string; path: string }) =>
     doAddSource(e.sender, wsId, path)
   )
+  ipcMain.handle('ws:rename', (_e, { wsId, name }: { wsId: string; name: string }) => {
+    renameWorkspace(wsId, name)
+    return null
+  })
+  ipcMain.handle('ws:removeSource', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) => {
+    removeSource(wsId, sourceId)
+    return null
+  })
 
   // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".
   ipcMain.handle('csv:open', (_e, { tabId, dbPath }: { tabId: string; dbPath: string }): OpenResult => {
@@ -295,7 +305,7 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
       const to = num(f.to)
       if (from != null || to != null) out.push({ col: f.col, op: 'timerange', tkind, from, to })
     } else {
-      const op = f.op === 'eq' ? 'eq' : f.op === 'neq' ? 'neq' : 'like'
+      const op = f.op === 'eq' ? 'eq' : f.op === 'neq' ? 'neq' : f.op === 'nlike' ? 'nlike' : 'like'
       out.push({ col: f.col, op, value: String(f.value ?? '') })
     }
   }

@@ -372,6 +372,25 @@ export function openWorkspace(wsId: string, dbPath: string): WorkspaceInfo {
   return { wsId, dbPath, name, sources }
 }
 
+/** Rename a workspace — persists to ws_meta so it survives reopen. */
+export function renameWorkspace(wsId: string, name: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.prepare('INSERT OR REPLACE INTO ws_meta (key, value) VALUES (?, ?)').run('name', name)
+  w.name = name
+}
+
+/** Remove a source (imported file) from a workspace: drop its table + catalog rows. */
+export function removeSource(wsId: string, sourceId: number): void {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId)) return
+  w.db.exec(`DROP TABLE IF EXISTS data_${sourceId}`) // indexes drop with the table
+  w.db.exec(`DROP TABLE IF EXISTS _pl_filt_${sourceId}`)
+  w.db.prepare('DELETE FROM sources WHERE id = ?').run(sourceId)
+  w.db.prepare('DELETE FROM source_columns WHERE source_id = ?').run(sourceId)
+  tables.delete(sourceKey(wsId, sourceId))
+}
+
 export function closeWorkspace(wsId: string): void {
   const w = workspaces.get(wsId)
   if (!w) return

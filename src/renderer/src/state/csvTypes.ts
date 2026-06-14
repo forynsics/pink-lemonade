@@ -25,7 +25,7 @@ export interface CsvSort {
 }
 
 export type CsvFilter =
-  | { col: string; op: 'eq' | 'like' | 'neq'; value: string }
+  | { col: string; op: 'eq' | 'like' | 'neq' | 'nlike'; value: string }
   | { col: string; op: 'in'; values: string[] }
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }

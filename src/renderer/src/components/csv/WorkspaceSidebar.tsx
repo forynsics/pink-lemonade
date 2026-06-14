@@ -1,4 +1,4 @@
-import { FileText, FolderOpen, Loader2, Plus } from 'lucide-react'
+import { FileText, FolderOpen, Loader2, Plus, X } from 'lucide-react'
 import type { WorkspaceDoc } from '../../state/documents'
 
 /** Compact row count, e.g. 2,901,233 → "2.9M". */
@@ -14,12 +14,14 @@ export function WorkspaceSidebar({
   doc,
   importing,
   onSelectSource,
-  onImport
+  onImport,
+  onRemoveSource
 }: {
   doc: WorkspaceDoc
   importing: boolean
   onSelectSource: (sourceId: number) => void
   onImport: () => void
+  onRemoveSource: (sourceId: number) => void
 }): JSX.Element {
   return (
     <aside className="workspace-sidebar flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-citrus-border bg-citrus-sand/40 p-3 dark:border-citrus-night-border dark:bg-citrus-night">
@@ -43,24 +45,35 @@ export function WorkspaceSidebar({
           {doc.sources.map((s) => {
             const active = s.sourceId === doc.activeSourceId
             return (
-              <button
+              <div
                 key={s.sourceId}
-                onClick={() => onSelectSource(s.sourceId)}
-                title={s.name}
-                className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
+                className={`group flex items-center rounded-md text-xs transition-colors ${
                   active
                     ? 'bg-citrus-pink-light font-bold text-citrus-pink'
                     : 'text-citrus-dark hover:bg-citrus-card/70 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
                 }`}
               >
-                <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
-                <span className="flex-1 truncate">{s.name}</span>
-                <span
-                  className={`text-[10px] font-mono ${active ? 'text-citrus-pink' : 'text-citrus-muted dark:text-citrus-night-muted'}`}
+                <button
+                  onClick={() => onSelectSource(s.sourceId)}
+                  title={s.name}
+                  className="flex flex-1 min-w-0 items-center gap-2 px-2 py-1.5 text-left"
                 >
-                  {fmtRows(s.rowCount)}
-                </span>
-              </button>
+                  <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                  <span className="flex-1 truncate">{s.name}</span>
+                  <span
+                    className={`text-[10px] font-mono ${active ? 'text-citrus-pink' : 'text-citrus-muted dark:text-citrus-night-muted'}`}
+                  >
+                    {fmtRows(s.rowCount)}
+                  </span>
+                </button>
+                <button
+                  onClick={() => onRemoveSource(s.sourceId)}
+                  title="Remove from workspace"
+                  className="shrink-0 px-1.5 py-1.5 text-citrus-muted opacity-0 group-hover:opacity-100 hover:text-citrus-pink dark:text-citrus-night-muted"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
             )
           })}
           <button

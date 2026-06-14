@@ -7,7 +7,7 @@ import { dtLocalToEpoch, epochToDtLocal, epochToLabel } from '../../state/timeKi
 // form for editing (eq/like/neq and time ≥/≤/between); `in` and ± chips delegate to their own
 // editors. For a time column the operator list gains ≥ / ≤ / between with datetime inputs.
 
-type Op = 'like' | 'eq' | 'neq' | 'gte' | 'lte' | 'between'
+type Op = 'like' | 'nlike' | 'eq' | 'neq' | 'gte' | 'lte' | 'between'
 const TIME_OPS: Op[] = ['gte', 'lte', 'between']
 
 function fmtDelta(sec: number): string {
@@ -23,7 +23,7 @@ function chipText(f: CsvFilter, label: (n: string) => string): string {
     if (f.from != null) return `${label(f.col)} ≥ ${epochToLabel(f.from)}`
     return `${label(f.col)} ≤ ${epochToLabel(f.to ?? 0)}`
   }
-  const sym = f.op === 'eq' ? '=' : f.op === 'neq' ? '≠' : '⊇'
+  const sym = f.op === 'eq' ? '=' : f.op === 'neq' ? '≠' : f.op === 'nlike' ? '⊉' : '⊇'
   return `${label(f.col)} ${sym} ${f.value}`
 }
 
@@ -100,7 +100,7 @@ export function FilterBar({
       return null
     }
     if (value === '') return null
-    return { col, op: op as 'like' | 'eq' | 'neq', value }
+    return { col, op: op as 'like' | 'nlike' | 'eq' | 'neq', value }
   }
 
   function submit(): void {
@@ -151,6 +151,7 @@ export function FilterBar({
       </select>
       <select className={inputCls} value={op} onChange={(e) => setOp(e.target.value as Op)}>
         <option value="like">contains</option>
+        <option value="nlike">not contains</option>
         <option value="eq">equals</option>
         <option value="neq">≠ exclude</option>
         {tkind && <option value="gte">≥ on/after</option>}

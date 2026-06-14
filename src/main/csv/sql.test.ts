@@ -104,6 +104,16 @@ describe('buildQueryRowsSql', () => {
     expect(params).toEqual(['HackTool', 10, 0])
   })
 
+  it('renders an `nlike` (not contains) filter as NOT LIKE', () => {
+    const { sql, params } = buildQueryRowsSql(cols, {
+      limit: 10,
+      offset: 0,
+      filters: [{ col: 'c1', op: 'nlike', value: 'Clean' }]
+    })
+    expect(sql).toBe("SELECT c0, c1 FROM data WHERE c1 NOT LIKE ? ESCAPE '\\' LIMIT ? OFFSET ?")
+    expect(params).toEqual(['%Clean%', 10, 0])
+  })
+
   it('renders a multi-value `in` filter as one IN (...) clause with bound params', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 100,

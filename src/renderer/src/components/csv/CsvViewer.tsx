@@ -106,10 +106,10 @@ export function CsvViewer({
 
   function addFilter(f: CsvFilter): void {
     setFilters((fs) => {
-      // De-dupe only the single-value eq/like/neq kinds; the rest just append.
-      if (f.op === 'eq' || f.op === 'like' || f.op === 'neq') {
+      // De-dupe only the single-value eq/like/neq/nlike kinds; the rest just append.
+      if (f.op === 'eq' || f.op === 'like' || f.op === 'neq' || f.op === 'nlike') {
         const dup = (x: CsvFilter): boolean =>
-          (x.op === 'eq' || x.op === 'like' || x.op === 'neq') &&
+          (x.op === 'eq' || x.op === 'like' || x.op === 'neq' || x.op === 'nlike') &&
           x.col === f.col &&
           x.op === f.op &&
           x.value === f.value

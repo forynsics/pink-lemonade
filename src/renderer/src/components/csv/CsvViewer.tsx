@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import type { CsvDoc } from '../../state/documents'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
@@ -28,10 +28,12 @@ function looksNumeric(rows: string[][], colIdx: number): boolean {
 
 export function CsvViewer({
   doc,
-  onPivot
+  onPivot,
+  onReorderColumns
 }: {
   doc: CsvDoc
   onPivot: (values: string[], label: string) => void
+  onReorderColumns: (from: number, to: number) => void
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
@@ -67,14 +69,10 @@ export function CsvViewer({
     search
   )
 
-  const colIndex = useMemo(
-    () => new Map(doc.columns.map((c, i) => [c.name, i] as const)),
-    [doc.columns]
-  )
-
   function toggleSort(col: string): void {
     setSort((s) => {
-      if (s?.col !== col) return { col, dir: 'asc', numeric: looksNumeric(rows, colIndex.get(col) ?? 0) }
+      // Rows arrive in original column order; index by the name's numeric suffix, not display pos.
+      if (s?.col !== col) return { col, dir: 'asc', numeric: looksNumeric(rows, Number(col.slice(1))) }
       if (s.dir === 'asc') return { ...s, dir: 'desc' }
       return undefined // third click clears the sort
     })
@@ -214,6 +212,7 @@ export function CsvViewer({
           getLongest={(colName) => window.api.csv.longest(doc.tabId, colName)}
           onCellContext={(cell, at) => setCellMenu({ cell, at })}
           ensureRange={ensureRange}
+          onReorderColumns={onReorderColumns}
         />
         {distinctCol && (
           <DistinctPanel

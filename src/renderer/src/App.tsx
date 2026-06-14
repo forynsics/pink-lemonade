@@ -174,6 +174,15 @@ export default function App(): JSX.Element {
     }
   }
 
+  /** Reorder the active CSV's columns (drag-to-reorder); persists via patchCsv → localStorage. */
+  function reorderCsvColumns(from: number, to: number): void {
+    if (active.kind !== 'csv' || from === to || from < 0 || to < 0) return
+    const cols = [...active.columns]
+    const [moved] = cols.splice(from, 1)
+    cols.splice(to, 0, moved)
+    patchCsv({ columns: cols })
+  }
+
   /** Open a fresh scratch tab pre-filled with a column's values (the CSV → notepad pivot). */
   function pivotToScratch(values: string[], label: string): void {
     setHome(false)
@@ -296,7 +305,7 @@ export default function App(): JSX.Element {
             active.needsReopen ? (
               <CsvPlaceholder doc={active} onReopen={reopenCsv} />
             ) : (
-              <CsvViewer doc={active} onPivot={pivotToScratch} />
+              <CsvViewer doc={active} onPivot={pivotToScratch} onReorderColumns={reorderCsvColumns} />
             )
           ) : (
             <>

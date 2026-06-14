@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, MoreVertical } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, Clock, MoreVertical } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
 
@@ -75,7 +75,8 @@ export function VirtualGrid({
   onCellOpen,
   getLongest,
   onCellContext,
-  ensureRange
+  ensureRange,
+  onReorderColumns
 }: {
   columns: CsvColumn[]
   rows: string[][]
@@ -92,9 +93,16 @@ export function VirtualGrid({
   /** Right-clicking any cell opens the cell menu (filter/exclude, + time pivots if applicable). */
   onCellContext: (cell: CellRef, at: { x: number; y: number }) => void
   ensureRange: (first: number, last: number) => void
+  /** Drag a header to reorder columns (from → to are positions in `columns`). */
+  onReorderColumns?: (from: number, to: number) => void
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const rafRef = useRef(0)
+
+  // Row data always arrives in the ORIGINAL column order (the query selects c0..cN), while
+  // `columns` may be reordered for display. Map each display position → its data index (the
+  // numeric suffix of the stable `c<n>` name) so a reordered header still reads the right cell.
+  const dataIdx = useMemo(() => columns.map((c) => Number(c.name.slice(1))), [columns])
 
   // --- column widths (drag-resizable) ---
   const [widths, setWidths] = useState<number[]>(() => columns.map(() => DEFAULT_COL_W))
@@ -142,6 +150,55 @@ export function VirtualGrid({
   const [sel, setSel] = useState<Selection | null>(null)
   const drag = useRef<{ active: boolean; rowMode: boolean }>({ active: false, rowMode: false })
   const lastCol = columns.length - 1
+
+  // --- column drag-to-reorder ---
+  const [dragCol, setDragCol] = useState<number | null>(null)
+  const [overCol, setOverCol] = useState<number | null>(null)
+  const onColDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    if (resize.current) {
+      e.preventDefault() // a resize is in progress — don't start a reorder drag
+      return
+    }
+    setDragCol(idx)
+    e.dataTransfer.effectAllowed = 'move'
+    try {
+      e.dataTransfer.setData('text/plain', String(idx)) // Firefox needs data set to drag
+    } catch {
+      /* noop */
+    }
+  }, [])
+  const onColDragOver = useCallback(
+    (e: React.DragEvent, idx: number) => {
+      if (dragCol == null) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (idx !== overCol) setOverCol(idx)
+    },
+    [dragCol, overCol]
+  )
+  const onColDrop = useCallback(
+    (e: React.DragEvent, idx: number) => {
+      e.preventDefault()
+      const from = dragCol
+      setDragCol(null)
+      setOverCol(null)
+      if (from == null || from === idx) return
+      // Permute local widths with the SAME splice semantics the parent uses on `columns`.
+      setWidths((ws) => {
+        const a = [...ws]
+        const [m] = a.splice(from, 1)
+        a.splice(idx, 0, m)
+        return a
+      })
+      setSel(null) // existing selection indices refer to the old column order
+      onReorderColumns?.(from, idx)
+    },
+    [dragCol, onReorderColumns]
+  )
+  const onColDragEnd = useCallback(() => {
+    setDragCol(null)
+    setOverCol(null)
+  }, [])
 
   useEffect(() => {
     const onUp = (): void => {
@@ -198,12 +255,12 @@ export function VirtualGrid({
       for (let r = minR; r <= maxR; r++) {
         const row = rows[r - baseOffset]
         const cells: string[] = []
-        for (let c = minC; c <= maxC; c++) cells.push(row ? row[c] ?? '' : '')
+        for (let c = minC; c <= maxC; c++) cells.push(row ? row[dataIdx[c]] ?? '' : '')
         lines.push(cells.join('\t'))
       }
       void navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
     },
-    [sel, rows, baseOffset]
+    [sel, rows, baseOffset, dataIdx]
   )
 
   const recompute = useCallback(() => {
@@ -233,14 +290,14 @@ export function VirtualGrid({
   const onContextMenu = useCallback(
     (e: React.MouseEvent, r: number, c: number) => {
       const col = columns[c]
-      const value = rows[r - baseOffset]?.[c]
+      const value = rows[r - baseOffset]?.[dataIdx[c]]
       if (col == null || value == null) return
       e.preventDefault()
       setSel({ anchor: { r, c }, focus: { r, c } }) // highlight what we're acting on
       const tkind = col.time ?? classifyCellTime(value) ?? undefined
       onCellContext({ colName: col.name, original: col.original, value, tkind }, { x: e.clientX, y: e.clientY })
     },
-    [columns, rows, baseOffset, onCellContext]
+    [columns, rows, baseOffset, dataIdx, onCellContext]
   )
 
   // Ensure the initial viewport is loaded once the row count is known / on resize.
@@ -276,7 +333,14 @@ export function VirtualGrid({
           return (
             <div
               key={col.name}
-              className="group relative shrink-0 flex items-center gap-1 px-2 text-[11px] font-bold uppercase tracking-wide border-l border-citrus-border/60 dark:border-citrus-night-border/60"
+              draggable={!!onReorderColumns}
+              onDragStart={(e) => onColDragStart(e, idx)}
+              onDragOver={(e) => onColDragOver(e, idx)}
+              onDrop={(e) => onColDrop(e, idx)}
+              onDragEnd={onColDragEnd}
+              className={`group relative shrink-0 flex items-center gap-1 px-2 text-[11px] font-bold uppercase tracking-wide border-l border-citrus-border/60 dark:border-citrus-night-border/60 ${
+                dragCol === idx ? 'opacity-40' : ''
+              } ${overCol === idx && dragCol !== idx ? 'border-l-2 border-l-citrus-pink bg-citrus-pink/10' : ''}`}
               style={{ width: widths[idx] ?? DEFAULT_COL_W }}
             >
               <button
@@ -284,6 +348,11 @@ export function VirtualGrid({
                 onClick={() => onToggleSort(col.name)}
                 title={`Sort by ${col.original}`}
               >
+                {col.time && (
+                  <span className="shrink-0 flex" title={`Time column (${col.time})`}>
+                    <Clock className="w-3 h-3 text-citrus-pink/70" />
+                  </span>
+                )}
                 <span className="truncate">{col.original}</span>
                 {active &&
                   (sort?.dir === 'asc' ? (
@@ -336,24 +405,27 @@ export function VirtualGrid({
               >
                 {abs + 1}
               </div>
-              {columns.map((col, c) => (
-                <div
-                  key={col.name}
-                  className={`shrink-0 flex items-center px-2 truncate border-l ${
-                    inSel(abs, c)
-                      ? 'bg-citrus-pink/20 border-citrus-pink/30 dark:bg-citrus-pink/25'
-                      : 'text-citrus-dark border-citrus-border/20 dark:text-citrus-night-text dark:border-citrus-night-border/20'
-                  }`}
-                  style={{ width: widths[c] ?? DEFAULT_COL_W }}
-                  title={row[c]}
-                  onMouseDown={(e) => beginCell(e, abs, c)}
-                  onMouseEnter={() => enterCell(abs, c)}
-                  onContextMenu={(e) => onContextMenu(e, abs, c)}
-                  onDoubleClick={() => onCellOpen(row[c] ?? '', `Row ${abs + 1} · ${col.original}`)}
-                >
-                  <span className="truncate">{row[c]}</span>
-                </div>
-              ))}
+              {columns.map((col, c) => {
+                const v = row[dataIdx[c]] ?? ''
+                return (
+                  <div
+                    key={col.name}
+                    className={`shrink-0 flex items-center px-2 truncate border-l ${
+                      inSel(abs, c)
+                        ? 'bg-citrus-pink/20 border-citrus-pink/30 dark:bg-citrus-pink/25'
+                        : 'text-citrus-dark border-citrus-border/20 dark:text-citrus-night-text dark:border-citrus-night-border/20'
+                    }`}
+                    style={{ width: widths[c] ?? DEFAULT_COL_W }}
+                    title={v}
+                    onMouseDown={(e) => beginCell(e, abs, c)}
+                    onMouseEnter={() => enterCell(abs, c)}
+                    onContextMenu={(e) => onContextMenu(e, abs, c)}
+                    onDoubleClick={() => onCellOpen(v, `Row ${abs + 1} · ${col.original}`)}
+                  >
+                    <span className="truncate">{v}</span>
+                  </div>
+                )
+              })}
             </div>
           )
         })}

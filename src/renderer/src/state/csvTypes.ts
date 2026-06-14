@@ -41,6 +41,7 @@ export interface CsvQueryOpts {
 
 export interface CsvRowsResult {
   rows: string[][]
+  rids: number[]
 }
 /** Live progress of a chunked match count (Scale #2). */
 export interface CsvCountProgress {

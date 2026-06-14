@@ -161,14 +161,22 @@ function escapeLike(v: string): string {
   return v.replace(/[\\%_]/g, (m) => `\\${m}`)
 }
 
-export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts, table = 'data'): { sql: string; params: unknown[] } {
+export function buildQueryRowsSql(
+  cols: ColumnMap[],
+  o: QueryOpts,
+  table = 'data',
+  withRowid = false
+): { sql: string; params: unknown[] } {
   assertTable(table)
-  const names = cols
+  const cnames = cols
     .map((c) => {
       assertCol(c.name)
       return c.name
     })
     .join(', ')
+  // When the caller needs each row's identity (tags, scroll-to-row), prepend the rowid as the
+  // leading SELECT column. queryRows splits it off so the cell array stays exactly c0..cN.
+  const names = withRowid ? `rowid, ${cnames}` : cnames
   const where = buildWhere(o.filters, o.search ? { term: o.search, cols } : undefined)
   let order = ''
   if (o.sort) {
@@ -259,16 +267,18 @@ export function buildFiltPageSql(
   offset: number,
   limit: number,
   table = 'data',
-  filtTable = FILT_TABLE
+  filtTable = FILT_TABLE,
+  withRowid = false
 ): { sql: string; params: unknown[] } {
   assertTable(table)
   assertFilt(filtTable)
-  const names = cols
+  const cnames = cols
     .map((c) => {
       assertCol(c.name)
       return `${table}.${c.name}`
     })
     .join(', ')
+  const names = withRowid ? `${table}.rowid, ${cnames}` : cnames
   const lim = clamp(limit, 0, MAX_ROWS_LIMIT)
   const off = Math.max(0, Math.trunc(offset) || 0)
   // ORDER BY the index rowid (its gapless sequence) so the page is in result-set order — the grid

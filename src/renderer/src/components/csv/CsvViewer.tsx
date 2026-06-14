@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Database, Loader2 } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
+import { TAG_DEFS, type TagId } from '../../state/tags'
 
 /** What the grid needs to render a source — satisfied by a workspace source view (or any table). */
 export interface CsvViewSource {
@@ -53,12 +54,51 @@ export function CsvViewer({
   const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
   // The column whose distinct values are shown in the side panel (null = panel closed).
   const [distinctCol, setDistinctCol] = useState<CsvColumn | null>(null)
-  // Right-clicked cell (or a clicked ± chip) → the cell menu at the cursor.
+  // Right-clicked cell (or a clicked ± chip) → the cell menu at the cursor. `tagRids` are the rows
+  // the Tag-as action applies to (the clicked row, or the whole selection when clicked inside it).
   const [cellMenu, setCellMenu] = useState<{
     cell: CellRef
     at: { x: number; y: number }
     defaultMinutes?: number
+    tagRids?: number[]
   } | null>(null)
+
+  // Row tags for this source, keyed by positional rowid. Tagging only applies to workspace sources
+  // (tabId === `<wsId>:<sourceId>`); a legacy single-file tab has no ':' and stays untagged.
+  const [wsId, sidStr] = doc.tabId.split(':')
+  const sourceId = Number(sidStr)
+  const taggable = sidStr !== undefined && Number.isInteger(sourceId)
+  const [tags, setTags] = useState<Map<number, string>>(new Map())
+  useEffect(() => {
+    if (!taggable) {
+      setTags(new Map())
+      return
+    }
+    let live = true
+    void window.api.csv.wsTagList(wsId, sourceId).then((rows) => {
+      if (live) setTags(new Map(rows.map((r) => [r.rid, r.tag])))
+    })
+    return () => {
+      live = false
+    }
+  }, [doc.tabId, taggable, wsId, sourceId])
+
+  // Set or clear the tag on a set of rows: persist, then update the local map optimistically.
+  const applyTag = useCallback(
+    (rids: number[], tag: TagId | null) => {
+      if (!taggable || rids.length === 0) return
+      void window.api.csv.wsTagSet(wsId, sourceId, rids, tag)
+      setTags((prev) => {
+        const next = new Map(prev)
+        for (const rid of rids) {
+          if (tag == null) next.delete(rid)
+          else next.set(rid, tag)
+        }
+        return next
+      })
+    },
+    [taggable, wsId, sourceId]
+  )
   // `searchInput` is what the user types; `search` is the debounced term that drives the
   // query — so a multi-million-row LIKE scan only runs once typing settles.
   const [searchInput, setSearchInput] = useState('')
@@ -87,7 +127,7 @@ export function CsvViewer({
     })
   }
 
-  const { rows, baseOffset, total, counting, loading, error, ensureRange } = useCsvQuery(
+  const { rows, rids, baseOffset, total, counting, loading, error, ensureRange } = useCsvQuery(
     doc.tabId,
     doc.rowCount,
     sort,
@@ -188,6 +228,10 @@ export function CsvViewer({
     ])
   }
 
+  // Per-category tag counts for the toolbar legend (derived from the local map).
+  const tagCounts = new Map<string, number>()
+  for (const t of tags.values()) tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1)
+
   return (
     <div className="csv-viewer flex flex-col flex-1 min-h-0 bg-citrus-card dark:bg-citrus-night-card">
       <div className="flex items-center gap-3 px-3 py-2 text-xs border-b border-citrus-border dark:border-citrus-night-border">
@@ -202,6 +246,16 @@ export function CsvViewer({
         </span>
         {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
+        {taggable && tagCounts.size > 0 && (
+          <span className="csv-tag-legend flex items-center gap-2">
+            {TAG_DEFS.filter((d) => tagCounts.get(d.id)).map((d) => (
+              <span key={d.id} className="flex items-center gap-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted" title={d.label}>
+                <span className={`inline-block w-2 h-2 rounded-sm ${d.dot}`} />
+                {tagCounts.get(d.id)}
+              </span>
+            ))}
+          </span>
+        )}
         <span
           className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-citrus-muted/70 dark:text-citrus-night-muted/70 truncate max-w-[360px]"
           title={`Loaded from ${doc.dbPath}`}
@@ -240,6 +294,8 @@ export function CsvViewer({
         <VirtualGrid
           columns={doc.columns}
           rows={rows}
+          rids={rids}
+          tags={taggable ? tags : undefined}
           baseOffset={baseOffset}
           total={total}
           sort={sort}
@@ -249,7 +305,7 @@ export function CsvViewer({
           onOpenColumnMenu={(col, anchor) => setMenu({ col, anchor })}
           onCellOpen={(value, label) => setPopout({ value, label })}
           getLongest={(colName) => window.api.csv.longest(doc.tabId, colName)}
-          onCellContext={(cell, at) => setCellMenu({ cell, at })}
+          onCellContext={(cell, at, ctxRids) => setCellMenu({ cell, at, tagRids: taggable ? ctxRids : undefined })}
           ensureRange={ensureRange}
           controllerRef={gridRef}
           onReorderColumns={onReorderColumns}
@@ -286,9 +342,12 @@ export function CsvViewer({
           cell={cellMenu.cell}
           at={cellMenu.at}
           defaultMinutes={cellMenu.defaultMinutes}
+          tagRids={cellMenu.tagRids}
+          currentTag={cellMenu.tagRids?.length === 1 ? tags.get(cellMenu.tagRids[0]) : undefined}
           onFilter={applyValueFilter}
           onPickTime={applyTimeAround}
           onPickBound={applyTimeBound}
+          onTag={applyTag}
           onClose={() => setCellMenu(null)}
         />
       )}

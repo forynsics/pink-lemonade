@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Ban, Clock, Filter } from 'lucide-react'
+import { ArrowDown, ArrowUp, Ban, Clock, Filter, Tag, X } from 'lucide-react'
 import type { CellRef } from './VirtualGrid'
+import { TAG_DEFS, type TagId } from '../../state/tags'
 
 // Right-click menu for a grid cell: quick filter-to / exclude the value, plus — when the cell
 // is a time column — a ± window pivot (presets + custom). Also reused to EDIT a ± chip, in
@@ -21,18 +22,27 @@ export function CellContextMenu({
   cell,
   at,
   defaultMinutes,
+  tagRids,
+  currentTag,
   onFilter,
   onPickTime,
   onPickBound,
+  onTag,
   onClose
 }: {
   cell: CellRef
   at: { x: number; y: number }
   /** When set, the menu is editing an existing ± chip — show only the time section, pre-filled. */
   defaultMinutes?: number
+  /** Rows the Tag-as action targets (the clicked row, or a multi-row selection). Empty/undefined
+   *  hides the tag section (e.g. legacy non-workspace tabs). */
+  tagRids?: number[]
+  /** The current tag of the single clicked row (shows a check + enables "Clear tag"). */
+  currentTag?: string
   onFilter: (cell: CellRef, exclude: boolean) => void
   onPickTime: (cell: CellRef, deltaSec: number) => void
   onPickBound: (cell: CellRef, which: 'from' | 'to') => void
+  onTag?: (rids: number[], tag: TagId | null) => void
   onClose: () => void
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
@@ -89,6 +99,27 @@ export function CellContextMenu({
             <Ban className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
             Exclude value
           </button>
+        </>
+      )}
+
+      {!editing && onTag && tagRids && tagRids.length > 0 && (
+        <>
+          <div className="flex items-center gap-1.5 px-3 py-1 border-t border-citrus-border/60 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:border-citrus-night-border/60 dark:text-citrus-night-muted">
+            <Tag className="w-3 h-3" /> {tagRids.length > 1 ? `Tag ${tagRids.length} rows as` : 'Tag row as'}
+          </div>
+          {TAG_DEFS.map((d) => (
+            <button key={d.id} className={item} onClick={() => { onTag(tagRids, d.id); onClose() }}>
+              <span className={`inline-block w-3 h-3 rounded-sm shrink-0 ${d.dot}`} />
+              {d.label}
+              {currentTag === d.id && <span className="ml-auto text-citrus-pink">✓</span>}
+            </button>
+          ))}
+          {currentTag && (
+            <button className={item} onClick={() => { onTag(tagRids, null); onClose() }}>
+              <X className="w-3.5 h-3.5 shrink-0 text-citrus-muted dark:text-citrus-night-muted" />
+              Clear tag
+            </button>
+          )}
         </>
       )}
 

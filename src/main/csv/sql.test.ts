@@ -52,6 +52,18 @@ describe('buildQueryRowsSql', () => {
     expect(params).toEqual([40, MAX_ROWS_LIMIT])
   })
 
+  it('prepends rowid as the leading column when withRowid is set (keyset + filt page)', () => {
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0 }, 'data_3', true).sql).toBe(
+      'SELECT rowid, c0, c1 FROM data_3 WHERE rowid > ? LIMIT ?'
+    )
+    expect(
+      buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ col: 'c0', op: 'eq', value: 'x' }] }, 'data', true).sql
+    ).toBe('SELECT rowid, c0, c1 FROM data WHERE c0 = ? LIMIT ? OFFSET ?')
+    expect(buildFiltPageSql(cols, 0, 200, 'data_2', '_pl_filt_2', true).sql).toBe(
+      'SELECT data_2.rowid, data_2.c0, data_2.c1 FROM _pl_filt_2 JOIN data_2 ON data_2.rowid = _pl_filt_2.rid WHERE _pl_filt_2.rowid > ? ORDER BY _pl_filt_2.rowid LIMIT ?'
+    )
+  })
+
   it('queries a workspace source table (data_<id>) when given one', () => {
     expect(buildQueryRowsSql(cols, { limit: 10, offset: 0 }, 'data_3').sql).toBe(
       'SELECT c0, c1 FROM data_3 WHERE rowid > ? LIMIT ?'

@@ -44,6 +44,13 @@ export interface CsvQueryOpts {
 }
 export interface CsvRowsResult {
   rows: string[][]
+  /** Positional rowid of each row (aligned with `rows`) — row identity for tags + scroll-to-row. */
+  rids: number[]
+}
+/** A row's tag in a source: rid = positional rowid, tag = one of the tag category ids. */
+export interface CsvRowTag {
+  rid: number
+  tag: string
 }
 /** Live progress of a chunked match count (Scale #2). */
 export interface CsvCountProgress {
@@ -84,6 +91,8 @@ export interface CsvApi {
   wsAddSource: (wsId: string, path: string) => Promise<SourceInfo | null>
   wsRename: (wsId: string, name: string) => Promise<null>
   wsRemoveSource: (wsId: string, sourceId: number) => Promise<null>
+  wsTagList: (wsId: string, sourceId: number) => Promise<CsvRowTag[]>
+  wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) => Promise<null>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
   count: (

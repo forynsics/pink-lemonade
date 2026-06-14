@@ -27,6 +27,9 @@ const api = {
     wsAddSource: (wsId: string, path: string) => ipcRenderer.invoke('ws:addSource', { wsId, path }),
     wsRename: (wsId: string, name: string) => ipcRenderer.invoke('ws:rename', { wsId, name }),
     wsRemoveSource: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:removeSource', { wsId, sourceId }),
+    wsTagList: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:tagList', { wsId, sourceId }),
+    wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) =>
+      ipcRenderer.invoke('ws:tagSet', { wsId, sourceId, rids, tag }),
     cancel: (tabId: string) => ipcRenderer.invoke('csv:cancel', { tabId }),
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
     count: (tabId: string, reqId: number, filters?: unknown, search?: string) =>

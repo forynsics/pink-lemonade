@@ -12,6 +12,8 @@ import {
   deleteWorkspace,
   renameWorkspace,
   removeSource,
+  listTags,
+  setTags,
   queryRows,
   ensureSortIndex,
   buildFilterIndex,
@@ -156,6 +158,19 @@ export function registerCsvIpc(): void {
     removeSource(wsId, sourceId)
     return null
   })
+
+  // Row tags: list all tags for a source (renderer caches them in a Map), and set/clear a tag on
+  // a set of rows (single right-click or a multi-row selection). tag === null clears.
+  ipcMain.handle('ws:tagList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    listTags(wsId, sourceId)
+  )
+  ipcMain.handle(
+    'ws:tagSet',
+    (_e, { wsId, sourceId, rids, tag }: { wsId: string; sourceId: number; rids: number[]; tag: string | null }) => {
+      setTags(wsId, sourceId, rids, tag)
+      return null
+    }
+  )
 
   // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".
   ipcMain.handle('csv:open', (_e, { tabId, dbPath }: { tabId: string; dbPath: string }): OpenResult => {

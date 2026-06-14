@@ -295,6 +295,7 @@ export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
   db.exec(
     'CREATE TABLE source_columns (source_id INTEGER, idx INTEGER, name TEXT, original TEXT, time TEXT, PRIMARY KEY(source_id, idx))'
   )
+  db.exec(TAGS_DDL)
   applyQueryPragmas(db)
   workspaces.set(wsId, { db, dbPath, name, nextSourceId: 0 })
   return { wsId, dbPath, name, sources: [] }
@@ -353,6 +354,7 @@ export function openWorkspace(wsId: string, dbPath: string): WorkspaceInfo {
     db.close()
     throw new Error('Not a pink-lemonade workspace')
   }
+  db.exec(TAGS_DDL) // workspaces created before tagging shipped won't have this table yet
   applyQueryPragmas(db)
   const m = Object.fromEntries(metaRows.map((r) => [r.key, r.value]))
   const name = m.name ?? basename(dbPath)
@@ -380,7 +382,7 @@ export function renameWorkspace(wsId: string, name: string): void {
   w.name = name
 }
 
-/** Remove a source (imported file) from a workspace: drop its table + catalog rows. */
+/** Remove a source (imported file) from a workspace: drop its table + catalog rows + tags. */
 export function removeSource(wsId: string, sourceId: number): void {
   const w = workspaces.get(wsId)
   if (!w || !Number.isInteger(sourceId)) return
@@ -388,7 +390,44 @@ export function removeSource(wsId: string, sourceId: number): void {
   w.db.exec(`DROP TABLE IF EXISTS _pl_filt_${sourceId}`)
   w.db.prepare('DELETE FROM sources WHERE id = ?').run(sourceId)
   w.db.prepare('DELETE FROM source_columns WHERE source_id = ?').run(sourceId)
+  w.db.prepare('DELETE FROM tags WHERE source_id = ?').run(sourceId)
   tables.delete(sourceKey(wsId, sourceId))
+}
+
+// ---- Row tags (Phase 2 capstone) ----
+// One row of `tags` per tagged row, keyed by (source_id, positional rowid). Row identity is the
+// rowid of data_<source_id> — stable because the workspace db is never rebuilt (the rows keep
+// their original insert order forever). One tag per row: setting replaces, clearing deletes.
+const TAGS_DDL =
+  'CREATE TABLE IF NOT EXISTS tags (source_id INTEGER NOT NULL, rid INTEGER NOT NULL, tag TEXT NOT NULL, note TEXT, updated_at INTEGER, PRIMARY KEY (source_id, rid))'
+
+/** Every tag in a source, as [rid, tag] pairs — the renderer holds these in a Map for markers. */
+export function listTags(wsId: string, sourceId: number): Array<{ rid: number; tag: string }> {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId)) return []
+  return w.db.prepare('SELECT rid, tag FROM tags WHERE source_id = ?').all(sourceId) as Array<{
+    rid: number
+    tag: string
+  }>
+}
+
+/** Set (or, when tag is null, clear) the tag on a set of rows. Returns the affected tag counts. */
+export function setTags(wsId: string, sourceId: number, rids: number[], tag: string | null): void {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId) || !Array.isArray(rids)) return
+  const ids = rids.filter((r) => Number.isInteger(r))
+  if (ids.length === 0) return
+  if (tag == null) {
+    const del = w.db.prepare('DELETE FROM tags WHERE source_id = ? AND rid = ?')
+    w.db.transaction(() => ids.forEach((r) => del.run(sourceId, r)))()
+  } else {
+    const now = Date.now()
+    const up = w.db.prepare(
+      'INSERT INTO tags (source_id, rid, tag, updated_at) VALUES (?, ?, ?, ?) ' +
+        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at'
+    )
+    w.db.transaction(() => ids.forEach((r) => up.run(sourceId, r, tag, now)))()
+  }
 }
 
 export function closeWorkspace(wsId: string): void {
@@ -481,17 +520,25 @@ function hasPredicate(opts: QueryOpts): boolean {
   return (opts.filters != null && opts.filters.length > 0) || (opts.search != null && opts.search !== '')
 }
 
-export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][] } {
+export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][]; rids: number[] } {
   const e = get(tabId)
   // Fast path for a no-sort filtered/searched view: page the materialized filter index by keyset
   // (O(1) anywhere in the result set) instead of re-scanning the predicate with OFFSET. Used only
   // when the index holds exactly this predicate; otherwise fall back (correct, just slower).
-  if (!opts.sort && hasPredicate(opts) && e.filt?.token === filterToken(opts.filters, opts.search)) {
-    const q = buildFiltPageSql(e.meta.columns, opts.offset, opts.limit, e.table, e.filtTable)
-    return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
+  const q =
+    !opts.sort && hasPredicate(opts) && e.filt?.token === filterToken(opts.filters, opts.search)
+      ? buildFiltPageSql(e.meta.columns, opts.offset, opts.limit, e.table, e.filtTable, true)
+      : buildQueryRowsSql(e.meta.columns, opts, e.table, true)
+  // Each row arrives as [rowid, c0, c1, …]; split the leading rowid off so the cell array the grid
+  // sees is exactly c0..cN (unchanged shape) while `rids` carries the row identity for tags/scroll.
+  const raw = e.db.prepare(q.sql).raw(true).all(...q.params) as unknown[][]
+  const rows: string[][] = new Array(raw.length)
+  const rids: number[] = new Array(raw.length)
+  for (let i = 0; i < raw.length; i++) {
+    rids[i] = raw[i][0] as number
+    rows[i] = raw[i].slice(1) as string[]
   }
-  const q = buildQueryRowsSql(e.meta.columns, opts, e.table)
-  return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
+  return { rows, rids }
 }
 
 // Below this many rows an unindexed sort is already fast enough that an index isn't worth building.

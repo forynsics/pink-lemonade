@@ -15,6 +15,7 @@ const MAX_WINDOW = 1000
 
 interface WindowState {
   rows: string[][]
+  rids: number[]
   baseOffset: number
   key: string
 }
@@ -27,6 +28,7 @@ export function useCsvQuery(
   search: string
 ): {
   rows: string[][]
+  rids: number[]
   baseOffset: number
   total: number
   counting: boolean
@@ -35,7 +37,7 @@ export function useCsvQuery(
   ensureRange: (first: number, last: number) => void
 } {
   const key = JSON.stringify({ sort, filters, search })
-  const [state, setState] = useState<WindowState>({ rows: [], baseOffset: 0, key: '' })
+  const [state, setState] = useState<WindowState>({ rows: [], rids: [], baseOffset: 0, key: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const reqId = useRef(0)
@@ -50,7 +52,7 @@ export function useCsvQuery(
         .query(tabId, { sort, filters, search, offset, limit })
         .then((res) => {
           if (id !== reqId.current) return // a newer request superseded this one
-          setState({ rows: res.rows, baseOffset: offset, key })
+          setState({ rows: res.rows, rids: res.rids ?? [], baseOffset: offset, key })
           setError(undefined)
         })
         .catch((e) => {
@@ -128,5 +130,5 @@ export function useCsvQuery(
   const loadedEnd = state.baseOffset + state.rows.length
   const total = hasPredicate ? Math.max(countTotal, loadedEnd) : rowCount
 
-  return { rows: state.rows, baseOffset: state.baseOffset, total, counting, loading, error, ensureRange }
+  return { rows: state.rows, rids: state.rids, baseOffset: state.baseOffset, total, counting, loading, error, ensureRange }
 }

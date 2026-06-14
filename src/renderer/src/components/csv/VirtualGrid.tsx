@@ -2,6 +2,7 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState 
 import { ArrowDown, ArrowUp, Clock, MoreVertical } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
+import { tagDef } from '../../state/tags'
 
 export interface CellRef {
   colName: string
@@ -96,6 +97,8 @@ function rect(sel: Selection): { minR: number; maxR: number; minC: number; maxC:
 export function VirtualGrid({
   columns,
   rows,
+  rids,
+  tags,
   baseOffset,
   total,
   sort,
@@ -112,6 +115,10 @@ export function VirtualGrid({
 }: {
   columns: CsvColumn[]
   rows: string[][]
+  /** Positional rowid of each loaded row (aligned with `rows`) — identity for tags + scroll. */
+  rids: number[]
+  /** Map of rowid → tag id; drives the colored left marker. Undefined when the source is untagged. */
+  tags?: Map<number, string>
   baseOffset: number
   total: number
   sort?: CsvSort
@@ -124,8 +131,12 @@ export function VirtualGrid({
   onCellOpen: (value: string, label: string) => void
   /** Fetch a column's longest value (whole table) for double-click auto-fit. */
   getLongest: (colName: string) => Promise<string>
-  /** Right-clicking any cell opens the cell menu (filter/exclude, + time pivots if applicable). */
-  onCellContext: (cell: CellRef, at: { x: number; y: number }) => void
+  /**
+   * Right-clicking any cell opens the cell menu (filter/exclude, + time pivots if applicable).
+   * `rids` are the rows a Tag-as action should hit: the clicked row, or — when the click lands
+   * inside a multi-row selection — every loaded row in that selection.
+   */
+  onCellContext: (cell: CellRef, at: { x: number; y: number }, rids: number[]) => void
   ensureRange: (first: number, last: number) => void
   /** Parent ref for imperative control (scroll-to-match). */
   controllerRef?: React.Ref<VirtualGridHandle>
@@ -344,11 +355,25 @@ export function VirtualGrid({
       const value = rows[r - baseOffset]?.[dataIdx[c]]
       if (col == null || value == null) return
       e.preventDefault()
-      setSel({ anchor: { r, c }, focus: { r, c } }) // highlight what we're acting on
+      // If the right-click lands inside a multi-row selection, the Tag-as action targets every
+      // loaded row in that selection; otherwise just this row (and we re-anchor onto it).
+      const sr = sel ? rect(sel) : null
+      let ctxRids: number[]
+      if (sr && sr.maxR > sr.minR && r >= sr.minR && r <= sr.maxR) {
+        ctxRids = []
+        for (let rr = sr.minR; rr <= sr.maxR; rr++) {
+          const rid = rids[rr - baseOffset]
+          if (rid != null) ctxRids.push(rid)
+        }
+      } else {
+        setSel({ anchor: { r, c }, focus: { r, c } }) // highlight what we're acting on
+        const rid = rids[r - baseOffset]
+        ctxRids = rid != null ? [rid] : []
+      }
       const tkind = col.time ?? classifyCellTime(value) ?? undefined
-      onCellContext({ colName: col.name, original: col.original, value, tkind }, { x: e.clientX, y: e.clientY })
+      onCellContext({ colName: col.name, original: col.original, value, tkind }, { x: e.clientX, y: e.clientY }, ctxRids)
     },
-    [columns, rows, baseOffset, dataIdx, onCellContext]
+    [columns, rows, rids, baseOffset, dataIdx, sel, onCellContext]
   )
 
   // Ensure the initial viewport is loaded once the row count is known / on resize.
@@ -441,12 +466,19 @@ export function VirtualGrid({
       <div style={{ height: Math.max(total, 1) * ROW_H, width: totalWidth, position: 'relative' }}>
         {rows.map((row, i) => {
           const abs = baseOffset + i
+          const tag = tags && rids[i] != null ? tagDef(tags.get(rids[i])) : undefined
           return (
             <div
               key={abs}
               className="flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30"
               style={{ position: 'absolute', top: abs * ROW_H, height: ROW_H, width: totalWidth }}
             >
+              {tag && (
+                <div
+                  className={`absolute left-0 top-0 h-full w-[3px] ${tag.bar}`}
+                  title={tag.label}
+                />
+              )}
               <div
                 className="shrink-0 flex items-center justify-end pr-2 text-[10px] text-citrus-muted/70 select-none cursor-pointer hover:text-citrus-pink dark:text-citrus-night-muted/70"
                 style={{ width: IDX_W }}

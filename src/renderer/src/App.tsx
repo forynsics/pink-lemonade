@@ -306,30 +306,39 @@ export default function App(): JSX.Element {
               }}
             />
           )}
-          {!home &&
-            active.kind === 'csv' &&
-            (active.needsReopen ? (
-              <CsvPlaceholder doc={active} onReopen={reopenCsv} />
-            ) : (
-              <CsvViewer doc={active} onPivot={pivotToScratch} onReorderColumns={reorderCsvColumns} />
-            ))}
-          {/* Every scratch doc keeps its own mounted editor (hidden when inactive) so caret,
-              scroll, and find state survive tab switches and CSV detours. */}
-          {docs.map((d) =>
-            d.kind === 'scratch' ? (
-              <ScratchEditor
+          {/* Every doc keeps its own mounted view (hidden when inactive) so editor/viewer state —
+              notepad caret/scroll/find, CSV filters/search/sort/scroll — survives tab switches. */}
+          {docs.map((d) => {
+            const visible = !home && active.id === d.id
+            if (d.kind === 'scratch') {
+              return (
+                <ScratchEditor
+                  key={d.id}
+                  doc={d}
+                  visible={visible}
+                  onInput={(v) => patchScratchById(d.id, { input: v })}
+                  onRemoveStep={removeStep}
+                  onMoveStep={moveStep}
+                  onUpdateOptions={updateOptions}
+                  onToggleStepEnabled={toggleStepEnabled}
+                  onClearSteps={() => patchScratch({ steps: [] })}
+                />
+              )
+            }
+            return (
+              <div
                 key={d.id}
-                doc={d}
-                visible={!home && active.kind === 'scratch' && active.id === d.id}
-                onInput={(v) => patchScratchById(d.id, { input: v })}
-                onRemoveStep={removeStep}
-                onMoveStep={moveStep}
-                onUpdateOptions={updateOptions}
-                onToggleStepEnabled={toggleStepEnabled}
-                onClearSteps={() => patchScratch({ steps: [] })}
-              />
-            ) : null
-          )}
+                className="flex flex-col flex-1 min-h-0"
+                style={{ display: visible ? 'flex' : 'none' }}
+              >
+                {d.needsReopen ? (
+                  <CsvPlaceholder doc={d} onReopen={reopenCsv} />
+                ) : (
+                  <CsvViewer doc={d} onPivot={pivotToScratch} onReorderColumns={reorderCsvColumns} />
+                )}
+              </div>
+            )
+          })}
         </main>
       </div>
 

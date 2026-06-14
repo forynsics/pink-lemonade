@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 // A textarea with a greyed line-number gutter (non-selectable, not part of the text)
 // and a live "words · chars" count in the bottom-right corner.
@@ -39,22 +39,34 @@ function countWords(s: string): number {
   return t === '' ? 0 : t.split(/\s+/).length
 }
 
-export function CodeArea({
-  value,
-  onChange,
-  wrap,
-  placeholder,
-  className = '',
-  readOnly = false
-}: {
+interface CodeAreaProps {
   value: string
   onChange?: (v: string) => void
   wrap: boolean
   placeholder?: string
   className?: string
   readOnly?: boolean
-}): JSX.Element {
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  /** Highlight every occurrence of `term` (Ctrl+F find); `active` is the char offset of the
+   *  currently-focused match, shown in a stronger colour. Skipped on very large files. */
+  highlight?: { term: string; active: number }
+}
+
+// forwardRef exposes the underlying <textarea> (for the Notepad's Ctrl+F find, which drives
+// native selection/scroll) while CodeArea keeps using it internally for measuring.
+export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function CodeArea(
+  { value, onChange, wrap, placeholder, className = '', readOnly = false, highlight },
+  externalRef
+): JSX.Element {
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
+  const backdropRef = useRef<HTMLDivElement>(null)
+  const setTa = useCallback(
+    (el: HTMLTextAreaElement | null) => {
+      taRef.current = el
+      if (typeof externalRef === 'function') externalRef(el)
+      else if (externalRef) (externalRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
+    },
+    [externalRef]
+  )
   const gutterRef = useRef<HTMLDivElement>(null)
   const mirrorRef = useRef<HTMLDivElement>(null)
   const rafId = useRef(0)
@@ -75,6 +87,39 @@ export function CodeArea({
 
   // Only split into per-line nodes in pretty mode — the split itself is O(n) on huge files.
   const prettyLines = useMemo(() => (perf ? null : value.split('\n')), [perf, value])
+
+  // Find-highlight backdrop nodes: the full text with each match wrapped in <mark>. Skipped in
+  // perf mode (huge files) — selection-scroll still works there, just without the colour overlay.
+  const term = highlight?.term ?? ''
+  const highlightNodes = useMemo(() => {
+    if (perf || term === '') return null
+    const hay = value
+    const lower = hay.toLowerCase()
+    const needle = term.toLowerCase()
+    const nodes: (string | JSX.Element)[] = []
+    let from = 0
+    let i = lower.indexOf(needle)
+    if (i === -1) return null
+    let k = 0
+    while (i !== -1) {
+      if (i > from) nodes.push(hay.slice(from, i))
+      const isActive = i === highlight?.active
+      nodes.push(
+        <mark
+          key={k++}
+          data-active={isActive || undefined}
+          className={isActive ? 'bg-citrus-pink/60 text-transparent' : 'bg-citrus-yellow/60 text-transparent'}
+        >
+          {hay.slice(i, i + needle.length)}
+        </mark>
+      )
+      from = i + needle.length
+      i = lower.indexOf(needle, from)
+    }
+    // Trailing text (plus a newline so the backdrop's last line matches the textarea's height).
+    nodes.push(hay.slice(from) + '\n')
+    return nodes
+  }, [perf, term, value, highlight?.active])
 
   const digits = String(lineCount).length
   const gutterW = Math.ceil(digits * 7.5) + 14
@@ -125,6 +170,11 @@ export function CodeArea({
   const onScroll = useCallback(() => {
     const ta = taRef.current
     if (!ta) return
+    const bd = backdropRef.current
+    if (bd) {
+      bd.scrollTop = ta.scrollTop
+      bd.scrollLeft = ta.scrollLeft
+    }
     if (perf) {
       // rAF-throttle: one state update per frame during fast scrolls.
       if (rafId.current) return
@@ -146,6 +196,35 @@ export function CodeArea({
     const g = gutterRef.current
     if (ta && g) g.style.transform = `translateY(${-ta.scrollTop}px)`
   }, [perf, value, heights])
+
+  // Scroll the active find match into view (Ctrl+F "next"). The backdrop lays matches out exactly
+  // like the textarea, so we read the active <mark>'s measured position; in perf mode (no backdrop,
+  // wrap forced off) we derive it from the line index. Only scrolls when it's outside the viewport.
+  useLayoutEffect(() => {
+    const ta = taRef.current
+    if (!ta || !highlight || highlight.active < 0 || highlight.term === '') return
+    let cTop: number
+    const mark = backdropRef.current?.querySelector('mark[data-active]') as HTMLElement | null
+    if (mark) {
+      cTop = mark.offsetTop
+    } else {
+      let line = 0
+      for (let j = 0; j < highlight.active && j < value.length; j++) {
+        if (value.charCodeAt(j) === 10) line++
+      }
+      cTop = PAD + line * LH
+    }
+    const viewTop = ta.scrollTop
+    if (cTop < viewTop + PAD || cTop + LH > viewTop + ta.clientHeight - PAD) {
+      ta.scrollTop = Math.max(0, cTop - ta.clientHeight / 2)
+      const bd = backdropRef.current
+      if (bd) {
+        bd.scrollTop = ta.scrollTop
+        bd.scrollLeft = ta.scrollLeft
+      }
+      if (perf) setScrollTop(ta.scrollTop) // keep the perf gutter window in sync
+    }
+  }, [highlight, value, perf])
 
   // Perf-mode visible window [first, last] of 0-based line indices.
   const first = Math.max(0, Math.floor((scrollTop - PAD) / LH) - OVERSCAN)
@@ -212,8 +291,30 @@ export function CodeArea({
         </div>
       )}
 
+      {/* find-highlight backdrop: same text/box as the textarea, behind it, scroll-synced.
+          The textarea is transparent on top so its real glyphs show over the <mark> bands. */}
+      {highlightNodes && (
+        <div
+          ref={backdropRef}
+          aria-hidden
+          className={`absolute left-0 top-0 bottom-0 overflow-hidden pointer-events-none font-mono text-xs leading-5 text-transparent ${wrapClass}`}
+          style={{
+            // Match the textarea's CONTENT width (clientWidth excludes the vertical scrollbar) so
+            // wrapping lines up exactly; using full width would wrap later than the textarea does.
+            width: clientW || '100%',
+            boxSizing: 'border-box',
+            paddingTop: PAD,
+            paddingBottom: PAD,
+            paddingRight: PAD,
+            paddingLeft: padLeft
+          }}
+        >
+          {highlightNodes}
+        </div>
+      )}
+
       <textarea
-        ref={taRef}
+        ref={setTa}
         className={`absolute inset-0 h-full w-full resize-none bg-transparent font-mono text-xs leading-5 text-citrus-dark outline-none dark:text-citrus-night-text ${wrapClass} ${
           effectiveWrap ? 'overflow-x-hidden' : 'overflow-x-auto'
         } ${className}`}
@@ -233,4 +334,4 @@ export function CodeArea({
       </div>
     </div>
   )
-}
+})

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Copy, Download, FolderOpen, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, FolderOpen, Loader2, Search, X } from 'lucide-react'
 import type { WorkflowResult } from '../state/workflow'
 import { iocMetrics, type IocMetrics } from '../state/metrics'
 import { CodeArea } from './CodeArea'
@@ -50,6 +50,78 @@ export function Workbench({
 
   const out = result.output
   const iocTooBig = out.length > METRICS_MAX
+
+  // --- Ctrl+F find (searches whichever pane had focus when invoked) ---
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const outputRef = useRef<HTMLTextAreaElement>(null)
+  const findInputRef = useRef<HTMLInputElement>(null)
+  const [find, setFind] = useState<{ target: 'input' | 'output' } | null>(null)
+  const [findTerm, setFindTerm] = useState('')
+  const [matchIdx, setMatchIdx] = useState(0)
+
+  const targetText = find?.target === 'output' ? out : input
+  const matches = useMemo(() => {
+    if (!find || findTerm === '') return []
+    const res: number[] = []
+    const hay = targetText.toLowerCase()
+    const needle = findTerm.toLowerCase()
+    let i = hay.indexOf(needle)
+    while (i !== -1) {
+      res.push(i)
+      i = hay.indexOf(needle, i + needle.length)
+    }
+    return res
+  }, [find, findTerm, targetText])
+
+  // Select the match in the target textarea (shown greyed since focus stays in the find box);
+  // CodeArea scrolls the active match into view off the highlight prop. Find input keeps focus
+  // so Enter keeps stepping.
+  const selectMatch = useCallback(
+    (i: number) => {
+      if (!find || i < 0 || i >= matches.length) return
+      const ta = find.target === 'output' ? outputRef.current : inputRef.current
+      if (!ta) return
+      const start = matches[i]
+      ta.setSelectionRange(start, start + findTerm.length)
+    },
+    [find, matches, findTerm]
+  )
+
+  function stepFind(dir: 1 | -1): void {
+    if (matches.length === 0) return
+    const next = (matchIdx + dir + matches.length) % matches.length
+    setMatchIdx(next)
+    selectMatch(next)
+  }
+
+  function closeFind(): void {
+    setFind(null)
+    setFindTerm('')
+    setMatchIdx(0)
+  }
+
+  // As the term (or target text) changes, jump to the first match.
+  useEffect(() => {
+    if (!find || matches.length === 0) return
+    setMatchIdx(0)
+    selectMatch(0)
+  }, [matches]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Ctrl/Cmd+F opens the find bar over the focused pane (this component only mounts for the
+  // notepad, so the listener is naturally scoped to it).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F'))) return
+      e.preventDefault()
+      setFind((cur) => {
+        if (cur) return cur // already open — keep current target
+        return { target: document.activeElement === outputRef.current ? 'output' : 'input' }
+      })
+      requestAnimationFrame(() => findInputRef.current?.select())
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // A fresh output invalidates any on-demand IOC count.
   useEffect(() => setManualIoc(null), [out])
@@ -102,7 +174,55 @@ export function Workbench({
   }
 
   return (
-    <div className="flex-1 grid grid-cols-2 gap-3 p-3 min-h-0 bg-citrus-cream/30 dark:bg-citrus-night">
+    <div className="relative flex-1 grid grid-cols-2 gap-3 p-3 min-h-0 bg-citrus-cream/30 dark:bg-citrus-night">
+      {find && (
+        <div className="find-bar absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-lg border border-citrus-border bg-citrus-card px-2.5 py-1.5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
+          <Search className="w-3.5 h-3.5 text-citrus-muted dark:text-citrus-night-muted" />
+          <span className="text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
+            {find.target}
+          </span>
+          <input
+            ref={findInputRef}
+            autoFocus
+            value={findTerm}
+            onChange={(e) => setFindTerm(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') closeFind()
+              else if (e.key === 'Enter') {
+                e.preventDefault()
+                stepFind(e.shiftKey ? -1 : 1)
+              }
+            }}
+            placeholder="Find…"
+            spellCheck={false}
+            className="w-44 px-1.5 py-0.5 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
+          />
+          <span className="text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted whitespace-nowrap min-w-[44px] text-center">
+            {findTerm === '' ? '' : matches.length === 0 ? 'none' : `${matchIdx + 1} / ${matches.length}`}
+          </span>
+          <button
+            onClick={() => stepFind(-1)}
+            title="Previous (Shift+Enter)"
+            className="text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          >
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => stepFind(1)}
+            title="Next (Enter)"
+            className="text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={closeFind}
+            title="Close (Esc)"
+            className="text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       {/* INPUT */}
       <div className={cardClass}>
         <div className="flex items-center justify-between mb-2">
@@ -126,11 +246,13 @@ export function Workbench({
           <div className="mb-2 text-[11px] font-medium text-citrus-pink-hover">{loadError}</div>
         )}
         <CodeArea
+          ref={inputRef}
           className="pane__text"
           value={input}
           onChange={onInput}
           wrap={wrap}
           placeholder="Paste data here…"
+          highlight={find?.target === 'input' ? { term: findTerm, active: matches[matchIdx] ?? -1 } : undefined}
         />
         {loading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-citrus-cream/70 backdrop-blur-sm dark:bg-citrus-night/70">
@@ -175,11 +297,13 @@ export function Workbench({
           <div className="mb-2 text-[11px] font-medium text-citrus-pink-hover">{result.error}</div>
         )}
         <CodeArea
+          ref={outputRef}
           className="pane__text pane__text--out"
           value={out}
           wrap={wrap}
           readOnly
           placeholder="Output appears here."
+          highlight={find?.target === 'output' ? { term: findTerm, active: matches[matchIdx] ?? -1 } : undefined}
         />
         {/* slim IOC counts */}
         <div className="mt-2 pt-2 border-t border-citrus-border/40 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono dark:border-citrus-night-border/40">

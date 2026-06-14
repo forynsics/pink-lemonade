@@ -19,6 +19,12 @@ const api = {
     ingest: (tabId: string, path: string) => ipcRenderer.invoke('csv:ingest', { tabId, path }),
     open: (tabId: string, dbPath: string) => ipcRenderer.invoke('csv:open', { tabId, dbPath }),
     deleteDb: (dbPath: string) => ipcRenderer.invoke('csv:deleteDb', { dbPath }),
+    // Workspaces (capstone): one db holds many sources.
+    wsCreate: (wsId: string, name: string) => ipcRenderer.invoke('ws:create', { wsId, name }),
+    wsOpen: (wsId: string, dbPath: string) => ipcRenderer.invoke('ws:open', { wsId, dbPath }),
+    wsClose: (wsId: string) => ipcRenderer.invoke('ws:close', { wsId }),
+    wsDelete: (dbPath: string) => ipcRenderer.invoke('ws:delete', { dbPath }),
+    wsAddSource: (wsId: string, path: string) => ipcRenderer.invoke('ws:addSource', { wsId, path }),
     cancel: (tabId: string) => ipcRenderer.invoke('csv:cancel', { tabId }),
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
     count: (tabId: string, reqId: number, filters?: unknown, search?: string) =>

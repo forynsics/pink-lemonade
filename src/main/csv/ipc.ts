@@ -5,6 +5,11 @@ import {
   ingestCsv,
   openDb,
   deleteDb,
+  createWorkspace,
+  addSource,
+  openWorkspace,
+  closeWorkspace,
+  deleteWorkspace,
   queryRows,
   ensureSortIndex,
   buildFilterIndex,
@@ -14,7 +19,8 @@ import {
   getColumnValues,
   getColumnStats,
   closeTab,
-  CsvIngestCanceled
+  CsvIngestCanceled,
+  type SourceInfo
 } from './db'
 import type { Filter, QueryOpts, Sort } from './sql'
 
@@ -122,6 +128,25 @@ export function registerCsvIpc(): void {
     return null
   })
 
+  // ---- Workspaces (capstone): one db holds many sources ----
+  ipcMain.handle('ws:create', (_e, { wsId, name }: { wsId: string; name: string }) =>
+    createWorkspace(wsId, name)
+  )
+  ipcMain.handle('ws:open', (_e, { wsId, dbPath }: { wsId: string; dbPath: string }) =>
+    openWorkspace(wsId, dbPath)
+  )
+  ipcMain.handle('ws:close', (_e, { wsId }: { wsId: string }) => {
+    closeWorkspace(wsId)
+    return null
+  })
+  ipcMain.handle('ws:delete', (_e, { dbPath }: { dbPath: string }) => {
+    deleteWorkspace(dbPath)
+    return null
+  })
+  ipcMain.handle('ws:addSource', (e, { wsId, path }: { wsId: string; path: string }) =>
+    doAddSource(e.sender, wsId, path)
+  )
+
   // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".
   ipcMain.handle('csv:open', (_e, { tabId, dbPath }: { tabId: string; dbPath: string }): OpenResult => {
     const meta = openDb(tabId, dbPath)
@@ -197,6 +222,32 @@ async function doIngest(sender: WebContents, tabId: string, filePath: string): P
     throw e
   } finally {
     controllers.delete(tabId)
+  }
+}
+
+/** Ingest a CSV as a new source in an open workspace; progress is keyed on the workspace id. */
+async function doAddSource(sender: WebContents, wsId: string, filePath: string): Promise<SourceInfo | null> {
+  const controller = new AbortController()
+  controllers.set(wsId, controller)
+  try {
+    const src = await addSource({
+      wsId,
+      filePath,
+      sourceName: basename(filePath),
+      signal: controller.signal,
+      onProgress: (p) => {
+        if (!sender.isDestroyed()) sender.send('csv:progress', { tabId: wsId, ...p, phase: 'parsing' })
+      }
+    })
+    if (!sender.isDestroyed()) {
+      sender.send('csv:progress', { tabId: wsId, bytes: 0, rows: src.rowCount, total: 0, phase: 'done' })
+    }
+    return src
+  } catch (e) {
+    if (e instanceof CsvIngestCanceled) return null
+    throw e
+  } finally {
+    controllers.delete(wsId)
   }
 }
 

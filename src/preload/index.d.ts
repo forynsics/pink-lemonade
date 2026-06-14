@@ -11,6 +11,20 @@ export interface CsvOpenResult {
   rowCount: number
   dbPath: string
 }
+/** A source (an imported CSV) inside a workspace. */
+export interface SourceInfo {
+  sourceId: number
+  name: string
+  columns: CsvColumn[]
+  rowCount: number
+}
+/** An open workspace and its sources (capstone). */
+export interface WorkspaceInfo {
+  wsId: string
+  dbPath: string
+  name: string
+  sources: SourceInfo[]
+}
 export interface CsvSort {
   col: string
   dir: 'asc' | 'desc'
@@ -63,6 +77,11 @@ export interface CsvApi {
   ingest: (tabId: string, path: string) => Promise<CsvOpenResult | null>
   open: (tabId: string, dbPath: string) => Promise<CsvOpenResult>
   deleteDb: (dbPath: string) => Promise<null>
+  wsCreate: (wsId: string, name: string) => Promise<WorkspaceInfo>
+  wsOpen: (wsId: string, dbPath: string) => Promise<WorkspaceInfo>
+  wsClose: (wsId: string) => Promise<null>
+  wsDelete: (dbPath: string) => Promise<null>
+  wsAddSource: (wsId: string, path: string) => Promise<SourceInfo | null>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
   count: (

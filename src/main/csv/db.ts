@@ -62,6 +62,30 @@ interface Entry {
   // source) and its materialized-filter table — so one connection can serve many source tables.
   table: string
   filtTable: string
+  // Whether this entry owns its db connection (legacy single-file) or shares the workspace's
+  // connection (a workspace source) — the latter is closed by closeWorkspace, not closeTab.
+  ownsDb: boolean
+}
+
+interface Workspace {
+  db: Database.Database
+  dbPath: string
+  name: string
+  nextSourceId: number
+}
+const workspaces = new Map<string, Workspace>() // wsId -> open workspace
+
+export interface SourceInfo {
+  sourceId: number
+  name: string
+  columns: ColumnMap[]
+  rowCount: number
+}
+export interface WorkspaceInfo {
+  wsId: string
+  dbPath: string
+  name: string
+  sources: SourceInfo[]
 }
 
 const TEMP_PREFIX = 'pl_csv_' // legacy temp-db prefix (older builds) — still swept at startup
@@ -96,16 +120,15 @@ function applyQueryPragmas(db: Database.Database): void {
   db.pragma('mmap_size = 536870912') // 512 MB
 }
 
-/** Stream a CSV from disk into a fresh persistent SQLite db (userData/sessions) and register it. */
-export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
-  const { tabId, filePath, sourceName } = args
-  closeTab(tabId) // drop any prior connection reusing this id
-
-  const dbPath = sessionDbPath(tabId)
-  removeDbFiles(dbPath) // a fresh import starts from a clean file (the path is reused per tabId)
-  const db = new Database(dbPath)
-  applyImportPragmas(db)
-
+/** Stream a CSV from disk into `table` of an (open) db. Returns the detected columns + row count.
+ *  Shared by the legacy single-file ingest and workspace addSource. */
+async function ingestInto(
+  db: Database.Database,
+  table: string,
+  filePath: string,
+  onProgress: ((p: { bytes: number; rows: number; total: number }) => void) | undefined,
+  signal: AbortSignal | undefined
+): Promise<{ columns: ColumnMap[]; rowCount: number }> {
   let columns: ColumnMap[] = []
   let numCols = 0
   let multiN = 0
@@ -134,48 +157,62 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
     for (; i < rows.length; i++) insertOne!.run(rows[i])
   })
 
-  try {
-    const res = await parseCsvStream(
-      filePath,
-      {
-        onHeader: ({ columns: cols }) => {
-          columns = cols
-          numCols = cols.length
-          for (let c = 0; c < numCols; c++) samples.push([])
-          db.exec(buildCreateTable(cols))
-          multiN = maxRowsPerInsert(numCols)
-          insertMulti = db.prepare(buildInsertSql(cols, multiN))
-          insertOne = db.prepare(buildInsertSql(cols, 1))
-          flat = new Array(multiN * numCols)
-        },
-        onRows: (batch) => {
-          for (const row of batch) {
-            if (row.length < numCols) while (row.length < numCols) row.push('')
-            else if (row.length > numCols) row.length = numCols
-          }
-          if (sampled < SAMPLE_ROWS) {
-            for (const row of batch) {
-              if (sampled >= SAMPLE_ROWS) break
-              for (let c = 0; c < numCols; c++) samples[c].push(row[c] ?? '')
-              sampled++
-            }
-          }
-          insertBatch(batch)
-          rowCount += batch.length
-        },
-        onProgress: (bytes, rows) => args.onProgress?.({ bytes, rows, total })
+  const res = await parseCsvStream(
+    filePath,
+    {
+      onHeader: ({ columns: cols }) => {
+        columns = cols
+        numCols = cols.length
+        for (let c = 0; c < numCols; c++) samples.push([])
+        db.exec(buildCreateTable(cols, table))
+        multiN = maxRowsPerInsert(numCols)
+        insertMulti = db.prepare(buildInsertSql(cols, multiN, table))
+        insertOne = db.prepare(buildInsertSql(cols, 1, table))
+        flat = new Array(multiN * numCols)
       },
-      { signal: args.signal }
-    )
+      onRows: (batch) => {
+        for (const row of batch) {
+          if (row.length < numCols) while (row.length < numCols) row.push('')
+          else if (row.length > numCols) row.length = numCols
+        }
+        if (sampled < SAMPLE_ROWS) {
+          for (const row of batch) {
+            if (sampled >= SAMPLE_ROWS) break
+            for (let c = 0; c < numCols; c++) samples[c].push(row[c] ?? '')
+            sampled++
+          }
+        }
+        insertBatch(batch)
+        rowCount += batch.length
+      },
+      onProgress: (bytes, rows) => onProgress?.({ bytes, rows, total })
+    },
+    { signal }
+  )
 
-    if (res.canceled) throw new CsvIngestCanceled()
-    if (columns.length === 0) throw new Error('No header row found in file')
+  if (res.canceled) throw new CsvIngestCanceled()
+  if (columns.length === 0) throw new Error('No header row found in file')
 
-    // Tag detected time columns from the sampled rows.
-    columns = columns.map((c, i) => {
-      const kind = detectColumnTime(samples[i] ?? [], c.original)
-      return kind ? { ...c, time: kind } : c
-    })
+  // Tag detected time columns from the sampled rows.
+  columns = columns.map((c, i) => {
+    const kind = detectColumnTime(samples[i] ?? [], c.original)
+    return kind ? { ...c, time: kind } : c
+  })
+  return { columns, rowCount }
+}
+
+/** Stream a CSV from disk into a fresh persistent SQLite db (userData/sessions) and register it. */
+export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
+  const { tabId, filePath, sourceName } = args
+  closeTab(tabId) // drop any prior connection reusing this id
+
+  const dbPath = sessionDbPath(tabId)
+  removeDbFiles(dbPath) // a fresh import starts from a clean file (the path is reused per tabId)
+  const db = new Database(dbPath)
+  applyImportPragmas(db)
+
+  try {
+    const { columns, rowCount } = await ingestInto(db, 'data', filePath, args.onProgress, args.signal)
 
     // Make the db self-describing (Slice A): so reopening the bare .db reconstructs the view
     // without the original CSV, and "Open Database…" can validate it's a pink-lemonade db.
@@ -183,7 +220,7 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
 
     applyQueryPragmas(db)
     const meta: CsvTableMeta = { tabId, dbPath, sourceName, columns, rowCount }
-    tables.set(tabId, { db, meta, indexes: new Set(), table: 'data', filtTable: FILT_TABLE })
+    tables.set(tabId, { db, meta, indexes: new Set(), table: 'data', filtTable: FILT_TABLE, ownsDb: true })
     return meta
   } catch (e) {
     try {
@@ -201,6 +238,156 @@ export class CsvIngestCanceled extends Error {
     super('CSV ingest canceled')
     this.name = 'CsvIngestCanceled'
   }
+}
+
+// ---- Workspaces (capstone): one db file holds many sources as data_<id> tables ----
+
+function workspacesDir(): string {
+  const dir = join(app.getPath('userData'), 'workspaces')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+function workspaceDbPath(wsId: string): string {
+  return join(workspacesDir(), `${safe(wsId)}.workspace`)
+}
+
+/** Composite key a workspace source is registered/queried under (used as `tabId` by the query IPC). */
+export function sourceKey(wsId: string, sourceId: number): string {
+  return `${wsId}:${sourceId}`
+}
+
+/** Register a source as a query entry sharing the workspace's connection (it doesn't own it). */
+function registerSource(
+  wsId: string,
+  sourceId: number,
+  sourceName: string,
+  columns: ColumnMap[],
+  rowCount: number,
+  db: Database.Database,
+  dbPath: string
+): void {
+  const meta: CsvTableMeta = { tabId: sourceKey(wsId, sourceId), dbPath, sourceName, columns, rowCount }
+  tables.set(sourceKey(wsId, sourceId), {
+    db,
+    meta,
+    indexes: new Set(),
+    table: `data_${sourceId}`,
+    filtTable: `_pl_filt_${sourceId}`,
+    ownsDb: false
+  })
+}
+
+/** Create a fresh workspace db (catalog tables only) and register it open. */
+export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
+  closeWorkspace(wsId)
+  const dbPath = workspaceDbPath(wsId)
+  removeDbFiles(dbPath)
+  const db = new Database(dbPath)
+  applyImportPragmas(db) // sets page_size before any table is created
+  db.exec('CREATE TABLE ws_meta (key TEXT PRIMARY KEY, value TEXT)')
+  const setMeta = db.prepare('INSERT OR REPLACE INTO ws_meta (key, value) VALUES (?, ?)')
+  setMeta.run('name', name)
+  setMeta.run('version', String(SCHEMA_VERSION))
+  setMeta.run('created_at', String(Date.now()))
+  db.exec(
+    'CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT, original_path TEXT, row_count INTEGER, num_cols INTEGER, added_at INTEGER)'
+  )
+  db.exec(
+    'CREATE TABLE source_columns (source_id INTEGER, idx INTEGER, name TEXT, original TEXT, time TEXT, PRIMARY KEY(source_id, idx))'
+  )
+  applyQueryPragmas(db)
+  workspaces.set(wsId, { db, dbPath, name, nextSourceId: 0 })
+  return { wsId, dbPath, name, sources: [] }
+}
+
+/** Ingest a CSV as a new source (data_<id>) in an open workspace; updates the catalog. */
+export async function addSource(args: {
+  wsId: string
+  filePath: string
+  sourceName: string
+  onProgress?: (p: { bytes: number; rows: number; total: number }) => void
+  signal?: AbortSignal
+}): Promise<SourceInfo> {
+  const w = workspaces.get(args.wsId)
+  if (!w) throw new Error(`Workspace not open: ${args.wsId}`)
+  const sourceId = w.nextSourceId
+  w.db.pragma('journal_mode = OFF')
+  w.db.pragma('synchronous = OFF')
+  let columns: ColumnMap[]
+  let rowCount: number
+  try {
+    ;({ columns, rowCount } = await ingestInto(w.db, `data_${sourceId}`, args.filePath, args.onProgress, args.signal))
+  } catch (e) {
+    try {
+      w.db.exec(`DROP TABLE IF EXISTS data_${sourceId}`)
+    } catch {
+      /* ignore */
+    }
+    w.db.pragma('journal_mode = WAL')
+    w.db.pragma('synchronous = NORMAL')
+    throw e
+  }
+  w.db.pragma('journal_mode = WAL')
+  w.db.pragma('synchronous = NORMAL')
+  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time) VALUES (?, ?, ?, ?, ?)')
+  w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null)))()
+  w.db
+    .prepare('INSERT INTO sources (id, name, original_path, row_count, num_cols, added_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(sourceId, args.sourceName, args.filePath, rowCount, columns.length, Date.now())
+  w.nextSourceId = sourceId + 1
+  registerSource(args.wsId, sourceId, args.sourceName, columns, rowCount, w.db, w.dbPath)
+  return { sourceId, name: args.sourceName, columns, rowCount }
+}
+
+/** Open an existing workspace db and register all its sources (no re-ingest). */
+export function openWorkspace(wsId: string, dbPath: string): WorkspaceInfo {
+  closeWorkspace(wsId)
+  if (!existsSync(dbPath)) throw new Error('Workspace file not found')
+  const db = new Database(dbPath)
+  let metaRows: Array<{ key: string; value: string }>
+  let srcRows: Array<{ id: number; name: string; row_count: number }>
+  try {
+    metaRows = db.prepare('SELECT key, value FROM ws_meta').all() as typeof metaRows
+    srcRows = db.prepare('SELECT id, name, row_count FROM sources ORDER BY id').all() as typeof srcRows
+  } catch {
+    db.close()
+    throw new Error('Not a pink-lemonade workspace')
+  }
+  applyQueryPragmas(db)
+  const m = Object.fromEntries(metaRows.map((r) => [r.key, r.value]))
+  const name = m.name ?? basename(dbPath)
+  const colStmt = db.prepare('SELECT name, original, time FROM source_columns WHERE source_id = ? ORDER BY idx')
+  const sources: SourceInfo[] = []
+  let maxId = -1
+  for (const s of srcRows) {
+    const colRows = colStmt.all(s.id) as Array<{ name: string; original: string; time: string | null }>
+    const columns: ColumnMap[] = colRows.map((c) =>
+      c.time ? { name: c.name, original: c.original, time: c.time as TimeKind } : { name: c.name, original: c.original }
+    )
+    registerSource(wsId, s.id, s.name, columns, s.row_count, db, dbPath)
+    sources.push({ sourceId: s.id, name: s.name, columns, rowCount: s.row_count })
+    maxId = Math.max(maxId, s.id)
+  }
+  workspaces.set(wsId, { db, dbPath, name, nextSourceId: maxId + 1 })
+  return { wsId, dbPath, name, sources }
+}
+
+export function closeWorkspace(wsId: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  for (const key of [...tables.keys()]) if (key.startsWith(`${wsId}:`)) tables.delete(key)
+  try {
+    w.db.close()
+  } catch {
+    /* ignore */
+  }
+  workspaces.delete(wsId)
+}
+
+/** Delete a workspace's db files (Home "delete workspace"). */
+export function deleteWorkspace(dbPath: string): void {
+  for (const [wsId, w] of workspaces) if (w.dbPath === dbPath) closeWorkspace(wsId)
+  removeDbFiles(dbPath)
 }
 
 const SCHEMA_VERSION = 1
@@ -254,7 +441,7 @@ export function openDb(tabId: string, dbPath: string): CsvTableMeta {
     columns,
     rowCount: Number(m.row_count ?? 0)
   }
-  tables.set(tabId, { db, meta, indexes: new Set(), table: 'data', filtTable: FILT_TABLE })
+  tables.set(tabId, { db, meta, indexes: new Set(), table: 'data', filtTable: FILT_TABLE, ownsDb: true })
   return meta
 }
 
@@ -399,18 +586,21 @@ export function getMeta(tabId: string): CsvTableMeta | null {
 export function closeTab(tabId: string): void {
   const e = tables.get(tabId)
   if (!e) return
-  try {
-    e.db.close()
-  } catch {
-    /* ignore */
+  // Only legacy single-file entries own their connection; a workspace source shares the
+  // workspace's connection (closed by closeWorkspace). The db file is persistent either way.
+  if (e.ownsDb) {
+    try {
+      e.db.close()
+    } catch {
+      /* ignore */
+    }
   }
-  // The db file is persistent now (Slice A) — closing a tab just releases the connection; the
-  // session lives on until the user deletes it (deleteDb).
   tables.delete(tabId)
 }
 
 export function closeAll(): void {
   for (const id of [...tables.keys()]) closeTab(id)
+  for (const id of [...workspaces.keys()]) closeWorkspace(id)
 }
 
 /** Delete any leftover temp dbs from a prior crashed session. Call once at startup. */

@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { ChevronDown, Database, Loader2, Tags } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { TAG_DEFS, type TagId } from '../../state/tags'
+
+/** Per-source tag rollup the viewer reports up so the sidebar can show + filter by tag. */
+export interface TagSummary {
+  counts: Partial<Record<TagId, number>>
+  activeTag?: TagId
+}
+/** Imperative surface the sidebar drives (the active source's tag-filter toggle). */
+export interface CsvViewerHandle {
+  toggleTagFilter: (tag: TagId) => void
+}
 
 /** What the grid needs to render a source — satisfied by a workspace source view (or any table). */
 export interface CsvViewSource {
@@ -38,11 +48,17 @@ function looksNumeric(rows: string[][], colIdx: number): boolean {
 export function CsvViewer({
   doc,
   onPivot,
-  onReorderColumns
+  onReorderColumns,
+  apiRef,
+  onTagSummary
 }: {
   doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
   onReorderColumns: (from: number, to: number) => void
+  /** Set on the ACTIVE source only — lets the sidebar drive this source's tag filter. */
+  apiRef?: React.Ref<CsvViewerHandle>
+  /** Set on the ACTIVE source only — reports tag counts + the active tag filter to the sidebar. */
+  onTagSummary?: (s: TagSummary | null) => void
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
@@ -240,18 +256,31 @@ export function CsvViewer({
     })
   }
 
-  // Toggle a "show only rows tagged X" filter (from the toolbar legend). One tag filter at a time:
-  // clicking the active tag clears it; clicking another replaces it.
-  function toggleTagFilter(tag: TagId): void {
+  // Toggle a "show only rows tagged X" filter (from the sidebar Tags facets). One tag filter at a
+  // time: clicking the active tag clears it; clicking another replaces it.
+  const toggleTagFilter = useCallback((tag: TagId): void => {
     setFilters((fs) => {
       const cur = fs.find((f) => f.op === 'tag')
       if (cur && cur.op === 'tag' && cur.tag === tag) return fs.filter((f) => f.op !== 'tag')
       return [...fs.filter((f) => f.op !== 'tag'), { op: 'tag', tag }]
     })
-  }
+  }, [])
   const activeTagFilter = filters.find((f) => f.op === 'tag')
-  const activeTag = activeTagFilter?.op === 'tag' ? activeTagFilter.tag : undefined
+  const activeTag = activeTagFilter?.op === 'tag' ? (activeTagFilter.tag as TagId) : undefined
   hasTagFilterRef.current = activeTag !== undefined
+
+  // The active source exposes its tag-filter toggle and reports its tag rollup to the sidebar.
+  useImperativeHandle(apiRef, () => ({ toggleTagFilter }), [toggleTagFilter])
+  useEffect(() => {
+    if (!onTagSummary) return
+    if (!taggable) {
+      onTagSummary(null)
+      return
+    }
+    const counts: Partial<Record<TagId, number>> = {}
+    for (const t of tags.values()) counts[t as TagId] = (counts[t as TagId] ?? 0) + 1
+    onTagSummary({ counts, activeTag })
+  }, [onTagSummary, taggable, tags, activeTag])
 
   // Filter the whole CSV to rows within ±deltaSec of a time cell (one timearound filter per col).
   function applyTimeAround(cell: CellRef, deltaSec: number): void {
@@ -263,9 +292,6 @@ export function CsvViewer({
     ])
   }
 
-  // Per-category tag counts for the toolbar legend (derived from the local map).
-  const tagCounts = new Map<string, number>()
-  for (const t of tags.values()) tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1)
   const hasPredicate = filters.length > 0 || search !== ''
 
   return (
@@ -282,25 +308,6 @@ export function CsvViewer({
         </span>
         {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
-        {taggable && tagCounts.size > 0 && (
-          <span className="csv-tag-legend flex items-center gap-1.5">
-            {TAG_DEFS.filter((d) => tagCounts.get(d.id)).map((d) => (
-              <button
-                key={d.id}
-                onClick={() => toggleTagFilter(d.id)}
-                title={activeTag === d.id ? `Showing ${d.label} only — click to clear` : `Filter to ${d.label}`}
-                className={`flex items-center gap-1 rounded px-1 py-0.5 text-[11px] transition-colors ${
-                  activeTag === d.id
-                    ? 'bg-citrus-pink-light font-bold text-citrus-pink'
-                    : 'text-citrus-muted hover:bg-citrus-card/70 dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev'
-                }`}
-              >
-                <span className={`inline-block w-2 h-2 rounded-sm ${d.dot}`} />
-                {tagCounts.get(d.id)}
-              </button>
-            ))}
-          </span>
-        )}
         {taggable && hasPredicate && (
           <div className="relative">
             <button

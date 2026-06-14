@@ -1,5 +1,7 @@
-import { FileText, FolderOpen, Loader2, Plus, X } from 'lucide-react'
+import { FileText, FolderOpen, Filter, Loader2, Plus, X } from 'lucide-react'
 import type { WorkspaceDoc } from '../../state/documents'
+import { TAG_DEFS, type TagId } from '../../state/tags'
+import type { TagSummary } from './CsvViewer'
 
 /** Compact row count, e.g. 2,901,233 → "2.9M". */
 function fmtRows(n: number): string {
@@ -15,14 +17,20 @@ export function WorkspaceSidebar({
   importing,
   onSelectSource,
   onImport,
-  onRemoveSource
+  onRemoveSource,
+  tagSummary,
+  onToggleTagFilter
 }: {
   doc: WorkspaceDoc
   importing: boolean
   onSelectSource: (sourceId: number) => void
   onImport: () => void
   onRemoveSource: (sourceId: number) => void
+  /** Tag rollup for the active source (counts + the active tag filter), reported by its viewer. */
+  tagSummary?: TagSummary | null
+  onToggleTagFilter?: (tag: TagId) => void
 }): JSX.Element {
+  const tagRows = TAG_DEFS.filter((d) => tagSummary?.counts[d.id])
   return (
     <aside className="workspace-sidebar flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-citrus-border bg-citrus-sand/40 p-3 dark:border-citrus-night-border dark:bg-citrus-night">
       <div className="flex items-center gap-2 px-1 text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
@@ -86,6 +94,51 @@ export function WorkspaceSidebar({
           </button>
         </div>
       </div>
+
+      {tagRows.length > 0 && (
+        <div className="workspace-sidebar__tags">
+          <div className="px-1 mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
+            Tags
+            <span className="font-normal normal-case tracking-normal text-citrus-muted/70 dark:text-citrus-night-muted/70">
+              · click to filter
+            </span>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {tagRows.map((d) => {
+              const active = tagSummary?.activeTag === d.id
+              return (
+                <button
+                  key={d.id}
+                  onClick={() => onToggleTagFilter?.(d.id)}
+                  title={active ? `Showing ${d.label} only — click to clear` : `Show only ${d.label}`}
+                  className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                    active
+                      ? 'bg-citrus-pink-light font-bold text-citrus-pink'
+                      : 'text-citrus-dark hover:bg-citrus-card/70 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
+                  }`}
+                >
+                  <span className={`inline-block w-2.5 h-2.5 rounded-sm shrink-0 ${d.dot}`} />
+                  <span className="flex-1 text-left truncate">{d.label}</span>
+                  <span className={`font-mono ${active ? 'text-citrus-pink' : 'text-citrus-muted dark:text-citrus-night-muted'}`}>
+                    {tagSummary?.counts[d.id]}
+                  </span>
+                  <Filter
+                    className={`w-3 h-3 shrink-0 ${active ? 'text-citrus-pink' : 'text-citrus-muted/0 group-hover:text-citrus-muted dark:group-hover:text-citrus-night-muted'}`}
+                  />
+                </button>
+              )
+            })}
+          </div>
+          {tagSummary?.activeTag && (
+            <button
+              onClick={() => onToggleTagFilter?.(tagSummary.activeTag as TagId)}
+              className="mt-1 px-2 text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+            >
+              ✕ Clear tag filter
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="mt-auto border-t border-citrus-border/60 pt-2 text-[10px] font-mono text-citrus-muted/70 dark:border-citrus-night-border/60 dark:text-citrus-night-muted/70 break-all">
         💾 {doc.dbPath}

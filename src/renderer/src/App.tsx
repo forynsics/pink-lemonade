@@ -5,7 +5,7 @@ import { ToolPalette } from './components/ToolPalette'
 import { ScratchEditor } from './components/ScratchEditor'
 import { DocTabs } from './components/DocTabs'
 import { Welcome } from './components/Welcome'
-import { CsvViewer } from './components/csv/CsvViewer'
+import { CsvViewer, type CsvViewerHandle, type TagSummary } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
 import { WorkspaceSidebar } from './components/csv/WorkspaceSidebar'
 import { getById, defaultOptions } from './tools/registry'
@@ -56,6 +56,10 @@ export default function App(): JSX.Element {
   // The app opens on the Home/welcome screen by default (the user's saved tabs stay in the
   // tab bar; clicking one — or any open/new action — leaves Home).
   const [home, setHome] = useState<boolean>(true)
+  // Tag rollup of the active workspace source (for the sidebar Tags facets) + a handle to drive its
+  // tag filter. Only the active source's viewer populates these.
+  const [tagSummary, setTagSummary] = useState<TagSummary | null>(null)
+  const tagApiRef = useRef<CsvViewerHandle | null>(null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -85,6 +89,12 @@ export default function App(): JSX.Element {
   }, [docs, activeId])
 
   const active = docs.find((d) => d.id === activeId) ?? docs[0]
+
+  // Clear the sidebar tag rollup when the active source changes; the newly-active viewer re-reports.
+  const activeSrcKey = active.kind === 'workspace' ? `${active.id}:${active.activeSourceId}` : active.id
+  useEffect(() => {
+    setTagSummary(null)
+  }, [activeSrcKey])
 
   function updateActive(fn: (d: PinkDoc) => PinkDoc): void {
     setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === s.activeId ? fn(d) : d)) }))
@@ -394,6 +404,8 @@ export default function App(): JSX.Element {
             onSelectSource={(sid) => selectSource(active.id, sid)}
             onImport={addSourceToActive}
             onRemoveSource={(sid) => void removeSource(active.id, active.wsId, sid)}
+            tagSummary={tagSummary}
+            onToggleTagFilter={(tag) => tagApiRef.current?.toggleTagFilter(tag)}
           />
         )}
         <main className="flex flex-col flex-1 min-w-0 min-h-0">
@@ -455,25 +467,31 @@ export default function App(): JSX.Element {
                     Empty workspace — import a CSV from the sidebar.
                   </div>
                 ) : (
-                  d.sources.map((src) => (
-                    <div
-                      key={src.sourceId}
-                      className="flex flex-1 min-h-0"
-                      style={{ display: d.activeSourceId === src.sourceId ? 'flex' : 'none' }}
-                    >
-                      <CsvViewer
-                        doc={{
-                          tabId: srcKey(d.wsId, src.sourceId),
-                          sourceName: src.name,
-                          columns: src.columns,
-                          rowCount: src.rowCount,
-                          dbPath: d.dbPath
-                        }}
-                        onPivot={pivotToScratch}
-                        onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
-                      />
-                    </div>
-                  ))
+                  d.sources.map((src) => {
+                    // Only the visible, active source wires up to the sidebar Tags facets.
+                    const isActiveSource = visible && d.activeSourceId === src.sourceId
+                    return (
+                      <div
+                        key={src.sourceId}
+                        className="flex flex-1 min-h-0"
+                        style={{ display: d.activeSourceId === src.sourceId ? 'flex' : 'none' }}
+                      >
+                        <CsvViewer
+                          doc={{
+                            tabId: srcKey(d.wsId, src.sourceId),
+                            sourceName: src.name,
+                            columns: src.columns,
+                            rowCount: src.rowCount,
+                            dbPath: d.dbPath
+                          }}
+                          onPivot={pivotToScratch}
+                          onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
+                          apiRef={isActiveSource ? tagApiRef : undefined}
+                          onTagSummary={isActiveSource ? setTagSummary : undefined}
+                        />
+                      </div>
+                    )
+                  })
                 )}
               </div>
             )

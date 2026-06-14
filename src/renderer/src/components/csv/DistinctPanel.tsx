@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, NotebookPen, X } from 'lucide-react'
-import type { CsvDoc } from '../../state/documents'
+import type { CsvViewSource } from './CsvViewer'
 import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
 
 // Side panel showing a column's distinct values + counts, so an analyst can read them while
@@ -19,7 +19,7 @@ export function DistinctPanel({
   onClose,
   onPivot
 }: {
-  doc: CsvDoc
+  doc: CsvViewSource
   col: CsvColumn
   filters: CsvFilter[]
   onClose: () => void

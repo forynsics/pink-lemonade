@@ -1,9 +1,10 @@
-import { NotebookPen, Table2, Clock, X } from 'lucide-react'
+import { NotebookPen, FolderPlus, FolderOpen, Clock, Plus, X } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
-// First-run / home screen: the two primary entry points (new notepad, open CSV) plus a
-// quick-pivot list of recently-opened CSV files. Shown via the Home button or on first launch.
+// First-run / home screen: the primary entry points (new notepad, new workspace, import CSV, open
+// workspace) plus a list of recent workspaces. Shown via the Home button or on first launch.
+// `recent` entries now describe workspaces — path = the .workspace db path, sourceName = its name.
 
 function ago(ms: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000))
@@ -16,21 +17,53 @@ function ago(ms: number): string {
   return `${d}d ago`
 }
 
+function Action({
+  onClick,
+  icon,
+  title,
+  sub,
+  cls
+}: {
+  onClick: () => void
+  icon: JSX.Element
+  title: string
+  sub: string
+  cls: string
+}): JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className={`${cls} flex items-center gap-3 px-4 py-3 rounded-xl border border-citrus-border bg-citrus-card text-left hover:border-citrus-pink/50 hover:shadow-sm transition dark:border-citrus-night-border dark:bg-citrus-night-card`}
+    >
+      {icon}
+      <span>
+        <span className="block text-sm font-bold text-citrus-dark dark:text-citrus-night-text">{title}</span>
+        <span className="block text-[11px] text-citrus-muted dark:text-citrus-night-muted">{sub}</span>
+      </span>
+    </button>
+  )
+}
+
 export function Welcome({
   recent,
   onOpenRecent,
-  onOpenCsv,
+  onNewWorkspace,
+  onImportCsv,
+  onOpenWorkspace,
   onNewScratch,
   onRemoveRecent,
   onClearRecent
 }: {
   recent: RecentFile[]
   onOpenRecent: (f: RecentFile) => void
-  onOpenCsv: () => void
+  onNewWorkspace: () => void
+  onImportCsv: () => void
+  onOpenWorkspace: () => void
   onNewScratch: () => void
   onRemoveRecent: (path: string) => void
   onClearRecent: () => void
 }): JSX.Element {
+  const ico = 'w-5 h-5 text-citrus-pink shrink-0'
   return (
     <div className="welcome flex-1 min-h-0 overflow-auto bg-citrus-cream/40 dark:bg-citrus-night">
       <div className="mx-auto max-w-2xl px-8 py-12">
@@ -45,31 +78,15 @@ export function Welcome({
         </p>
 
         <div className="grid grid-cols-2 gap-3 mb-10">
-          <button
-            onClick={onNewScratch}
-            className="welcome__new flex items-center gap-3 px-4 py-3 rounded-xl border border-citrus-border bg-citrus-card text-left hover:border-citrus-pink/50 hover:shadow-sm transition dark:border-citrus-night-border dark:bg-citrus-night-card"
-          >
-            <NotebookPen className="w-5 h-5 text-citrus-pink shrink-0" />
-            <span>
-              <span className="block text-sm font-bold text-citrus-dark dark:text-citrus-night-text">New notepad</span>
-              <span className="block text-[11px] text-citrus-muted dark:text-citrus-night-muted">Text transforms + workflow</span>
-            </span>
-          </button>
-          <button
-            onClick={onOpenCsv}
-            className="welcome__open-csv flex items-center gap-3 px-4 py-3 rounded-xl border border-citrus-border bg-citrus-card text-left hover:border-citrus-pink/50 hover:shadow-sm transition dark:border-citrus-night-border dark:bg-citrus-night-card"
-          >
-            <Table2 className="w-5 h-5 text-citrus-pink shrink-0" />
-            <span>
-              <span className="block text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Open CSV / TSV</span>
-              <span className="block text-[11px] text-citrus-muted dark:text-citrus-night-muted">Big-log table viewer</span>
-            </span>
-          </button>
+          <Action cls="welcome__import-csv" onClick={onImportCsv} icon={<Plus className={ico} />} title="Import CSV / TSV…" sub="Pull a file into a workspace as a source" />
+          <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start an empty investigation" />
+          <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Open an existing .workspace file" />
+          <Action cls="welcome__new" onClick={onNewScratch} icon={<NotebookPen className={ico} />} title="New notepad" sub="Text transforms + workflow" />
         </div>
 
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
-            <Clock className="w-3.5 h-3.5" /> Recent files
+            <Clock className="w-3.5 h-3.5" /> Recent workspaces
           </div>
           {recent.length > 0 && (
             <button
@@ -83,7 +100,7 @@ export function Welcome({
 
         {recent.length === 0 ? (
           <div className="rounded-xl border border-dashed border-citrus-border px-4 py-8 text-center text-xs text-citrus-muted dark:border-citrus-night-border dark:text-citrus-night-muted">
-            No recent files yet — open a CSV to see it here.
+            No recent workspaces yet — import a CSV or create a workspace to see it here.
           </div>
         ) : (
           <ul className="flex flex-col gap-1">
@@ -94,7 +111,7 @@ export function Welcome({
                   className="welcome__recent flex-1 flex items-center gap-3 px-3 py-2 rounded-lg border border-transparent hover:border-citrus-border hover:bg-citrus-card text-left transition dark:hover:border-citrus-night-border dark:hover:bg-citrus-night-card"
                   title={f.path}
                 >
-                  <Table2 className="w-4 h-4 text-citrus-pink shrink-0" />
+                  <FolderOpen className="w-4 h-4 text-citrus-pink shrink-0" />
                   <span className="min-w-0 flex-1">
                     <span className="block text-xs font-semibold text-citrus-dark truncate dark:text-citrus-night-text">{f.sourceName}</span>
                     <span className="block text-[10px] font-mono text-citrus-muted truncate dark:text-citrus-night-muted">{f.path}</span>

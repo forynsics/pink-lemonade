@@ -1,5 +1,5 @@
 import type { WorkflowStep } from './workflow'
-import type { CsvColumn, CsvOpenResult } from './csvTypes'
+import type { CsvColumn } from './csvTypes'
 
 interface DocBase {
   id: string
@@ -15,25 +15,40 @@ export interface ScratchDoc extends DocBase {
   inputDropped?: boolean
 }
 
-/** A CSV table backed by a main-process SQLite db. Holds metadata only — rows live in the db. */
-export interface CsvDoc extends DocBase {
-  kind: 'csv'
-  tabId: string
-  sourceName: string
+/** One imported CSV (a source) inside a workspace. Metadata only — rows live in the db. */
+export interface WorkspaceSource {
+  sourceId: number
+  name: string
   columns: CsvColumn[]
   rowCount: number
+}
+
+/** A workspace: one persistent .workspace SQLite db holding many sources. */
+export interface WorkspaceDoc extends DocBase {
+  kind: 'workspace'
+  wsId: string
   dbPath: string
-  /** True after a reload: the persistent db isn't open in main yet, so it must be re-opened by path. */
+  sources: WorkspaceSource[]
+  activeSourceId: number | null
+  /** True after a reload: the workspace db isn't open in main yet, so it must be re-opened by path. */
   needsReopen?: boolean
-  /** Set if re-opening the persistent db by path failed (file missing/moved). */
+  /** Set if re-opening the workspace db by path failed (file missing/moved). */
   reopenFailed?: boolean
 }
 
-export type PinkDoc = ScratchDoc | CsvDoc
+export type PinkDoc = ScratchDoc | WorkspaceDoc
 
 export interface DocsState {
   docs: PinkDoc[]
   activeId: string
+}
+
+/** Shape returned by the ws:* IPC (mirrors preload WorkspaceInfo). */
+export interface WorkspaceInfo {
+  wsId: string
+  dbPath: string
+  name: string
+  sources: WorkspaceSource[]
 }
 
 const STORAGE_KEY = 'pink-lemonade:docs'
@@ -51,16 +66,15 @@ export function createDoc(name: string): ScratchDoc {
   return { id: newId(), name, kind: 'scratch', input: '', steps: [] }
 }
 
-export function createCsvDoc(meta: CsvOpenResult): CsvDoc {
+export function createWorkspaceDoc(info: WorkspaceInfo): WorkspaceDoc {
   return {
     id: newId(),
-    name: meta.sourceName,
-    kind: 'csv',
-    tabId: meta.tabId,
-    sourceName: meta.sourceName,
-    columns: meta.columns,
-    rowCount: meta.rowCount,
-    dbPath: meta.dbPath
+    name: info.name,
+    kind: 'workspace',
+    wsId: info.wsId,
+    dbPath: info.dbPath,
+    sources: info.sources,
+    activeSourceId: info.sources[0]?.sourceId ?? null
   }
 }
 
@@ -71,26 +85,30 @@ export function loadDocs(): DocsState | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as { docs: unknown[]; activeId: string }
     if (!Array.isArray(parsed.docs) || parsed.docs.length === 0) return null
-    return { docs: parsed.docs.map(migrate), activeId: parsed.activeId }
+    // Drop pre-workspace 'csv' docs (their per-file dbs are obsolete — re-import into a workspace).
+    const docs = parsed.docs.map(migrate).filter((d): d is PinkDoc => d != null)
+    if (docs.length === 0) return null
+    const activeOk = docs.some((d) => d.id === parsed.activeId)
+    return { docs, activeId: activeOk ? parsed.activeId : docs[0].id }
   } catch {
     return null
   }
 }
 
-/** Normalize a persisted doc into the current union (defaults missing kind to scratch). */
-function migrate(raw: unknown): PinkDoc {
+/** Normalize a persisted doc into the current union; returns null for obsolete docs (dropped). */
+function migrate(raw: unknown): PinkDoc | null {
   const d = raw as Record<string, unknown>
-  if (d?.kind === 'csv') {
+  if (d?.kind === 'csv') return null // obsolete single-file CSV doc — reset
+  if (d?.kind === 'workspace') {
     return {
       id: String(d.id),
-      name: String(d.name ?? 'CSV'),
-      kind: 'csv',
-      tabId: String(d.tabId ?? ''),
-      sourceName: String(d.sourceName ?? d.name ?? 'CSV'),
-      columns: Array.isArray(d.columns) ? (d.columns as CsvColumn[]) : [],
-      rowCount: Number(d.rowCount ?? 0),
+      name: String(d.name ?? 'Workspace'),
+      kind: 'workspace',
+      wsId: String(d.wsId ?? ''),
       dbPath: String(d.dbPath ?? ''),
-      needsReopen: true // main process is fresh after a restart — reopen the persistent db by path
+      sources: Array.isArray(d.sources) ? (d.sources as WorkspaceSource[]) : [],
+      activeSourceId: typeof d.activeSourceId === 'number' ? d.activeSourceId : null,
+      needsReopen: true // main process is fresh after a restart — reopen the workspace db by path
     }
   }
   return {
@@ -103,12 +121,12 @@ function migrate(raw: unknown): PinkDoc {
   }
 }
 
-/** Strip oversized inputs (scratch docs) before persisting; CSV docs persist metadata only. */
+/** Strip oversized inputs (scratch docs) before persisting; workspaces persist metadata only. */
 function toPersisted(state: DocsState): DocsState {
   return {
     activeId: state.activeId,
     docs: state.docs.map((d) => {
-      if (d.kind === 'csv') return d // rows live in SQLite, never serialized
+      if (d.kind === 'workspace') return d // rows live in SQLite, never serialized
       return d.input.length > PERSIST_INPUT_MAX
         ? { ...d, input: '', inputDropped: true }
         : { ...d, inputDropped: false }

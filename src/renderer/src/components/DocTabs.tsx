@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, X, Table2, Home, NotebookPen } from 'lucide-react'
+import { Plus, X, Table2, Home, NotebookPen, FolderOpen } from 'lucide-react'
 import type { PinkDoc } from '../state/documents'
 
 export function DocTabs({
@@ -86,8 +86,8 @@ export function DocTabs({
                 />
               ) : (
                 <>
-                  {doc.kind === 'csv' ? (
-                    <Table2 className="w-3 h-3 text-citrus-pink shrink-0" />
+                  {doc.kind === 'workspace' ? (
+                    <FolderOpen className="w-3 h-3 text-citrus-pink shrink-0" />
                   ) : (
                     <NotebookPen className="w-3 h-3 text-citrus-pink shrink-0" />
                   )}

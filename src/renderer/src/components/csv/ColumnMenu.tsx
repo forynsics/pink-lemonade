@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Filter, ListTree, Loader2 } from 'lucide-react'
-import type { CsvDoc } from '../../state/documents'
+import type { CsvViewSource } from './CsvViewer'
 import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
 
 // Shortcut dropdown for a column's 3-dots button:
@@ -23,7 +23,7 @@ export function ColumnMenu({
   onShowDistinct,
   onApplyInFilter
 }: {
-  doc: CsvDoc
+  doc: CsvViewSource
   col: CsvColumn
   filters: CsvFilter[]
   /** Values already selected for this column's existing `in` filter (pre-checked). */

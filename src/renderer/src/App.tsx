@@ -7,21 +7,28 @@ import { DocTabs } from './components/DocTabs'
 import { Welcome } from './components/Welcome'
 import { CsvViewer } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
+import { WorkspaceSidebar } from './components/csv/WorkspaceSidebar'
 import { getById, defaultOptions } from './tools/registry'
 import {
   createDoc,
-  createCsvDoc,
+  createWorkspaceDoc,
   loadDocs,
   newId,
   saveDocs,
-  type CsvDoc,
   type DocsState,
   type PinkDoc,
-  type ScratchDoc
+  type ScratchDoc,
+  type WorkspaceDoc,
+  type WorkspaceSource
 } from './state/documents'
 import { loadTheme, saveTheme, type Theme } from './state/theme'
 import { addRecent, loadRecent, removeRecent, saveRecent, type RecentFile } from './state/recent'
 import type { ToolOptions } from './tools/types'
+
+/** Query key for a workspace source — must match the main process's sourceKey. */
+function srcKey(wsId: string, sourceId: number): string {
+  return `${wsId}:${sourceId}`
+}
 
 function initialDocs(): DocsState {
   const loaded = loadDocs()
@@ -95,14 +102,10 @@ export default function App(): JSX.Element {
     }))
   }
 
-  function patchCsv(patch: Partial<CsvDoc>): void {
-    updateActive((d) => (d.kind === 'csv' ? { ...d, ...patch } : d))
-  }
-
-  function patchCsvById(id: string, patch: Partial<CsvDoc>): void {
+  function patchWorkspaceById(id: string, patch: Partial<WorkspaceDoc>): void {
     setState((s) => ({
       ...s,
-      docs: s.docs.map((d) => (d.id === id && d.kind === 'csv' ? { ...d, ...patch } : d))
+      docs: s.docs.map((d) => (d.id === id && d.kind === 'workspace' ? { ...d, ...patch } : d))
     }))
   }
 
@@ -131,76 +134,143 @@ export default function App(): JSX.Element {
     })
   }
 
-  /** Ingest a file at `path` into a fresh CSV tab. Shared by the picker and recent-file pivots. */
-  async function ingestNewTab(path: string, sourceName: string): Promise<void> {
-    const tabId = newId()
-    setCsvImport({ tabId, name: sourceName, rows: 0, bytes: 0, total: 0 })
+  /** Import a CSV as a NEW workspace (the file becomes its first source). */
+  async function newWorkspaceFromCsv(): Promise<void> {
+    const picked = await window.api.csv.pick()
+    if (!picked) return
+    const wsId = newId()
+    const ws = await window.api.csv.wsCreate(wsId, picked.sourceName)
+    setHome(false)
+    setCsvImport({ tabId: wsId, name: picked.sourceName, rows: 0, bytes: 0, total: 0 })
+    let src: WorkspaceSource | null = null
     try {
-      const res = await window.api.csv.ingest(tabId, path)
-      if (res) {
-        setHome(false)
-        setState((s) => {
-          const doc = createCsvDoc(res)
-          return { docs: [...s.docs, doc], activeId: doc.id }
-        })
-        recordRecent(path, res.sourceName, res.rowCount)
-      }
-    } catch {
-      // File missing/unreadable (common for a stale recent entry) — drop it from the list.
-      dropRecent(path)
+      src = await window.api.csv.wsAddSource(wsId, picked.path)
     } finally {
       setCsvImport(null)
     }
+    const doc = createWorkspaceDoc({ ...ws, sources: src ? [src] : [] })
+    setState((s) => ({ docs: [...s.docs, doc], activeId: doc.id }))
+    recordRecent(ws.dbPath, ws.name, src?.rowCount ?? 0)
   }
 
-  async function openCsv(): Promise<void> {
-    const picked = await window.api.csv.pick()
-    if (picked) await ingestNewTab(picked.path, picked.sourceName)
+  /** New empty workspace (import sources into it afterwards). */
+  async function newWorkspace(): Promise<void> {
+    const wsId = newId()
+    const n = docs.filter((d) => d.kind === 'workspace').length + 1
+    const ws = await window.api.csv.wsCreate(wsId, `Workspace ${n}`)
+    const doc = createWorkspaceDoc(ws)
+    setHome(false)
+    setState((s) => ({ docs: [...s.docs, doc], activeId: doc.id }))
+    recordRecent(ws.dbPath, ws.name, 0)
+  }
+
+  /** Open an existing workspace db by path (activating it if already open). */
+  async function openWorkspaceByPath(dbPath: string): Promise<void> {
+    const existing = docs.find((d) => d.kind === 'workspace' && d.dbPath === dbPath && !d.needsReopen)
+    if (existing) {
+      setHome(false)
+      setState((s) => ({ ...s, activeId: existing.id }))
+      return
+    }
+    try {
+      const info = await window.api.csv.wsOpen(newId(), dbPath)
+      const doc = createWorkspaceDoc(info)
+      setHome(false)
+      setState((s) => ({ docs: [...s.docs, doc], activeId: doc.id }))
+      recordRecent(info.dbPath, info.name, info.sources.reduce((a, src) => a + src.rowCount, 0))
+    } catch {
+      dropRecent(dbPath) // file missing/moved — drop from the recent list
+    }
+  }
+
+  async function openWorkspaceFile(): Promise<void> {
+    const dbPath = await window.api.csv.pickDb()
+    if (dbPath) await openWorkspaceByPath(dbPath)
   }
 
   function openRecent(f: RecentFile): void {
-    void ingestNewTab(f.path, f.sourceName)
+    void openWorkspaceByPath(f.path)
   }
 
-  // Resume a CSV session by re-opening its persistent db by path — no re-pick, no re-ingest
-  // (Slice A). The db lives in userData/sessions and carries its own column metadata.
+  /** Add a CSV as a new source to the active workspace (sidebar "Import"). */
+  async function addSourceToActive(): Promise<void> {
+    if (active.kind !== 'workspace') return
+    const picked = await window.api.csv.pick()
+    if (!picked) return
+    const { wsId, id: docId } = active
+    setCsvImport({ tabId: wsId, name: picked.sourceName, rows: 0, bytes: 0, total: 0 })
+    let src: WorkspaceSource | null = null
+    try {
+      src = await window.api.csv.wsAddSource(wsId, picked.path)
+    } finally {
+      setCsvImport(null)
+    }
+    if (src) {
+      const added = src
+      setState((s) => ({
+        ...s,
+        docs: s.docs.map((d) =>
+          d.id === docId && d.kind === 'workspace'
+            ? { ...d, sources: [...d.sources, added], activeSourceId: added.sourceId }
+            : d
+        )
+      }))
+    }
+  }
+
+  // Resume a workspace by re-opening its db by path on restart — no re-ingest.
   const reopeningRef = useRef<Set<string>>(new Set())
-  async function reopenCsv(doc: CsvDoc): Promise<void> {
+  async function reopenWorkspace(doc: WorkspaceDoc): Promise<void> {
     if (!doc.dbPath || reopeningRef.current.has(doc.id)) return
     reopeningRef.current.add(doc.id)
     try {
-      const res = await window.api.csv.open(doc.tabId, doc.dbPath)
-      patchCsvById(doc.id, {
-        columns: res.columns,
-        rowCount: res.rowCount,
-        sourceName: res.sourceName,
-        dbPath: res.dbPath,
+      const info = await window.api.csv.wsOpen(doc.wsId, doc.dbPath)
+      patchWorkspaceById(doc.id, {
+        name: info.name,
+        sources: info.sources,
+        activeSourceId: doc.activeSourceId ?? info.sources[0]?.sourceId ?? null,
         needsReopen: false,
         reopenFailed: false
       })
     } catch {
-      patchCsvById(doc.id, { reopenFailed: true }) // db file missing / not a pink-lemonade db
+      patchWorkspaceById(doc.id, { reopenFailed: true })
     } finally {
       reopeningRef.current.delete(doc.id)
     }
   }
 
-  // Auto-resume the active CSV doc when its db isn't open yet this session (after a restart).
-  const csvNeedsReopen = active.kind === 'csv' && !!active.needsReopen
-  const csvReopenFailed = active.kind === 'csv' && !!active.reopenFailed
+  // Auto-resume the active workspace when its db isn't open yet this session (after a restart).
+  const wsNeedsReopen = active.kind === 'workspace' && !!active.needsReopen
+  const wsReopenFailed = active.kind === 'workspace' && !!active.reopenFailed
   useEffect(() => {
-    if (!home && active.kind === 'csv' && active.needsReopen && !active.reopenFailed) {
-      void reopenCsv(active)
+    if (!home && active.kind === 'workspace' && active.needsReopen && !active.reopenFailed) {
+      void reopenWorkspace(active)
     }
-  }, [home, active.id, csvNeedsReopen, csvReopenFailed]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [home, active.id, wsNeedsReopen, wsReopenFailed]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Reorder the active CSV's columns (drag-to-reorder); persists via patchCsv → localStorage. */
-  function reorderCsvColumns(from: number, to: number): void {
-    if (active.kind !== 'csv' || from === to || from < 0 || to < 0) return
-    const cols = [...active.columns]
-    const [moved] = cols.splice(from, 1)
-    cols.splice(to, 0, moved)
-    patchCsv({ columns: cols })
+  function selectSource(docId: string, sourceId: number): void {
+    patchWorkspaceById(docId, { activeSourceId: sourceId })
+  }
+
+  /** Reorder a source's columns (drag-to-reorder); persists via localStorage. */
+  function reorderSourceColumns(docId: string, sourceId: number, from: number, to: number): void {
+    if (from === to || from < 0 || to < 0) return
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId || d.kind !== 'workspace') return d
+        return {
+          ...d,
+          sources: d.sources.map((src) => {
+            if (src.sourceId !== sourceId) return src
+            const cols = [...src.columns]
+            const [moved] = cols.splice(from, 1)
+            cols.splice(to, 0, moved)
+            return { ...src, columns: cols }
+          })
+        }
+      })
+    }))
   }
 
   /** Open a fresh scratch tab pre-filled with a column's values (the CSV → notepad pivot). */
@@ -214,7 +284,7 @@ export default function App(): JSX.Element {
 
   function closeDoc(id: string): void {
     const doc = docs.find((d) => d.id === id)
-    if (doc?.kind === 'csv' && doc.tabId) window.api.csv.close(doc.tabId)
+    if (doc?.kind === 'workspace' && doc.wsId) window.api.csv.wsClose(doc.wsId)
     setState((s) => {
       if (s.docs.length === 1) {
         const fresh = createDoc('Untitled 1')
@@ -296,7 +366,16 @@ export default function App(): JSX.Element {
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <ToolPalette onPick={addTool} />
+        {/* Contextual left rail: Tool Palette for a notepad, Imported-Files sidebar for a workspace. */}
+        {!home && active.kind === 'scratch' && <ToolPalette onPick={addTool} />}
+        {!home && active.kind === 'workspace' && (
+          <WorkspaceSidebar
+            doc={active}
+            importing={csvImport?.tabId === active.wsId}
+            onSelectSource={(sid) => selectSource(active.id, sid)}
+            onImport={addSourceToActive}
+          />
+        )}
         <main className="flex flex-col flex-1 min-w-0 min-h-0">
           <DocTabs
             docs={docs}
@@ -305,7 +384,7 @@ export default function App(): JSX.Element {
             onHome={() => setHome(true)}
             onSelect={selectDoc}
             onAdd={addDoc}
-            onAddCsv={openCsv}
+            onAddCsv={newWorkspaceFromCsv}
             onClose={closeDoc}
             onRename={renameDoc}
           />
@@ -313,7 +392,9 @@ export default function App(): JSX.Element {
             <Welcome
               recent={recent}
               onOpenRecent={openRecent}
-              onOpenCsv={openCsv}
+              onNewWorkspace={newWorkspace}
+              onImportCsv={newWorkspaceFromCsv}
+              onOpenWorkspace={openWorkspaceFile}
               onNewScratch={addDoc}
               onRemoveRecent={dropRecent}
               onClearRecent={() => {
@@ -322,8 +403,8 @@ export default function App(): JSX.Element {
               }}
             />
           )}
-          {/* Every doc keeps its own mounted view (hidden when inactive) so editor/viewer state —
-              notepad caret/scroll/find, CSV filters/search/sort/scroll — survives tab switches. */}
+          {/* Every doc keeps its own mounted view (hidden when inactive) so editor/viewer state
+              survives tab switches; within a workspace, each source keeps its own mounted grid. */}
           {docs.map((d) => {
             const visible = !home && active.id === d.id
             if (d.kind === 'scratch') {
@@ -348,9 +429,31 @@ export default function App(): JSX.Element {
                 style={{ display: visible ? 'flex' : 'none' }}
               >
                 {d.needsReopen ? (
-                  <CsvPlaceholder doc={d} failed={d.reopenFailed} onReopen={() => reopenCsv(d)} />
+                  <CsvPlaceholder name={d.name} dbPath={d.dbPath} failed={d.reopenFailed} onReopen={() => reopenWorkspace(d)} />
+                ) : d.sources.length === 0 ? (
+                  <div className="flex flex-1 items-center justify-center text-sm text-citrus-muted dark:text-citrus-night-muted">
+                    Empty workspace — import a CSV from the sidebar.
+                  </div>
                 ) : (
-                  <CsvViewer doc={d} onPivot={pivotToScratch} onReorderColumns={reorderCsvColumns} />
+                  d.sources.map((src) => (
+                    <div
+                      key={src.sourceId}
+                      className="flex flex-1 min-h-0"
+                      style={{ display: d.activeSourceId === src.sourceId ? 'flex' : 'none' }}
+                    >
+                      <CsvViewer
+                        doc={{
+                          tabId: srcKey(d.wsId, src.sourceId),
+                          sourceName: src.name,
+                          columns: src.columns,
+                          rowCount: src.rowCount,
+                          dbPath: d.dbPath
+                        }}
+                        onPivot={pivotToScratch}
+                        onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
+                      />
+                    </div>
+                  ))
                 )}
               </div>
             )

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { saveDocs, loadDocs, createDoc, createCsvDoc, type DocsState, type ScratchDoc } from './documents'
+import { saveDocs, loadDocs, createDoc, createWorkspaceDoc, type DocsState, type ScratchDoc } from './documents'
 
 // Minimal localStorage stand-in (Vitest runs in the node env, which has none).
 beforeEach(() => {
@@ -53,23 +53,40 @@ describe('document persistence', () => {
     expect(doc.input).toBe('hi')
   })
 
-  it('persists a CSV doc as metadata only and reloads it needing re-open', () => {
-    const csv = createCsvDoc({
-      tabId: 't1',
-      sourceName: 'log.csv',
-      columns: [{ name: 'c0', original: 'ip' }],
-      rowCount: 1234,
-      dbPath: '/tmp/pl_csv_t1.db'
+  it('persists a workspace as metadata only and reloads it needing re-open', () => {
+    const ws = createWorkspaceDoc({
+      wsId: 'w1',
+      name: 'ACME',
+      dbPath: '/tmp/w1.workspace',
+      sources: [{ sourceId: 0, name: 'log.csv', columns: [{ name: 'c0', original: 'ip' }], rowCount: 1234 }]
     })
-    saveDocs({ docs: [csv], activeId: csv.id })
+    saveDocs({ docs: [ws], activeId: ws.id })
     const loaded = loadDocs()
     const d = loaded?.docs[0]
-    expect(d?.kind).toBe('csv')
-    if (d?.kind === 'csv') {
-      expect(d.sourceName).toBe('log.csv')
-      expect(d.rowCount).toBe(1234)
-      expect(d.columns).toEqual([{ name: 'c0', original: 'ip' }])
-      expect(d.needsReopen).toBe(true) // temp .db is gone after restart
+    expect(d?.kind).toBe('workspace')
+    if (d?.kind === 'workspace') {
+      expect(d.name).toBe('ACME')
+      expect(d.sources).toHaveLength(1)
+      expect(d.sources[0].rowCount).toBe(1234)
+      expect(d.activeSourceId).toBe(0)
+      expect(d.needsReopen).toBe(true) // db connection is fresh after restart
     }
+  })
+
+  it('drops obsolete pre-workspace CSV docs on load', () => {
+    localStorage.setItem(
+      'pink-lemonade:docs',
+      JSON.stringify({
+        activeId: 'c',
+        docs: [
+          { id: 'c', kind: 'csv', name: 'old.csv', tabId: 't', dbPath: '/x', columns: [], rowCount: 1 },
+          { id: 's', kind: 'scratch', name: 'Keep', input: 'hi', steps: [] }
+        ]
+      })
+    )
+    const loaded = loadDocs()
+    expect(loaded?.docs).toHaveLength(1)
+    expect(loaded?.docs[0].kind).toBe('scratch')
+    expect(loaded?.activeId).toBe('s') // active fell back since the csv doc was dropped
   })
 })

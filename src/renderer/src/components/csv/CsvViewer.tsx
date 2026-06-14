@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Database, Loader2 } from 'lucide-react'
-import type { CsvDoc } from '../../state/documents'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
+
+/** What the grid needs to render a source — satisfied by a workspace source view (or any table). */
+export interface CsvViewSource {
+  tabId: string // query key: a source key `<wsId>:<sourceId>`
+  sourceName: string
+  columns: CsvColumn[]
+  rowCount: number
+  dbPath: string
+}
 import { cellTimeToEpoch } from '../../state/timeKind'
 import { useCsvQuery } from '../../hooks/useCsvQuery'
 import { VirtualGrid, type CellRef, type VirtualGridHandle } from './VirtualGrid'
@@ -31,7 +39,7 @@ export function CsvViewer({
   onPivot,
   onReorderColumns
 }: {
-  doc: CsvDoc
+  doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
   onReorderColumns: (from: number, to: number) => void
 }): JSX.Element {

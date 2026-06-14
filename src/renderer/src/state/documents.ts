@@ -6,7 +6,7 @@ interface DocBase {
   name: string
 }
 
-/** The classic scratchpad: an input buffer + a workflow of tools. */
+/** The classic notepad (internally "scratch"): an input buffer + a workflow of tools. */
 export interface ScratchDoc extends DocBase {
   kind: 'scratch'
   input: string

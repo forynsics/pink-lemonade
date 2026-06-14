@@ -172,7 +172,7 @@ export default function App(): JSX.Element {
     }
   }
 
-  /** Open a fresh scratch tab pre-filled with a column's values (the CSV → scratchpad pivot). */
+  /** Open a fresh scratch tab pre-filled with a column's values (the CSV → notepad pivot). */
   function pivotToScratch(values: string[], label: string): void {
     setHome(false)
     setState((s) => {

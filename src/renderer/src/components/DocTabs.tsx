@@ -111,7 +111,7 @@ export function DocTabs({
       <button
         className="tabs__add p-1.5 rounded-full text-citrus-muted hover:text-citrus-pink hover:bg-citrus-card transition-colors dark:text-citrus-night-muted dark:hover:bg-citrus-night-card"
         onClick={onAdd}
-        title="New scratchpad"
+        title="New notepad"
       >
         <Plus className="w-4 h-4" />
       </button>

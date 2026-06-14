@@ -2,7 +2,7 @@ import { FilePlus2, Table2, Clock, X } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
-// First-run / home screen: the two primary entry points (new scratchpad, open CSV) plus a
+// First-run / home screen: the two primary entry points (new notepad, open CSV) plus a
 // quick-pivot list of recently-opened CSV files. Shown via the Home button or on first launch.
 
 function ago(ms: number): string {
@@ -51,7 +51,7 @@ export function Welcome({
           >
             <FilePlus2 className="w-5 h-5 text-citrus-pink shrink-0" />
             <span>
-              <span className="block text-sm font-bold text-citrus-dark dark:text-citrus-night-text">New scratchpad</span>
+              <span className="block text-sm font-bold text-citrus-dark dark:text-citrus-night-text">New notepad</span>
               <span className="block text-[11px] text-citrus-muted dark:text-citrus-night-muted">Text transforms + workflow</span>
             </span>
           </button>

@@ -94,6 +94,13 @@ export interface CsvApi {
   wsRemoveSource: (wsId: string, sourceId: number) => Promise<null>
   wsTagList: (wsId: string, sourceId: number) => Promise<CsvRowTag[]>
   wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) => Promise<null>
+  wsTagByFilter: (
+    wsId: string,
+    sourceId: number,
+    filters: CsvFilter[] | undefined,
+    search: string | undefined,
+    tag: string | null
+  ) => Promise<{ count: number }>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
   count: (

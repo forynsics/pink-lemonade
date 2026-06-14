@@ -8,6 +8,8 @@ import {
   buildCountChunkSql,
   buildFilterInsertChunkSql,
   buildFiltPageSql,
+  buildTagApplyByFilterSql,
+  buildTagClearByFilterSql,
   buildDistinctSql,
   buildDistinctCountSql,
   buildLongestSql,
@@ -212,6 +214,40 @@ describe('buildQueryRowsSql', () => {
     })
     expect(sql).toBe("SELECT c0, c1 FROM data WHERE c1 = ? AND c0 LIKE ? ESCAPE '\\' LIMIT ? OFFSET ?")
     expect(params).toEqual(['US', '%10.0\\%\\_%', 100, 0])
+  })
+})
+
+describe('bulk tag-by-filter builders', () => {
+  it('apply: upserts a tag for every row matching the view (predicate + search), params SELECT-first', () => {
+    const { sql, params } = buildTagApplyByFilterSql(
+      cols,
+      [{ col: 'c0', op: 'eq', value: '8.8.8.8' }],
+      undefined,
+      3,
+      'malicious',
+      1700,
+      'data_3'
+    )
+    expect(sql).toBe(
+      'INSERT INTO tags (source_id, rid, tag, updated_at) SELECT ?, rowid, ?, ? FROM data_3 WHERE c0 = ? ' +
+        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at'
+    )
+    expect(params).toEqual([3, 'malicious', 1700, '8.8.8.8'])
+  })
+
+  it('apply: with no predicate falls back to WHERE true (tag the whole source)', () => {
+    expect(buildTagApplyByFilterSql(cols, undefined, undefined, 0, 'benign', 9, 'data_0').sql).toBe(
+      'INSERT INTO tags (source_id, rid, tag, updated_at) SELECT ?, rowid, ?, ? FROM data_0 WHERE true ' +
+        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at'
+    )
+  })
+
+  it('clear: deletes tags for rows matching the view', () => {
+    const { sql, params } = buildTagClearByFilterSql(cols, undefined, 'mimikatz', 2, 'data_2')
+    expect(sql).toBe(
+      "DELETE FROM tags WHERE source_id = ? AND rid IN (SELECT rowid FROM data_2 WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\'))"
+    )
+    expect(params).toEqual([2, '%mimikatz%', '%mimikatz%'])
   })
 })
 

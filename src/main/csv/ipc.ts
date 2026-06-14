@@ -14,6 +14,7 @@ import {
   removeSource,
   listTags,
   setTags,
+  tagByFilter,
   queryRows,
   ensureSortIndex,
   buildFilterIndex,
@@ -170,6 +171,20 @@ export function registerCsvIpc(): void {
       setTags(wsId, sourceId, rids, tag)
       return null
     }
+  )
+  // Bulk-tag every row matching the current view (filters + search), or clear if tag is null.
+  ipcMain.handle(
+    'ws:tagByFilter',
+    (
+      _e,
+      {
+        wsId,
+        sourceId,
+        filters,
+        search,
+        tag
+      }: { wsId: string; sourceId: number; filters?: Filter[]; search?: string; tag: string | null }
+    ) => tagByFilter(wsId, sourceId, normalizeFilters(filters), normalizeSearch(search), typeof tag === 'string' ? tag : null)
   )
 
   // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".

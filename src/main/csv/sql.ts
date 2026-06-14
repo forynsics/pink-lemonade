@@ -309,6 +309,45 @@ export function buildFiltPageSql(
   }
 }
 
+/**
+ * Bulk-tag every row matching the current view (filters + search) in one statement — the payoff
+ * for tagging on large files, where hand-selecting the match set is impossible. Upserts so already-
+ * tagged rows are re-tagged. `updatedAt` is passed in (sql.ts stays clock-free).
+ */
+export function buildTagApplyByFilterSql(
+  cols: ColumnMap[],
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  sourceId: number,
+  tag: string,
+  updatedAt: number,
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
+  // An INSERT…SELECT…FROM needs a WHERE before ON CONFLICT so the parser doesn't read ON as a join
+  // (SQLite upsert rule); reuse the predicate, or `WHERE true` when tagging the whole table.
+  const whereSql = where.sql || ' WHERE true'
+  const sql =
+    `INSERT INTO tags (source_id, rid, tag, updated_at) SELECT ?, rowid, ?, ? FROM ${table}${whereSql} ` +
+    `ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at`
+  return { sql, params: [sourceId, tag, updatedAt, ...where.params] }
+}
+
+/** Clear the tag from every row matching the current view (filters + search). */
+export function buildTagClearByFilterSql(
+  cols: ColumnMap[],
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  sourceId: number,
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
+  const sql = `DELETE FROM tags WHERE source_id = ? AND rid IN (SELECT rowid FROM ${table}${where.sql})`
+  return { sql, params: [sourceId, ...where.params] }
+}
+
 export function buildDistinctSql(
   col: string,
   filters: Filter[] | undefined,

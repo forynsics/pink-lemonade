@@ -12,6 +12,8 @@ import {
   buildQueryRowsSql,
   buildFilterInsertChunkSql,
   buildFiltPageSql,
+  buildTagApplyByFilterSql,
+  buildTagClearByFilterSql,
   FILT_TABLE,
   buildDistinctSql,
   buildDistinctCountSql,
@@ -432,6 +434,30 @@ export function setTags(wsId: string, sourceId: number, rids: number[], tag: str
   // next count/query rebuilds it (the renderer re-counts when a tag filter is active).
   const e = tables.get(sourceKey(wsId, sourceId))
   if (e) e.filt = undefined
+}
+
+/**
+ * Bulk-tag (or clear) every row matching the current view (filters + search) in one statement —
+ * reaches the whole match set, not just the loaded window. Returns the number of rows affected.
+ */
+export function tagByFilter(
+  wsId: string,
+  sourceId: number,
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  tag: string | null
+): { count: number } {
+  const w = workspaces.get(wsId)
+  const e = tables.get(sourceKey(wsId, sourceId))
+  if (!w || !e || !Number.isInteger(sourceId)) return { count: 0 }
+  const cols = e.meta.columns
+  const q =
+    tag == null
+      ? buildTagClearByFilterSql(cols, filters, search, sourceId, e.table)
+      : buildTagApplyByFilterSql(cols, filters, search, sourceId, tag, Date.now(), e.table)
+  const info = w.db.prepare(q.sql).run(...q.params)
+  e.filt = undefined // matching set's tags changed → invalidate the cached filter index
+  return { count: info.changes }
 }
 
 export function closeWorkspace(wsId: string): void {

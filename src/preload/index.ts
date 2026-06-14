@@ -30,6 +30,8 @@ const api = {
     wsTagList: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:tagList', { wsId, sourceId }),
     wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) =>
       ipcRenderer.invoke('ws:tagSet', { wsId, sourceId, rids, tag }),
+    wsTagByFilter: (wsId: string, sourceId: number, filters: unknown, search: string | undefined, tag: string | null) =>
+      ipcRenderer.invoke('ws:tagByFilter', { wsId, sourceId, filters, search, tag }),
     cancel: (tabId: string) => ipcRenderer.invoke('csv:cancel', { tabId }),
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
     count: (tabId: string, reqId: number, filters?: unknown, search?: string) =>

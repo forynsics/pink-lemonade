@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Database, Loader2 } from 'lucide-react'
+import { ChevronDown, Database, Loader2, Tags } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -105,6 +105,7 @@ export function CsvViewer({
     },
     [taggable, wsId, sourceId]
   )
+
   // `searchInput` is what the user types; `search` is the debounced term that drives the
   // query — so a multi-million-row LIKE scan only runs once typing settles.
   const [searchInput, setSearchInput] = useState('')
@@ -115,6 +116,20 @@ export function CsvViewer({
     const t = setTimeout(() => setSearch(term), SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [searchInput, search])
+
+  // Bulk-tag (or clear) every row matching the current filters + search — reaches the whole match
+  // set, not just the loaded window. Reloads the full tag map afterward (many rows changed).
+  const bulkTag = useCallback(
+    async (tag: TagId | null) => {
+      if (!taggable) return
+      await window.api.csv.wsTagByFilter(wsId, sourceId, filters, search, tag)
+      const rows = await window.api.csv.wsTagList(wsId, sourceId)
+      setTags(new Map(rows.map((r) => [r.rid, r.tag])))
+      if (hasTagFilterRef.current) setTagRev((r) => r + 1)
+    },
+    [taggable, wsId, sourceId, filters, search]
+  )
+  const [bulkOpen, setBulkOpen] = useState(false)
 
   // Enter in the search box steps through matches. When a search is active the grid is already
   // filtered to matches, so "next match" is simply the next row (0..total-1). `matchIndex` is the
@@ -251,6 +266,7 @@ export function CsvViewer({
   // Per-category tag counts for the toolbar legend (derived from the local map).
   const tagCounts = new Map<string, number>()
   for (const t of tags.values()) tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1)
+  const hasPredicate = filters.length > 0 || search !== ''
 
   return (
     <div className="csv-viewer flex flex-col flex-1 min-h-0 bg-citrus-card dark:bg-citrus-night-card">
@@ -284,6 +300,49 @@ export function CsvViewer({
               </button>
             ))}
           </span>
+        )}
+        {taggable && hasPredicate && (
+          <div className="relative">
+            <button
+              onClick={() => setBulkOpen((o) => !o)}
+              className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
+              title="Tag every row matching the current filters/search"
+            >
+              <Tags className="w-3.5 h-3.5" />
+              Tag {total.toLocaleString()}
+              {counting ? '+' : ''} matching
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {bulkOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setBulkOpen(false)} />
+                <div className="absolute left-0 top-full z-50 mt-1 flex w-44 flex-col rounded-lg border border-citrus-border bg-citrus-card py-1 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
+                  {TAG_DEFS.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => {
+                        void bulkTag(d.id)
+                        setBulkOpen(false)
+                      }}
+                      className="flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+                    >
+                      <span className={`inline-block w-3 h-3 rounded-sm ${d.dot}`} />
+                      {d.label}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => {
+                      void bulkTag(null)
+                      setBulkOpen(false)
+                    }}
+                    className="mt-0.5 flex items-center gap-2 border-t border-citrus-border/60 px-3 py-1.5 text-left text-xs text-citrus-muted hover:bg-citrus-pink-light/60 dark:border-citrus-night-border/60 dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev"
+                  >
+                    Clear tags on matching
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         )}
         <span
           className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-citrus-muted/70 dark:text-citrus-night-muted/70 truncate max-w-[360px]"

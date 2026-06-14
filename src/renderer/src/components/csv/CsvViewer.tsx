@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import type { CsvDoc } from '../../state/documents'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { cellTimeToEpoch } from '../../state/timeKind'
 import { useCsvQuery } from '../../hooks/useCsvQuery'
-import { VirtualGrid, type CellRef } from './VirtualGrid'
+import { VirtualGrid, type CellRef, type VirtualGridHandle } from './VirtualGrid'
 import { CellContextMenu } from './CellContextMenu'
 import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
@@ -61,6 +61,23 @@ export function CsvViewer({
     const t = setTimeout(() => setSearch(term), SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [searchInput, search])
+
+  // Enter in the search box steps through matches. When a search is active the grid is already
+  // filtered to matches, so "next match" is simply the next row (0..total-1). `matchIndex` is the
+  // absolute row index of the focused match (-1 = not yet stepped); it resets when the query changes.
+  const gridRef = useRef<VirtualGridHandle>(null)
+  const [matchIndex, setMatchIndex] = useState(-1)
+  useEffect(() => {
+    setMatchIndex(-1)
+  }, [search, filters, sort])
+  function stepMatch(dir: 1 | -1): void {
+    if (total <= 0) return
+    setMatchIndex((cur) => {
+      const next = cur < 0 ? (dir === 1 ? 0 : total - 1) : (cur + dir + total) % total
+      gridRef.current?.scrollToRow(next)
+      return next
+    })
+  }
 
   const { rows, baseOffset, total, loading, error, ensureRange } = useCsvQuery(
     doc.tabId,
@@ -180,12 +197,14 @@ export function CsvViewer({
         value={searchInput}
         active={search !== ''}
         matches={total}
+        position={matchIndex < 0 ? 0 : matchIndex + 1}
         loading={loading && search !== ''}
         onChange={setSearchInput}
         onClear={() => {
           setSearchInput('')
           setSearch('')
         }}
+        onStep={stepMatch}
       />
 
       <FilterBar
@@ -205,6 +224,7 @@ export function CsvViewer({
           baseOffset={baseOffset}
           total={total}
           sort={sort}
+          search={search}
           resetKey={`${JSON.stringify(sort)}|${JSON.stringify(filters)}|${search}`}
           onToggleSort={toggleSort}
           onOpenColumnMenu={(col, anchor) => setMenu({ col, anchor })}
@@ -212,6 +232,7 @@ export function CsvViewer({
           getLongest={(colName) => window.api.csv.longest(doc.tabId, colName)}
           onCellContext={(cell, at) => setCellMenu({ cell, at })}
           ensureRange={ensureRange}
+          controllerRef={gridRef}
           onReorderColumns={onReorderColumns}
         />
         {distinctCol && (

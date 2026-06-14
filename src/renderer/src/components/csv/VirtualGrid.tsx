@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Clock, MoreVertical } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
@@ -11,8 +11,38 @@ export interface CellRef {
   tkind?: TimeKind
 }
 
+/** Imperative handle for driving the grid from a parent (e.g. search "jump to next match"). */
+export interface VirtualGridHandle {
+  /** Scroll an absolute row index into view (centered) and select the whole row. */
+  scrollToRow: (index: number) => void
+}
+
 const ROW_H = 28
 const DEFAULT_COL_W = 168
+
+/** Split a cell value on the (case-insensitive) search term, wrapping matches in <mark>. */
+function highlight(text: string, term: string): React.ReactNode {
+  if (!term || !text) return text
+  const lower = text.toLowerCase()
+  const needle = term.toLowerCase()
+  const out: React.ReactNode[] = []
+  let from = 0
+  let hit = lower.indexOf(needle, from)
+  if (hit === -1) return text
+  let key = 0
+  while (hit !== -1) {
+    if (hit > from) out.push(text.slice(from, hit))
+    out.push(
+      <mark key={key++} className="bg-citrus-pink/40 text-inherit rounded-sm dark:bg-citrus-pink/50">
+        {text.slice(hit, hit + needle.length)}
+      </mark>
+    )
+    from = hit + needle.length
+    hit = lower.indexOf(needle, from)
+  }
+  if (from < text.length) out.push(text.slice(from))
+  return out
+}
 const MIN_COL_W = 64
 const MAX_AUTOFIT_W = 800
 const IDX_W = 60
@@ -69,6 +99,7 @@ export function VirtualGrid({
   baseOffset,
   total,
   sort,
+  search,
   resetKey,
   onToggleSort,
   onOpenColumnMenu,
@@ -76,6 +107,7 @@ export function VirtualGrid({
   getLongest,
   onCellContext,
   ensureRange,
+  controllerRef,
   onReorderColumns
 }: {
   columns: CsvColumn[]
@@ -83,6 +115,8 @@ export function VirtualGrid({
   baseOffset: number
   total: number
   sort?: CsvSort
+  /** Active (debounced) search term — matches are highlighted in visible cells. */
+  search?: string
   /** Changes when sort/filter/search change; scrolls the grid back to the top + clears selection. */
   resetKey?: string
   onToggleSort: (col: string) => void
@@ -93,6 +127,8 @@ export function VirtualGrid({
   /** Right-clicking any cell opens the cell menu (filter/exclude, + time pivots if applicable). */
   onCellContext: (cell: CellRef, at: { x: number; y: number }) => void
   ensureRange: (first: number, last: number) => void
+  /** Parent ref for imperative control (scroll-to-match). */
+  controllerRef?: React.Ref<VirtualGridHandle>
   /** Drag a header to reorder columns (from → to are positions in `columns`). */
   onReorderColumns?: (from: number, to: number) => void
 }): JSX.Element {
@@ -199,6 +235,21 @@ export function VirtualGrid({
     setDragCol(null)
     setOverCol(null)
   }, [])
+
+  // Imperative scroll-to-match: center the row, select it, and let onScroll load its window.
+  useImperativeHandle(
+    controllerRef,
+    () => ({
+      scrollToRow(index: number) {
+        const el = scrollRef.current
+        if (!el || index < 0 || index >= total) return
+        const target = index * ROW_H - el.clientHeight / 2 + ROW_H / 2
+        el.scrollTop = Math.max(0, target)
+        setSel({ anchor: { r: index, c: 0 }, focus: { r: index, c: lastCol } })
+      }
+    }),
+    [total, lastCol]
+  )
 
   useEffect(() => {
     const onUp = (): void => {
@@ -422,7 +473,7 @@ export function VirtualGrid({
                     onContextMenu={(e) => onContextMenu(e, abs, c)}
                     onDoubleClick={() => onCellOpen(v, `Row ${abs + 1} · ${col.original}`)}
                   >
-                    <span className="truncate">{v}</span>
+                    <span className="truncate">{search ? highlight(v, search) : v}</span>
                   </div>
                 )
               })}

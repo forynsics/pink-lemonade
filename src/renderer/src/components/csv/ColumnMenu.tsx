@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Filter, ListTree, Loader2 } from 'lucide-react'
 import type { CsvViewSource } from './CsvViewer'
 import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
@@ -39,10 +39,15 @@ export function ColumnMenu({
   const [rows, setRows] = useState<CsvDistinctRow[]>([])
   const [truncated, setTruncated] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [fetched, setFetched] = useState(false)
   const [needle, setNeedle] = useState('')
   const [selected, setSelected] = useState<Set<string>>(() => new Set(currentValues))
   const ref = useRef<HTMLDivElement>(null)
   const loadedRef = useRef(false)
+  // `filters` is read at fetch time (not a dep) so a parent re-render with a fresh array can't
+  // re-trigger / self-cancel the request.
+  const filtersRef = useRef(filters)
+  filtersRef.current = filters
 
   const left = Math.min(anchor.left, window.innerWidth - MENU_W - 8)
 
@@ -61,34 +66,41 @@ export function ColumnMenu({
     }
   }, [onClose])
 
-  // Load the distinct values once, the first time the Filter submenu is opened. `filters` is
-  // read at fetch time (not a dep) so the parent re-rendering a fresh `filters` array — or
-  // our own setLoading — can't re-run and self-cancel the in-flight request.
-  useEffect(() => {
-    if (!showFilter || loadedRef.current) return
+  // Compute the column's distinct values — a full GROUP BY scan, which is slow on a multi-GB
+  // source. Run it lazily (once) so editing an existing set doesn't pay for it up front.
+  const loadValues = useCallback(() => {
+    if (loadedRef.current) return
     loadedRef.current = true
-    let live = true
     setLoading(true)
     window.api.csv
-      .distinct(doc.tabId, col.name, filters, DISTINCT_LIMIT)
+      .distinct(doc.tabId, col.name, filtersRef.current, DISTINCT_LIMIT)
       .then((res) => {
-        if (!live) return
         setRows(res.rows)
         setTruncated(res.truncated || res.rows.length >= DISTINCT_LIMIT)
+        setFetched(true)
       })
-      .finally(() => {
-        if (live) setLoading(false)
-      })
-    return () => {
-      live = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showFilter, doc.tabId, col.name])
+      .finally(() => setLoading(false))
+  }, [doc.tabId, col.name])
+
+  // Applying a NEW filter (nothing selected yet) needs the value list, so auto-load it. Editing an
+  // existing set shows the current selections immediately and only scans on demand (see below).
+  useEffect(() => {
+    if (showFilter && currentValues.length === 0) loadValues()
+  }, [showFilter, currentValues.length, loadValues])
+
+  // The universe of options = the already-selected values (shown instantly, no fetch) merged with
+  // the fetched distinct list. So an edit can deselect/adjust right away; the full list is optional.
+  const universe = useMemo(() => {
+    const byVal = new Map<string, CsvDistinctRow>()
+    for (const v of currentValues) byVal.set(v, { val: v, cnt: -1 }) // count unknown until fetched
+    for (const r of rows) byVal.set(r.val, r)
+    return [...byVal.values()]
+  }, [currentValues, rows])
 
   const shown = useMemo(() => {
     const n = needle.trim().toLowerCase()
-    return n === '' ? rows : rows.filter((r) => r.val.toLowerCase().includes(n))
-  }, [rows, needle])
+    return n === '' ? universe : universe.filter((r) => r.val.toLowerCase().includes(n))
+  }, [universe, needle])
 
   function toggle(val: string): void {
     setSelected((prev) => {
@@ -134,19 +146,15 @@ export function ColumnMenu({
           <input
             autoFocus
             value={needle}
-            onChange={(e) => setNeedle(e.target.value)}
+            // Searching implies wanting values you haven't selected yet → pull the full list now.
+            onChange={(e) => {
+              setNeedle(e.target.value)
+              loadValues()
+            }}
             placeholder="find a value…"
             className="mx-2 my-1.5 px-2 py-1 text-[11px] rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
           />
           <div className="max-h-48 overflow-auto scrollbar-none">
-            {loading && (
-              <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-                <Loader2 className="w-3 h-3 animate-spin" /> loading…
-              </div>
-            )}
-            {!loading && shown.length === 0 && (
-              <div className="px-3 py-2 text-[11px] text-citrus-muted dark:text-citrus-night-muted">no values</div>
-            )}
             {shown.map((r) => {
               const on = selected.has(r.val)
               return (
@@ -165,11 +173,30 @@ export function ColumnMenu({
                     {on && <Check className="w-2.5 h-2.5" />}
                   </span>
                   <span className="truncate flex-1 text-citrus-dark dark:text-citrus-night-text">{r.val === '' ? '∅ (empty)' : r.val}</span>
-                  <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">{r.cnt.toLocaleString()}</span>
+                  <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">
+                    {r.cnt >= 0 ? r.cnt.toLocaleString() : ''}
+                  </span>
                 </button>
               )
             })}
-            {truncated && (
+            {loading && (
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+                <Loader2 className="w-3 h-3 animate-spin" /> loading values…
+              </div>
+            )}
+            {!loading && shown.length === 0 && (
+              <div className="px-3 py-2 text-[11px] text-citrus-muted dark:text-citrus-night-muted">no values</div>
+            )}
+            {/* Editing: the list isn't fetched yet — let the user opt into the (large) scan. */}
+            {!loading && !fetched && (
+              <button
+                onClick={loadValues}
+                className="w-full px-3 py-1.5 text-left text-[11px] text-citrus-pink hover:bg-citrus-pink-light/50 dark:hover:bg-citrus-night-elev"
+              >
+                + Show all values…
+              </button>
+            )}
+            {fetched && truncated && (
               <div className="px-3 py-1.5 text-[10px] text-citrus-muted dark:text-citrus-night-muted">top {DISTINCT_LIMIT} shown</div>
             )}
           </div>

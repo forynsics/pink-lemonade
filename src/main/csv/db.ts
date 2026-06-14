@@ -10,7 +10,9 @@ import {
   buildCreateTable,
   buildInsertSql,
   buildQueryRowsSql,
-  buildCountChunkSql,
+  buildFilterInsertChunkSql,
+  buildFiltPageSql,
+  FILT_TABLE,
   buildDistinctSql,
   buildDistinctCountSql,
   buildLongestSql,
@@ -51,6 +53,9 @@ export interface IngestArgs {
 interface Entry {
   db: Database.Database
   meta: CsvTableMeta
+  // The materialized filter index currently in the tab's _pl_filt table (Scale #1b): which
+  // predicate it holds, how many rows so far, and whether the build finished.
+  filt?: { token: string; count: number; complete: boolean }
 }
 
 const TEMP_PREFIX = 'pl_csv_'
@@ -180,22 +185,38 @@ export class CsvIngestCanceled extends Error {
   }
 }
 
-export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][] } {
-  const e = get(tabId)
-  const q = buildQueryRowsSql(e.meta.columns, opts)
-  const rows = e.db.prepare(q.sql).raw(true).all(...q.params) as string[][]
-  return { rows }
+/** Stable token identifying a predicate, so the page query and the materialized index agree. */
+function filterToken(filters: Filter[] | undefined, search: string | undefined): string {
+  return JSON.stringify({ f: filters ?? [], s: search ?? '' })
 }
 
-const COUNT_CHUNK = 1_000_000
+function hasPredicate(opts: QueryOpts): boolean {
+  return (opts.filters != null && opts.filters.length > 0) || (opts.search != null && opts.search !== '')
+}
+
+export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][] } {
+  const e = get(tabId)
+  // Fast path for a no-sort filtered/searched view: page the materialized filter index by keyset
+  // (O(1) anywhere in the result set) instead of re-scanning the predicate with OFFSET. Used only
+  // when the index holds exactly this predicate; otherwise fall back (correct, just slower).
+  if (!opts.sort && hasPredicate(opts) && e.filt?.token === filterToken(opts.filters, opts.search)) {
+    const q = buildFiltPageSql(e.meta.columns, opts.offset, opts.limit)
+    return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
+  }
+  const q = buildQueryRowsSql(e.meta.columns, opts)
+  return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
+}
+
+const FILT_CHUNK = 1_000_000
 
 /**
- * Count a filtered/searched result set in rowid chunks, yielding to the event loop between each
- * so the main process stays responsive (window fetches, other tabs) and the run can be aborted
- * mid-flight. `onPartial` reports the running total after each chunk (for a live count + scrollbar
- * that grows as it scans). Returns the final count, or null if `shouldAbort` tripped (superseded).
+ * Materialize a filtered/searched view's matching rowids into the tab's _pl_filt index, in rowid
+ * chunks, yielding to the event loop between each (so the main process stays responsive and the
+ * build can be aborted mid-flight when a newer predicate supersedes it). `onPartial` reports the
+ * running match count after each chunk — the count is a free byproduct, and the index then powers
+ * O(1) keyset paging of the filtered set. Returns the final count, or null if aborted.
  */
-export async function countMatches(
+export async function buildFilterIndex(
   tabId: string,
   filters: Filter[] | undefined,
   search: string,
@@ -203,16 +224,27 @@ export async function countMatches(
   shouldAbort: () => boolean
 ): Promise<number | null> {
   const e = get(tabId)
+  const token = filterToken(filters, search || undefined)
   const max = e.meta.rowCount
+  // Already built for this exact predicate — reuse it (no rescan).
+  if (e.filt?.token === token && e.filt.complete) {
+    onPartial(e.filt.count, max, max)
+    return e.filt.count
+  }
+  e.db.exec(`DROP TABLE IF EXISTS ${FILT_TABLE}`)
+  e.db.exec(`CREATE TABLE ${FILT_TABLE} (rid INTEGER)`)
+  e.filt = { token, count: 0, complete: false }
   let total = 0
-  for (let lo = 0; lo < max; lo += COUNT_CHUNK) {
+  for (let lo = 0; lo < max; lo += FILT_CHUNK) {
     if (shouldAbort()) return null
-    const hi = Math.min(lo + COUNT_CHUNK, max)
-    const q = buildCountChunkSql(e.meta.columns, filters, search || undefined, lo, hi)
-    total += (e.db.prepare(q.sql).get(...q.params) as { n: number }).n
+    const hi = Math.min(lo + FILT_CHUNK, max)
+    const q = buildFilterInsertChunkSql(e.meta.columns, filters, search || undefined, lo, hi)
+    total += e.db.prepare(q.sql).run(...q.params).changes
+    e.filt.count = total
     onPartial(total, hi, max)
     await new Promise((resolve) => setImmediate(resolve)) // yield between chunks
   }
+  e.filt.complete = true
   return total
 }
 

@@ -6,6 +6,8 @@ import {
   buildQueryRowsSql,
   buildCountSql,
   buildCountChunkSql,
+  buildFilterInsertChunkSql,
+  buildFiltPageSql,
   buildDistinctSql,
   buildDistinctCountSql,
   buildLongestSql,
@@ -214,6 +216,22 @@ describe('global search', () => {
     const { sql, params } = buildCountChunkSql(cols, undefined, undefined, 0, 1_000_000)
     expect(sql).toBe('SELECT COUNT(*) AS n FROM data WHERE rowid > ? AND rowid <= ?')
     expect(params).toEqual([0, 1_000_000])
+  })
+
+  it('filter-index insert: matching rowids of a slice, in rowid order', () => {
+    const { sql, params } = buildFilterInsertChunkSql(cols, undefined, 'invoice', 0, 1_000_000)
+    expect(sql).toBe(
+      "INSERT INTO _pl_filt (rid) SELECT rowid FROM data WHERE rowid > ? AND rowid <= ? AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\') ORDER BY rowid"
+    )
+    expect(params).toEqual([0, 1_000_000, '%invoice%', '%invoice%'])
+  })
+
+  it('filter-index page: keyset over the index joined to data', () => {
+    const { sql, params } = buildFiltPageSql(cols, 50_000, 200)
+    expect(sql).toBe(
+      'SELECT data.c0, data.c1 FROM _pl_filt JOIN data ON data.rowid = _pl_filt.rid WHERE _pl_filt.rowid > ? ORDER BY _pl_filt.rowid LIMIT ?'
+    )
+    expect(params).toEqual([50_000, 200])
   })
 
   it('an empty search term adds no predicate', () => {

@@ -4,7 +4,7 @@ import { basename } from 'path'
 import {
   ingestCsv,
   queryRows,
-  countMatches,
+  buildFilterIndex,
   getColumnUniqueValues,
   getColumnDistinctCount,
   getColumnLongest,
@@ -52,9 +52,11 @@ export function registerCsvIpc(): void {
     queryRows(tabId, normalizeOpts(opts))
   )
 
-  // Count a filtered/searched result set off the window fetch, chunked + cancelable. Reports the
-  // running total over 'csv:count-progress' (live count + a scrollbar that grows as it scans);
-  // resolves with the final count, or { canceled } if a newer request superseded it.
+  // Prepare a filtered/searched view: materialize its matching rowids (Scale #1b) so paging is
+  // O(1), and return the match count as a byproduct. Chunked + cancelable; reports the running
+  // total over 'csv:count-progress' (live count + a scrollbar that grows as it scans); resolves
+  // with the final count, or { canceled } if a newer request superseded it. Search is normalized
+  // exactly as the query path normalizes it, so the index token matches.
   ipcMain.handle(
     'csv:count',
     async (
@@ -63,12 +65,13 @@ export function registerCsvIpc(): void {
     ) => {
       countReq.set(tabId, reqId)
       const f = normalizeFilters(filters)
+      const s = normalizeSearch(search)
       const current = (): boolean => countReq.get(tabId) === reqId && !e.sender.isDestroyed()
       try {
-        const count = await countMatches(
+        const count = await buildFilterIndex(
           tabId,
           f,
-          search ?? '',
+          s ?? '',
           (c, scanned, max) => {
             if (current()) e.sender.send('csv:count-progress', { tabId, reqId, count: c, scanned, max })
           },

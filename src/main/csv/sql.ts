@@ -204,6 +204,51 @@ export function buildCountChunkSql(
   }
 }
 
+/**
+ * Per-tab materialized filter index: a temp table holding the matching rowids of a filtered/
+ * searched view, in rowid order. Its own (implicit) rowid is a gapless sequence, so paging it by
+ * keyset gives O(1) random access into the filtered set — the same trick as the unfiltered view,
+ * extended to filters. Built in rowid-chunk inserts (yielding between) so it doesn't block.
+ */
+export const FILT_TABLE = '_pl_filt'
+
+export function buildFilterInsertChunkSql(
+  cols: ColumnMap[],
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  loExclusive: number,
+  hiInclusive: number
+): { sql: string; params: unknown[] } {
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined)
+  const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
+  return {
+    sql: `INSERT INTO ${FILT_TABLE} (rid) SELECT rowid FROM data WHERE rowid > ? AND rowid <= ?${extra} ORDER BY rowid`,
+    params: [loExclusive, hiInclusive, ...where.params]
+  }
+}
+
+/** Keyset page over the materialized filter index, joined back to the data rows. */
+export function buildFiltPageSql(
+  cols: ColumnMap[],
+  offset: number,
+  limit: number
+): { sql: string; params: unknown[] } {
+  const names = cols
+    .map((c) => {
+      assertCol(c.name)
+      return `data.${c.name}`
+    })
+    .join(', ')
+  const lim = clamp(limit, 0, MAX_ROWS_LIMIT)
+  const off = Math.max(0, Math.trunc(offset) || 0)
+  // ORDER BY the index rowid (its gapless sequence) so the page is in result-set order — the grid
+  // positions these rows at absolute offsets. It's a no-op cost: the WHERE already scans that PK.
+  return {
+    sql: `SELECT ${names} FROM ${FILT_TABLE} JOIN data ON data.rowid = ${FILT_TABLE}.rid WHERE ${FILT_TABLE}.rowid > ? ORDER BY ${FILT_TABLE}.rowid LIMIT ?`,
+    params: [off, lim]
+  }
+}
+
 export function buildDistinctSql(
   col: string,
   filters: Filter[] | undefined,

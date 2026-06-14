@@ -5,6 +5,8 @@ import {
   ingestCsv,
   queryRows,
   getColumnUniqueValues,
+  getColumnDistinctCount,
+  getColumnLongest,
   getColumnValues,
   getColumnStats,
   closeTab,
@@ -49,10 +51,16 @@ export function registerCsvIpc(): void {
 
   ipcMain.handle(
     'csv:distinct',
-    (_e, { tabId, col, filters, limit }: { tabId: string; col: string; filters?: Filter[]; limit?: number }) => ({
-      rows: getColumnUniqueValues(tabId, col, normalizeFilters(filters), limit),
-      truncated: false
-    })
+    (_e, { tabId, col, filters, limit }: { tabId: string; col: string; filters?: Filter[]; limit?: number }) => {
+      const f = normalizeFilters(filters)
+      const rows = getColumnUniqueValues(tabId, col, f, limit)
+      const total = getColumnDistinctCount(tabId, col, f) // true count, even if the list is capped
+      return { rows, total, truncated: total > rows.length }
+    }
+  )
+
+  ipcMain.handle('csv:longest', (_e, { tabId, col }: { tabId: string; col: string }) =>
+    getColumnLongest(tabId, col)
   )
 
   ipcMain.handle(

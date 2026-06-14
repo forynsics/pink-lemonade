@@ -149,6 +149,22 @@ export function buildDistinctSql(
   return { sql, params: [...where.params, lim] }
 }
 
+/** True number of distinct values in a column (honours filters) — not capped by the list limit. */
+export function buildDistinctCountSql(col: string, filters?: Filter[]): { sql: string; params: unknown[] } {
+  assertCol(col)
+  const where = buildWhere(filters)
+  return { sql: `SELECT COUNT(DISTINCT ${col}) AS n FROM data${where.sql}`, params: where.params }
+}
+
+/** The longest value in a column (for auto-fit column width), truncated to `cap` chars. */
+export function buildLongestSql(col: string, cap = 256): { sql: string; params: unknown[] } {
+  assertCol(col)
+  return {
+    sql: `SELECT SUBSTR(${col}, 1, ?) AS val FROM data ORDER BY LENGTH(${col}) DESC LIMIT 1`,
+    params: [clamp(cap, 1, 4096)]
+  }
+}
+
 export function buildColumnValuesSql(
   col: string,
   filters?: Filter[],

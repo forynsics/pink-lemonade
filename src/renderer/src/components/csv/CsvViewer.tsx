@@ -132,6 +132,7 @@ export function CsvViewer({
           onToggleSort={toggleSort}
           onOpenColumnMenu={(col, anchor) => setMenu({ col, anchor })}
           onCellOpen={(value, label) => setPopout({ value, label })}
+          getLongest={(colName) => window.api.csv.longest(doc.tabId, colName)}
           ensureRange={ensureRange}
         />
         {distinctCol && (

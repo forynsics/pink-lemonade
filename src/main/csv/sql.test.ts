@@ -6,6 +6,8 @@ import {
   buildQueryRowsSql,
   buildCountSql,
   buildDistinctSql,
+  buildDistinctCountSql,
+  buildLongestSql,
   buildColumnValuesSql,
   buildStatsSql,
   HOST_PARAM_LIMIT,
@@ -91,6 +93,19 @@ describe('drill-down builders', () => {
     expect(params).toEqual([50])
   })
 
+  it('distinct count: COUNT(DISTINCT col), honouring filters', () => {
+    expect(buildDistinctCountSql('c0').sql).toBe('SELECT COUNT(DISTINCT c0) AS n FROM data')
+    const { sql, params } = buildDistinctCountSql('c0', [{ col: 'c1', op: 'eq', value: 'US' }])
+    expect(sql).toBe('SELECT COUNT(DISTINCT c0) AS n FROM data WHERE c1 = ?')
+    expect(params).toEqual(['US'])
+  })
+
+  it('longest: orders by LENGTH desc and truncates with SUBSTR', () => {
+    const { sql, params } = buildLongestSql('c0')
+    expect(sql).toBe('SELECT SUBSTR(c0, 1, ?) AS val FROM data ORDER BY LENGTH(c0) DESC LIMIT 1')
+    expect(params).toEqual([256])
+  })
+
   it('column values respects filters', () => {
     const { sql, params } = buildColumnValuesSql('c0', [{ col: 'c1', op: 'eq', value: 'US' }], 1000)
     expect(sql).toBe('SELECT c0 AS val FROM data WHERE c1 = ? LIMIT ?')
@@ -138,6 +153,8 @@ describe('SQL-injection boundary', () => {
       /Invalid column/
     )
     expect(() => buildDistinctSql(evil, undefined, 10)).toThrow(/Invalid column/)
+    expect(() => buildDistinctCountSql(evil)).toThrow(/Invalid column/)
+    expect(() => buildLongestSql(evil)).toThrow(/Invalid column/)
     expect(() => buildColumnValuesSql(evil)).toThrow(/Invalid column/)
     expect(() => buildStatsSql(evil)).toThrow(/Invalid column/)
     expect(() =>

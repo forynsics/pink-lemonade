@@ -20,6 +20,7 @@ const api = {
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
     distinct: (tabId: string, col: string, filters?: unknown, limit?: number) =>
       ipcRenderer.invoke('csv:distinct', { tabId, col, filters, limit }),
+    longest: (tabId: string, col: string) => ipcRenderer.invoke('csv:longest', { tabId, col }),
     values: (tabId: string, col: string, filters?: unknown) =>
       ipcRenderer.invoke('csv:values', { tabId, col, filters }),
     stats: (tabId: string, col: string) => ipcRenderer.invoke('csv:stats', { tabId, col }),

@@ -11,6 +11,8 @@ import {
   buildQueryRowsSql,
   buildCountSql,
   buildDistinctSql,
+  buildDistinctCountSql,
+  buildLongestSql,
   buildColumnValuesSql,
   buildStatsSql,
   maxRowsPerInsert,
@@ -176,6 +178,19 @@ export function getColumnUniqueValues(
   const e = get(tabId)
   const q = buildDistinctSql(col, filters, limit ?? 1000)
   return e.db.prepare(q.sql).all(...q.params) as Array<{ val: string; cnt: number }>
+}
+
+export function getColumnDistinctCount(tabId: string, col: string, filters?: Filter[]): number {
+  const e = get(tabId)
+  const q = buildDistinctCountSql(col, filters)
+  return (e.db.prepare(q.sql).get(...q.params) as { n: number }).n
+}
+
+export function getColumnLongest(tabId: string, col: string): string {
+  const e = get(tabId)
+  const q = buildLongestSql(col)
+  const r = e.db.prepare(q.sql).get(...q.params) as { val: string | null } | undefined
+  return r?.val ?? ''
 }
 
 export function getColumnValues(tabId: string, col: string, filters?: Filter[]): string[] {

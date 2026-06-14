@@ -55,7 +55,8 @@ export interface CsvApi {
     col: string,
     filters?: CsvFilter[],
     limit?: number
-  ) => Promise<{ rows: CsvDistinctRow[]; truncated: boolean }>
+  ) => Promise<{ rows: CsvDistinctRow[]; total: number; truncated: boolean }>
+  longest: (tabId: string, col: string) => Promise<string>
   values: (
     tabId: string,
     col: string,

@@ -5,7 +5,29 @@ import type { CsvColumn, CsvSort } from '../../state/csvTypes'
 const ROW_H = 28
 const DEFAULT_COL_W = 168
 const MIN_COL_W = 64
+const MAX_AUTOFIT_W = 800
 const IDX_W = 60
+
+/** Measure the pixel width a column needs to show `longest` (and its header) without truncating. */
+function measureColWidth(header: string, longest: string, host: HTMLElement | null): number {
+  const root = host ?? document.body
+  const measure = (cls: string, text: string): number => {
+    const el = document.createElement('span')
+    el.className = cls
+    el.style.position = 'absolute'
+    el.style.visibility = 'hidden'
+    el.style.whiteSpace = 'pre'
+    el.style.pointerEvents = 'none'
+    el.textContent = text
+    root.appendChild(el)
+    const w = el.offsetWidth
+    root.removeChild(el)
+    return w
+  }
+  const contentW = measure('text-xs font-mono', longest) + 20 // px-2 padding + small buffer
+  const headerW = measure('text-[11px] font-bold uppercase tracking-wide', header) + 52 // padding + sort/dots icons
+  return Math.min(MAX_AUTOFIT_W, Math.max(MIN_COL_W, Math.ceil(Math.max(contentW, headerW))))
+}
 
 // Manually windowed table: a single scroll container with a sticky header and a tall spacer
 // sized to the full row count; only the rows in the hook's current window are in the DOM,
@@ -42,6 +64,7 @@ export function VirtualGrid({
   onToggleSort,
   onOpenColumnMenu,
   onCellOpen,
+  getLongest,
   ensureRange
 }: {
   columns: CsvColumn[]
@@ -54,6 +77,8 @@ export function VirtualGrid({
   onToggleSort: (col: string) => void
   onOpenColumnMenu: (col: CsvColumn, anchor: { left: number; bottom: number }) => void
   onCellOpen: (value: string, label: string) => void
+  /** Fetch a column's longest value (whole table) for double-click auto-fit. */
+  getLongest: (colName: string) => Promise<string>
   ensureRange: (first: number, last: number) => void
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -85,6 +110,21 @@ export function VirtualGrid({
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }, [widths])
+
+  // Double-click the handle → auto-fit the column to its widest value across the WHOLE table.
+  const autoFit = useCallback(
+    async (idx: number, col: CsvColumn) => {
+      let longest = ''
+      try {
+        longest = await getLongest(col.name)
+      } catch {
+        /* fall back to header-only width */
+      }
+      const w = measureColWidth(col.original, longest, scrollRef.current)
+      setWidths((ws) => ws.map((x, i) => (i === idx ? w : x)))
+    },
+    [getLongest]
+  )
 
   // --- cell selection ---
   const [sel, setSel] = useState<Selection | null>(null)
@@ -235,11 +275,15 @@ export function VirtualGrid({
               >
                 <MoreVertical className="w-3.5 h-3.5" />
               </button>
-              {/* drag-to-resize handle on the right edge */}
+              {/* drag-to-resize handle on the right edge; double-click auto-fits to content */}
               <div
                 onMouseDown={(e) => startResize(e, idx)}
-                className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-citrus-pink/40"
-                title="Drag to resize column"
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  void autoFit(idx, col)
+                }}
+                className="col-resize absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-citrus-pink/40"
+                title="Drag to resize · double-click to fit"
               />
             </div>
           )

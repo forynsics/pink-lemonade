@@ -16,6 +16,7 @@ export function VirtualGrid({
   baseOffset,
   total,
   sort,
+  resetKey,
   onToggleSort,
   onPickColumn,
   ensureRange
@@ -25,6 +26,8 @@ export function VirtualGrid({
   baseOffset: number
   total: number
   sort?: CsvSort
+  /** Changes when sort/filter/search change; scrolls the grid back to the top. */
+  resetKey?: string
   onToggleSort: (col: string) => void
   onPickColumn: (col: CsvColumn) => void
   ensureRange: (first: number, last: number) => void
@@ -48,6 +51,12 @@ export function VirtualGrid({
       recompute()
     })
   }, [recompute])
+
+  // When the result set changes (sort/filter/search), jump back to the top so the user
+  // sees the first matches rather than a stale mid-table scroll position.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [resetKey])
 
   // Ensure the initial viewport is loaded once the row count is known / on resize.
   useEffect(() => {

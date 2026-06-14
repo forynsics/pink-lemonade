@@ -129,8 +129,15 @@ function normalizeOpts(opts: QueryOpts): QueryOpts {
     limit: Number(opts?.limit) || 100,
     offset: Number(opts?.offset) || 0,
     sort: normalizeSort(opts?.sort),
-    filters: normalizeFilters(opts?.filters)
+    filters: normalizeFilters(opts?.filters),
+    search: normalizeSearch(opts?.search)
   }
+}
+
+function normalizeSearch(search?: string): string | undefined {
+  if (typeof search !== 'string') return undefined
+  const t = search.trim()
+  return t === '' ? undefined : t
 }
 
 function normalizeSort(sort?: Sort): Sort | undefined {

@@ -22,6 +22,7 @@ export interface CsvFilter {
 export interface CsvQueryOpts {
   sort?: CsvSort
   filters?: CsvFilter[]
+  search?: string
   limit: number
   offset: number
 }

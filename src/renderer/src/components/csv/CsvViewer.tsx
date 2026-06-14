@@ -1,11 +1,14 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import type { CsvDoc } from '../../state/documents'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { useCsvQuery } from '../../hooks/useCsvQuery'
 import { VirtualGrid } from './VirtualGrid'
 import { FilterBar } from './FilterBar'
+import { SearchBar } from './SearchBar'
 import { ColumnDrilldown } from './ColumnDrilldown'
+
+const SEARCH_DEBOUNCE_MS = 250
 
 /** Heuristic: do the currently-loaded cells of a column look numeric? (drives sort mode) */
 function looksNumeric(rows: string[][], colIdx: number): boolean {
@@ -29,7 +32,23 @@ export function CsvViewer({
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
   const [drill, setDrill] = useState<CsvColumn | null>(null)
-  const { rows, baseOffset, total, loading, error, ensureRange } = useCsvQuery(doc.tabId, sort, filters)
+  // `searchInput` is what the user types; `search` is the debounced term that drives the
+  // query — so a multi-million-row LIKE scan only runs once typing settles.
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  useEffect(() => {
+    const term = searchInput.trim()
+    if (term === search) return
+    const t = setTimeout(() => setSearch(term), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [searchInput, search])
+
+  const { rows, baseOffset, total, loading, error, ensureRange } = useCsvQuery(
+    doc.tabId,
+    sort,
+    filters,
+    search
+  )
 
   const colIndex = useMemo(
     () => new Map(doc.columns.map((c, i) => [c.name, i] as const)),
@@ -62,11 +81,23 @@ export function CsvViewer({
         </span>
         <span className="text-citrus-muted dark:text-citrus-night-muted font-mono">
           {doc.columns.length} cols · {total.toLocaleString()} rows
-          {filters.length > 0 && ` (of ${doc.rowCount.toLocaleString()})`}
+          {(filters.length > 0 || search !== '') && ` (of ${doc.rowCount.toLocaleString()})`}
         </span>
         {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
       </div>
+
+      <SearchBar
+        value={searchInput}
+        active={search !== ''}
+        matches={total}
+        loading={loading && search !== ''}
+        onChange={setSearchInput}
+        onClear={() => {
+          setSearchInput('')
+          setSearch('')
+        }}
+      />
 
       <FilterBar columns={doc.columns} filters={filters} onAdd={addFilter} onRemove={removeFilter} />
 
@@ -77,6 +108,7 @@ export function CsvViewer({
           baseOffset={baseOffset}
           total={total}
           sort={sort}
+          resetKey={`${JSON.stringify(sort)}|${JSON.stringify(filters)}|${search}`}
           onToggleSort={toggleSort}
           onPickColumn={setDrill}
           ensureRange={ensureRange}

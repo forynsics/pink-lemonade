@@ -31,6 +31,8 @@ export interface Sort {
 export interface QueryOpts {
   sort?: Sort
   filters?: Filter[]
+  /** Global quick-find term: matches any column (LIKE, ANDed with `filters`). */
+  search?: string
   limit: number
   offset: number
 }
@@ -62,20 +64,35 @@ export function buildInsertSql(cols: ColumnMap[], rowsInBatch: number): string {
   return `INSERT INTO data (${names}) VALUES ${values}`
 }
 
-function buildWhere(filters?: Filter[]): { sql: string; params: string[] } {
-  if (!filters || filters.length === 0) return { sql: '', params: [] }
+function buildWhere(
+  filters?: Filter[],
+  search?: { term: string; cols: ColumnMap[] }
+): { sql: string; params: string[] } {
   const clauses: string[] = []
   const params: string[] = []
-  for (const f of filters) {
-    assertCol(f.col)
-    if (f.op === 'like') {
-      clauses.push(`${f.col} LIKE ? ESCAPE '\\'`)
-      params.push(`%${escapeLike(f.value)}%`)
-    } else {
-      clauses.push(`${f.col} = ?`)
-      params.push(f.value)
+  if (filters) {
+    for (const f of filters) {
+      assertCol(f.col)
+      if (f.op === 'like') {
+        clauses.push(`${f.col} LIKE ? ESCAPE '\\'`)
+        params.push(`%${escapeLike(f.value)}%`)
+      } else {
+        clauses.push(`${f.col} = ?`)
+        params.push(f.value)
+      }
     }
   }
+  // A non-empty search term matches any column: (c0 LIKE ? OR c1 LIKE ? OR …), ANDed in.
+  if (search && search.term !== '' && search.cols.length > 0) {
+    const ors: string[] = []
+    for (const c of search.cols) {
+      assertCol(c.name)
+      ors.push(`${c.name} LIKE ? ESCAPE '\\'`)
+      params.push(`%${escapeLike(search.term)}%`)
+    }
+    clauses.push(`(${ors.join(' OR ')})`)
+  }
+  if (clauses.length === 0) return { sql: '', params: [] }
   return { sql: ` WHERE ${clauses.join(' AND ')}`, params }
 }
 
@@ -91,7 +108,7 @@ export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts): { sql: strin
       return c.name
     })
     .join(', ')
-  const where = buildWhere(o.filters)
+  const where = buildWhere(o.filters, o.search ? { term: o.search, cols } : undefined)
   let order = ''
   if (o.sort) {
     assertCol(o.sort.col)
@@ -105,8 +122,12 @@ export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts): { sql: strin
   return { sql, params: [...where.params, limit, offset] }
 }
 
-export function buildCountSql(filters?: Filter[]): { sql: string; params: unknown[] } {
-  const where = buildWhere(filters)
+export function buildCountSql(
+  cols: ColumnMap[],
+  filters?: Filter[],
+  search?: string
+): { sql: string; params: unknown[] } {
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined)
   return { sql: `SELECT COUNT(*) AS n FROM data${where.sql}`, params: where.params }
 }
 

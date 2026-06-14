@@ -162,7 +162,7 @@ export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][]; t
   const e = get(tabId)
   const q = buildQueryRowsSql(e.meta.columns, opts)
   const rows = e.db.prepare(q.sql).raw(true).all(...q.params) as string[][]
-  const c = buildCountSql(opts.filters)
+  const c = buildCountSql(e.meta.columns, opts.filters, opts.search)
   const total = (e.db.prepare(c.sql).get(...c.params) as { n: number }).n
   return { rows, total }
 }

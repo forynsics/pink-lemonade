@@ -82,8 +82,36 @@ describe('drill-down builders', () => {
   })
 
   it('count and stats', () => {
-    expect(buildCountSql().sql).toBe('SELECT COUNT(*) AS n FROM data')
+    expect(buildCountSql(cols).sql).toBe('SELECT COUNT(*) AS n FROM data')
     expect(buildStatsSql('c1').sql).toContain('COUNT(DISTINCT c1) AS distinct_')
+  })
+})
+
+describe('global search', () => {
+  it('rows: ORs the term across every column, ANDed with filters, escaped + bound', () => {
+    const { sql, params } = buildQueryRowsSql(cols, {
+      limit: 50,
+      offset: 0,
+      filters: [{ col: 'c1', op: 'eq', value: 'US' }],
+      search: '10.0%'
+    })
+    expect(sql).toBe(
+      "SELECT c0, c1 FROM data WHERE c1 = ? AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\') LIMIT ? OFFSET ?"
+    )
+    expect(params).toEqual(['US', '%10.0\\%%', '%10.0\\%%', 50, 0])
+  })
+
+  it('count: applies the same all-column search predicate', () => {
+    const { sql, params } = buildCountSql(cols, undefined, '185.220')
+    expect(sql).toBe("SELECT COUNT(*) AS n FROM data WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')")
+    expect(params).toEqual(['%185.220%', '%185.220%'])
+  })
+
+  it('an empty search term adds no predicate', () => {
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, search: '' }).sql).toBe(
+      'SELECT c0, c1 FROM data LIMIT ? OFFSET ?'
+    )
+    expect(buildCountSql(cols, undefined, '').sql).toBe('SELECT COUNT(*) AS n FROM data')
   })
 })
 

@@ -18,7 +18,8 @@ interface QueryState {
 export function useCsvQuery(
   tabId: string,
   sort: CsvSort | undefined,
-  filters: CsvFilter[]
+  filters: CsvFilter[],
+  search: string
 ): {
   rows: string[][]
   baseOffset: number
@@ -27,7 +28,7 @@ export function useCsvQuery(
   error?: string
   ensureRange: (first: number, last: number) => void
 } {
-  const key = JSON.stringify({ sort, filters })
+  const key = JSON.stringify({ sort, filters, search })
   const [state, setState] = useState<QueryState>({ rows: [], baseOffset: 0, total: 0, key: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -40,7 +41,7 @@ export function useCsvQuery(
       const id = ++reqId.current
       setLoading(true)
       window.api.csv
-        .query(tabId, { sort, filters, offset, limit })
+        .query(tabId, { sort, filters, search, offset, limit })
         .then((res) => {
           if (id !== reqId.current) return // a newer request superseded this one
           setState({ rows: res.rows, baseOffset: offset, total: res.total, key })

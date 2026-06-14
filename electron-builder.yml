@@ -6,6 +6,10 @@ directories:
 files:
   - out/**
   - package.json
+# better-sqlite3 ships a native .node binary that can't be loaded from inside the asar,
+# so it must be unpacked. (Windows-ABI rebuild on a Windows runner is still a later task.)
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
 win:
   target:
     - nsis

@@ -1,8 +1,10 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
-import { readFile, writeFile } from 'fs/promises'
+import { readFile, writeFile, stat } from 'fs/promises'
 import { basename } from 'path'
+import { registerCsvIpc } from './csv/ipc'
+import { sweepStaleTempDbs, closeAll } from './csv/db'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -39,12 +41,28 @@ function createWindow(): void {
 
 // IPC: minimal local file open/save. All transforms run in the renderer;
 // these handlers exist so users can pull data in from / push results out to disk.
-ipcMain.handle('file:open', async (): Promise<{ name: string; content: string } | null> => {
+interface OpenResult {
+  name: string
+  content: string
+  size: number
+  /** Set when the file can't be opened as a single string (e.g. beyond V8's max length). */
+  tooLarge?: boolean
+}
+
+ipcMain.handle('file:open', async (): Promise<OpenResult | null> => {
   const result = await dialog.showOpenDialog({ properties: ['openFile'] })
   if (result.canceled || result.filePaths.length === 0) return null
   const path = result.filePaths[0]
-  const content = await readFile(path, 'utf-8')
-  return { name: basename(path), content }
+  const name = basename(path)
+  const { size } = await stat(path)
+  try {
+    // A file past V8's ~1.07B-char string cap throws here ("Cannot create a string
+    // longer than…") — report it instead of crashing the read.
+    const content = await readFile(path, 'utf-8')
+    return { name, content, size }
+  } catch {
+    return { name, content: '', size, tooLarge: true }
+  }
 })
 
 ipcMain.handle('file:save', async (_event, content: string): Promise<string | null> => {
@@ -78,6 +96,8 @@ function buildMenu(): void {
 }
 
 app.whenReady().then(() => {
+  sweepStaleTempDbs() // clear any temp CSV dbs left by a prior crash
+  registerCsvIpc()
   buildMenu()
   createWindow()
   app.on('activate', () => {
@@ -85,6 +105,9 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', () => closeAll())
+
 app.on('window-all-closed', () => {
+  closeAll() // delete temp CSV dbs
   if (process.platform !== 'darwin') app.quit()
 })

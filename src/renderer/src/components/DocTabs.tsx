@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus, X, Table2 } from 'lucide-react'
 import type { PinkDoc } from '../state/documents'
 
 export function DocTabs({
@@ -7,6 +7,7 @@ export function DocTabs({
   activeId,
   onSelect,
   onAdd,
+  onAddCsv,
   onClose,
   onRename
 }: {
@@ -14,6 +15,7 @@ export function DocTabs({
   activeId: string
   onSelect: (id: string) => void
   onAdd: () => void
+  onAddCsv: () => void
   onClose: (id: string) => void
   onRename: (id: string, name: string) => void
 }): JSX.Element {
@@ -69,8 +71,10 @@ export function DocTabs({
                 />
               ) : (
                 <>
-                  {isActive && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-citrus-pink animate-pulse" />
+                  {doc.kind === 'csv' ? (
+                    <Table2 className="w-3 h-3 text-citrus-pink shrink-0" />
+                  ) : (
+                    isActive && <span className="w-1.5 h-1.5 rounded-full bg-citrus-pink animate-pulse" />
                   )}
                   <span className="truncate max-w-[140px]">{doc.name}</span>
                   <button
@@ -92,9 +96,16 @@ export function DocTabs({
       <button
         className="tabs__add p-1.5 rounded-full text-citrus-muted hover:text-citrus-pink hover:bg-citrus-card transition-colors dark:text-citrus-night-muted dark:hover:bg-citrus-night-card"
         onClick={onAdd}
-        title="New document"
+        title="New scratchpad"
       >
         <Plus className="w-4 h-4" />
+      </button>
+      <button
+        className="tabs__add-csv inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold text-citrus-muted hover:text-citrus-pink hover:bg-citrus-card transition-colors dark:text-citrus-night-muted dark:hover:bg-citrus-night-card"
+        onClick={onAddCsv}
+        title="Open a CSV/TSV file in the table viewer"
+      >
+        <Table2 className="w-3.5 h-3.5" /> CSV
       </button>
     </div>
   )

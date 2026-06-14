@@ -1,15 +1,29 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Sun, Moon } from 'lucide-react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { Sun, Moon, Loader2 } from 'lucide-react'
 import { Logo } from './components/Logo'
 import { ToolPalette } from './components/ToolPalette'
 import { WorkflowBar } from './components/WorkflowBar'
 import { Workbench } from './components/Workbench'
 import { DocTabs } from './components/DocTabs'
+import { CsvViewer } from './components/csv/CsvViewer'
+import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
 import { getById, defaultOptions } from './tools/registry'
-import { runWorkflow } from './state/workflow'
-import { createDoc, loadDocs, newId, saveDocs, type DocsState, type PinkDoc } from './state/documents'
+import { runWorkflow, type WorkflowStep } from './state/workflow'
+import {
+  createDoc,
+  createCsvDoc,
+  loadDocs,
+  newId,
+  saveDocs,
+  type CsvDoc,
+  type DocsState,
+  type PinkDoc,
+  type ScratchDoc
+} from './state/documents'
 import { loadTheme, saveTheme, type Theme } from './state/theme'
 import type { ToolOptions } from './tools/types'
+
+const NO_STEPS: WorkflowStep[] = []
 
 function initialDocs(): DocsState {
   const loaded = loadDocs()
@@ -24,24 +38,54 @@ function initialDocs(): DocsState {
 export default function App(): JSX.Element {
   const [{ docs, activeId }, setState] = useState<DocsState>(initialDocs)
   const [theme, setTheme] = useState<Theme>(loadTheme)
+  // Tracks an in-flight CSV ingest (for the import overlay + cancel).
+  const [csvImport, setCsvImport] = useState<{ tabId: string; name: string; rows: number } | null>(null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     saveTheme(theme)
   }, [theme])
 
+  // Live ingest progress for the active import.
   useEffect(() => {
-    saveDocs({ docs, activeId })
+    return window.api.csv.onProgress((p) => {
+      setCsvImport((cur) => (cur && p.tabId === cur.tabId && p.phase !== 'done' ? { ...cur, rows: p.rows } : cur))
+    })
+  }, [])
+
+  // Debounce persistence: typing fires this on every keystroke, and JSON.stringify of the
+  // docs (even bounded by the size guard in saveDocs) shouldn't run per character.
+  const saveTimer = useRef<number>()
+  useEffect(() => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => saveDocs({ docs, activeId }), 500)
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    }
   }, [docs, activeId])
 
   const active = docs.find((d) => d.id === activeId) ?? docs[0]
-  const result = useMemo(() => runWorkflow(active.input, active.steps), [active])
+  // Workflow runs only for scratch docs. Hooks must run unconditionally, so derive scratch
+  // input/steps (falling back to empties for a CSV doc) and run the workflow on a deferred
+  // copy of the input so the textarea stays responsive while a heavy pipeline catches up.
+  const scratchInput = active.kind === 'scratch' ? active.input : ''
+  const scratchSteps = active.kind === 'scratch' ? active.steps : NO_STEPS
+  const deferredInput = useDeferredValue(scratchInput)
+  const result = useMemo(
+    () => runWorkflow(deferredInput, scratchSteps),
+    [deferredInput, scratchSteps]
+  )
 
-  function patchActive(patch: Partial<PinkDoc>): void {
-    setState((s) => ({
-      ...s,
-      docs: s.docs.map((d) => (d.id === s.activeId ? { ...d, ...patch } : d))
-    }))
+  function updateActive(fn: (d: PinkDoc) => PinkDoc): void {
+    setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === s.activeId ? fn(d) : d)) }))
+  }
+
+  function patchScratch(patch: Partial<ScratchDoc>): void {
+    updateActive((d) => (d.kind === 'scratch' ? { ...d, ...patch } : d))
+  }
+
+  function patchCsv(patch: Partial<CsvDoc>): void {
+    updateActive((d) => (d.kind === 'csv' ? { ...d, ...patch } : d))
   }
 
   // ---- document operations ----
@@ -52,7 +96,57 @@ export default function App(): JSX.Element {
     })
   }
 
+  async function openCsv(): Promise<void> {
+    const picked = await window.api.csv.pick()
+    if (!picked) return
+    const tabId = newId()
+    setCsvImport({ tabId, name: picked.sourceName, rows: 0 })
+    try {
+      const res = await window.api.csv.ingest(tabId, picked.path)
+      if (res) {
+        setState((s) => {
+          const doc = createCsvDoc(res)
+          return { docs: [...s.docs, doc], activeId: doc.id }
+        })
+      }
+    } finally {
+      setCsvImport(null)
+    }
+  }
+
+  async function reopenCsv(): Promise<void> {
+    const picked = await window.api.csv.pick()
+    if (!picked) return
+    const tabId = newId()
+    setCsvImport({ tabId, name: picked.sourceName, rows: 0 })
+    try {
+      const res = await window.api.csv.ingest(tabId, picked.path)
+      if (res) {
+        patchCsv({
+          tabId: res.tabId,
+          columns: res.columns,
+          rowCount: res.rowCount,
+          dbPath: res.dbPath,
+          sourceName: res.sourceName,
+          needsReopen: false
+        })
+      }
+    } finally {
+      setCsvImport(null)
+    }
+  }
+
+  /** Open a fresh scratch tab pre-filled with a column's values (the CSV → scratchpad pivot). */
+  function pivotToScratch(values: string[], label: string): void {
+    setState((s) => {
+      const doc: ScratchDoc = { ...createDoc(label), input: values.join('\n') }
+      return { docs: [...s.docs, doc], activeId: doc.id }
+    })
+  }
+
   function closeDoc(id: string): void {
+    const doc = docs.find((d) => d.id === id)
+    if (doc?.kind === 'csv' && doc.tabId) window.api.csv.close(doc.tabId)
     setState((s) => {
       if (s.docs.length === 1) {
         const fresh = createDoc('Untitled 1')
@@ -74,36 +168,40 @@ export default function App(): JSX.Element {
     setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === id ? { ...d, name } : d)) }))
   }
 
-  // ---- workflow operations (act on the active document) ----
+  // ---- workflow operations (act on the active scratch document) ----
   function addTool(toolId: string): void {
     const tool = getById(toolId)
-    if (!tool) return
-    patchActive({
+    if (!tool || active.kind !== 'scratch') return
+    patchScratch({
       steps: [...active.steps, { uid: newId(), toolId, options: defaultOptions(tool), enabled: true }]
     })
   }
 
   function removeStep(uid: string): void {
-    patchActive({ steps: active.steps.filter((s) => s.uid !== uid) })
+    if (active.kind !== 'scratch') return
+    patchScratch({ steps: active.steps.filter((s) => s.uid !== uid) })
   }
 
   function toggleStepEnabled(uid: string): void {
-    patchActive({
+    if (active.kind !== 'scratch') return
+    patchScratch({
       steps: active.steps.map((s) => (s.uid === uid ? { ...s, enabled: s.enabled === false } : s))
     })
   }
 
   function updateOptions(uid: string, options: ToolOptions): void {
-    patchActive({ steps: active.steps.map((s) => (s.uid === uid ? { ...s, options } : s)) })
+    if (active.kind !== 'scratch') return
+    patchScratch({ steps: active.steps.map((s) => (s.uid === uid ? { ...s, options } : s)) })
   }
 
   function moveStep(uid: string, dir: -1 | 1): void {
+    if (active.kind !== 'scratch') return
     const i = active.steps.findIndex((s) => s.uid === uid)
     const j = i + dir
     if (i < 0 || j < 0 || j >= active.steps.length) return
     const steps = [...active.steps]
     ;[steps[i], steps[j]] = [steps[j], steps[i]]
-    patchActive({ steps })
+    patchScratch({ steps })
   }
 
   return (
@@ -136,21 +234,56 @@ export default function App(): JSX.Element {
             activeId={activeId}
             onSelect={selectDoc}
             onAdd={addDoc}
+            onAddCsv={openCsv}
             onClose={closeDoc}
             onRename={renameDoc}
           />
-          <WorkflowBar
-            steps={active.steps}
-            result={result}
-            onRemove={removeStep}
-            onMove={moveStep}
-            onOptions={updateOptions}
-            onToggleEnabled={toggleStepEnabled}
-            onClear={() => patchActive({ steps: [] })}
-          />
-          <Workbench input={active.input} onInput={(v) => patchActive({ input: v })} result={result} />
+          {active.kind === 'csv' ? (
+            active.needsReopen ? (
+              <CsvPlaceholder doc={active} onReopen={reopenCsv} />
+            ) : (
+              <CsvViewer doc={active} onPivot={pivotToScratch} />
+            )
+          ) : (
+            <>
+              <WorkflowBar
+                steps={active.steps}
+                result={result}
+                onRemove={removeStep}
+                onMove={moveStep}
+                onOptions={updateOptions}
+                onToggleEnabled={toggleStepEnabled}
+                onClear={() => patchScratch({ steps: [] })}
+              />
+              <Workbench
+                input={active.input}
+                onInput={(v) => patchScratch({ input: v })}
+                result={result}
+              />
+            </>
+          )}
         </main>
       </div>
+
+      {csvImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-citrus-border bg-citrus-card px-8 py-6 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
+            <Loader2 className="w-6 h-6 animate-spin text-citrus-pink" />
+            <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
+              Importing {csvImport.name}…
+            </div>
+            <div className="text-xs font-mono text-citrus-muted dark:text-citrus-night-muted">
+              {csvImport.rows.toLocaleString()} rows
+            </div>
+            <button
+              className="mt-1 px-3 py-1 rounded-md text-[11px] font-bold border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:border-citrus-pink/40 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted"
+              onClick={() => window.api.csv.cancel(csvImport.tabId)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

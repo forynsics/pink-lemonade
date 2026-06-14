@@ -15,12 +15,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dist": "electron-vite build && electron-builder --win nsis",
-    "dist:dir": "electron-vite build && electron-builder --dir"
+    "dist:dir": "electron-vite build && electron-builder --dir",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@fontsource/plus-jakarta-sans": "^5.2.8",
     "@tailwindcss/vite": "^4.3.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
@@ -37,5 +40,8 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
   }
 }

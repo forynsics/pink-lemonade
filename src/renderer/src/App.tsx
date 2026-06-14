@@ -99,6 +99,13 @@ export default function App(): JSX.Element {
     updateActive((d) => (d.kind === 'csv' ? { ...d, ...patch } : d))
   }
 
+  function patchCsvById(id: string, patch: Partial<CsvDoc>): void {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => (d.id === id && d.kind === 'csv' ? { ...d, ...patch } : d))
+    }))
+  }
+
   // ---- document operations ----
   function addDoc(): void {
     setHome(false)
@@ -155,28 +162,37 @@ export default function App(): JSX.Element {
     void ingestNewTab(f.path, f.sourceName)
   }
 
-  async function reopenCsv(): Promise<void> {
-    const picked = await window.api.csv.pick()
-    if (!picked) return
-    const tabId = newId()
-    setCsvImport({ tabId, name: picked.sourceName, rows: 0, bytes: 0, total: 0 })
+  // Resume a CSV session by re-opening its persistent db by path — no re-pick, no re-ingest
+  // (Slice A). The db lives in userData/sessions and carries its own column metadata.
+  const reopeningRef = useRef<Set<string>>(new Set())
+  async function reopenCsv(doc: CsvDoc): Promise<void> {
+    if (!doc.dbPath || reopeningRef.current.has(doc.id)) return
+    reopeningRef.current.add(doc.id)
     try {
-      const res = await window.api.csv.ingest(tabId, picked.path)
-      if (res) {
-        patchCsv({
-          tabId: res.tabId,
-          columns: res.columns,
-          rowCount: res.rowCount,
-          dbPath: res.dbPath,
-          sourceName: res.sourceName,
-          needsReopen: false
-        })
-        recordRecent(picked.path, res.sourceName, res.rowCount)
-      }
+      const res = await window.api.csv.open(doc.tabId, doc.dbPath)
+      patchCsvById(doc.id, {
+        columns: res.columns,
+        rowCount: res.rowCount,
+        sourceName: res.sourceName,
+        dbPath: res.dbPath,
+        needsReopen: false,
+        reopenFailed: false
+      })
+    } catch {
+      patchCsvById(doc.id, { reopenFailed: true }) // db file missing / not a pink-lemonade db
     } finally {
-      setCsvImport(null)
+      reopeningRef.current.delete(doc.id)
     }
   }
+
+  // Auto-resume the active CSV doc when its db isn't open yet this session (after a restart).
+  const csvNeedsReopen = active.kind === 'csv' && !!active.needsReopen
+  const csvReopenFailed = active.kind === 'csv' && !!active.reopenFailed
+  useEffect(() => {
+    if (!home && active.kind === 'csv' && active.needsReopen && !active.reopenFailed) {
+      void reopenCsv(active)
+    }
+  }, [home, active.id, csvNeedsReopen, csvReopenFailed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Reorder the active CSV's columns (drag-to-reorder); persists via patchCsv → localStorage. */
   function reorderCsvColumns(from: number, to: number): void {
@@ -332,7 +348,7 @@ export default function App(): JSX.Element {
                 style={{ display: visible ? 'flex' : 'none' }}
               >
                 {d.needsReopen ? (
-                  <CsvPlaceholder doc={d} onReopen={reopenCsv} />
+                  <CsvPlaceholder doc={d} failed={d.reopenFailed} onReopen={() => reopenCsv(d)} />
                 ) : (
                   <CsvViewer doc={d} onPivot={pivotToScratch} onReorderColumns={reorderCsvColumns} />
                 )}

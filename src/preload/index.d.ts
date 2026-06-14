@@ -59,7 +59,10 @@ export interface CsvProgress {
 
 export interface CsvApi {
   pick: () => Promise<{ path: string; sourceName: string } | null>
+  pickDb: () => Promise<string | null>
   ingest: (tabId: string, path: string) => Promise<CsvOpenResult | null>
+  open: (tabId: string, dbPath: string) => Promise<CsvOpenResult>
+  deleteDb: (dbPath: string) => Promise<null>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
   count: (

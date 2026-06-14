@@ -15,7 +15,10 @@ const api = {
   // CSV viewer: data lives in a main-process SQLite db; these return only small result sets.
   csv: {
     pick: () => ipcRenderer.invoke('csv:pick'),
+    pickDb: () => ipcRenderer.invoke('csv:pickDb'),
     ingest: (tabId: string, path: string) => ipcRenderer.invoke('csv:ingest', { tabId, path }),
+    open: (tabId: string, dbPath: string) => ipcRenderer.invoke('csv:open', { tabId, dbPath }),
+    deleteDb: (dbPath: string) => ipcRenderer.invoke('csv:deleteDb', { dbPath }),
     cancel: (tabId: string) => ipcRenderer.invoke('csv:cancel', { tabId }),
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
     count: (tabId: string, reqId: number, filters?: unknown, search?: string) =>

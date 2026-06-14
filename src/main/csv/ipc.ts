@@ -3,6 +3,8 @@ import type { WebContents } from 'electron'
 import { basename } from 'path'
 import {
   ingestCsv,
+  openDb,
+  deleteDb,
   queryRows,
   ensureSortIndex,
   buildFilterIndex,
@@ -117,6 +119,32 @@ export function registerCsvIpc(): void {
 
   ipcMain.handle('csv:close', (_e, { tabId }: { tabId: string }) => {
     closeTab(tabId)
+    return null
+  })
+
+  // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".
+  ipcMain.handle('csv:open', (_e, { tabId, dbPath }: { tabId: string; dbPath: string }): OpenResult => {
+    const meta = openDb(tabId, dbPath)
+    return {
+      tabId,
+      sourceName: meta.sourceName,
+      columns: meta.columns,
+      rowCount: meta.rowCount,
+      dbPath: meta.dbPath
+    }
+  })
+
+  // Pick a .db to open directly (Slice B). Returns its path, or null if canceled.
+  ipcMain.handle('csv:pickDb', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = { properties: ['openFile' as const], filters: [{ name: 'Pink Lemonade database', extensions: ['db'] }] }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+
+  // Delete a session's db files (Home "delete session").
+  ipcMain.handle('csv:deleteDb', (_e, { dbPath }: { dbPath: string }) => {
+    deleteDb(dbPath)
     return null
   })
 }

@@ -23,8 +23,10 @@ export interface CsvDoc extends DocBase {
   columns: CsvColumn[]
   rowCount: number
   dbPath: string
-  /** True after a reload: the temp .db is gone, so the file must be re-opened. */
+  /** True after a reload: the persistent db isn't open in main yet, so it must be re-opened by path. */
   needsReopen?: boolean
+  /** Set if re-opening the persistent db by path failed (file missing/moved). */
+  reopenFailed?: boolean
 }
 
 export type PinkDoc = ScratchDoc | CsvDoc
@@ -88,7 +90,7 @@ function migrate(raw: unknown): PinkDoc {
       columns: Array.isArray(d.columns) ? (d.columns as CsvColumn[]) : [],
       rowCount: Number(d.rowCount ?? 0),
       dbPath: String(d.dbPath ?? ''),
-      needsReopen: true // the temp .db is gone after a restart
+      needsReopen: true // main process is fresh after a restart — reopen the persistent db by path
     }
   }
   return {

@@ -1,11 +1,11 @@
 import Database from 'better-sqlite3'
-import { join } from 'path'
+import { app } from 'electron'
+import { join, basename } from 'path'
 import { tmpdir } from 'os'
-import { randomBytes } from 'crypto'
-import { statSync, unlinkSync, readdirSync } from 'fs'
+import { statSync, unlinkSync, readdirSync, existsSync, mkdirSync } from 'fs'
 import { parseCsvStream } from './parser'
 import type { ColumnMap } from './sanitize'
-import { detectColumnTime } from './coltypes'
+import { detectColumnTime, type TimeKind } from './coltypes'
 import {
   buildCreateTable,
   buildInsertSql,
@@ -60,11 +60,18 @@ interface Entry {
   indexes: Set<string>
 }
 
-const TEMP_PREFIX = 'pl_csv_'
+const TEMP_PREFIX = 'pl_csv_' // legacy temp-db prefix (older builds) — still swept at startup
 const tables = new Map<string, Entry>()
 
-function tempDbPath(tabId: string): string {
-  return join(tmpdir(), `${TEMP_PREFIX}${safe(tabId)}_${randomBytes(4).toString('hex')}.db`)
+/** Persistent per-import database directory: <userData>/sessions. Survives restarts (Slice A). */
+function sessionsDir(): string {
+  const dir = join(app.getPath('userData'), 'sessions')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function sessionDbPath(tabId: string): string {
+  return join(sessionsDir(), `${safe(tabId)}.db`)
 }
 
 function safe(s: string): string {
@@ -85,12 +92,13 @@ function applyQueryPragmas(db: Database.Database): void {
   db.pragma('mmap_size = 536870912') // 512 MB
 }
 
-/** Stream a CSV from disk into a fresh temp SQLite db and register it under tabId. */
+/** Stream a CSV from disk into a fresh persistent SQLite db (userData/sessions) and register it. */
 export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
   const { tabId, filePath, sourceName } = args
-  closeTab(tabId) // drop any prior table reusing this id
+  closeTab(tabId) // drop any prior connection reusing this id
 
-  const dbPath = tempDbPath(tabId)
+  const dbPath = sessionDbPath(tabId)
+  removeDbFiles(dbPath) // a fresh import starts from a clean file (the path is reused per tabId)
   const db = new Database(dbPath)
   applyImportPragmas(db)
 
@@ -165,6 +173,10 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
       return kind ? { ...c, time: kind } : c
     })
 
+    // Make the db self-describing (Slice A): so reopening the bare .db reconstructs the view
+    // without the original CSV, and "Open Database…" can validate it's a pink-lemonade db.
+    writeSelfDescribingTables(db, sourceName, columns, rowCount)
+
     applyQueryPragmas(db)
     const meta: CsvTableMeta = { tabId, dbPath, sourceName, columns, rowCount }
     tables.set(tabId, { db, meta, indexes: new Set() })
@@ -185,6 +197,69 @@ export class CsvIngestCanceled extends Error {
     super('CSV ingest canceled')
     this.name = 'CsvIngestCanceled'
   }
+}
+
+const SCHEMA_VERSION = 1
+
+/** Write pl_meta + pl_columns so the db carries its own column metadata (self-describing). */
+function writeSelfDescribingTables(
+  db: Database.Database,
+  sourceName: string,
+  columns: ColumnMap[],
+  rowCount: number
+): void {
+  db.exec('CREATE TABLE IF NOT EXISTS pl_meta (key TEXT PRIMARY KEY, value TEXT)')
+  const setMeta = db.prepare('INSERT OR REPLACE INTO pl_meta (key, value) VALUES (?, ?)')
+  setMeta.run('source_name', sourceName)
+  setMeta.run('row_count', String(rowCount))
+  setMeta.run('num_cols', String(columns.length))
+  setMeta.run('version', String(SCHEMA_VERSION))
+  setMeta.run('created_at', String(Date.now()))
+  db.exec('CREATE TABLE IF NOT EXISTS pl_columns (idx INTEGER PRIMARY KEY, name TEXT, original TEXT, time TEXT)')
+  const setCol = db.prepare('INSERT OR REPLACE INTO pl_columns (idx, name, original, time) VALUES (?, ?, ?, ?)')
+  db.transaction(() => columns.forEach((c, i) => setCol.run(i, c.name, c.original, c.time ?? null)))()
+}
+
+/**
+ * Open an existing persistent db by path and register it under tabId — no re-ingest. Used to
+ * resume a session on restart and to "Open Database…" a .db directly. Reads the self-describing
+ * tables; throws if they're absent (not a pink-lemonade database).
+ */
+export function openDb(tabId: string, dbPath: string): CsvTableMeta {
+  closeTab(tabId)
+  if (!existsSync(dbPath)) throw new Error('Database file not found')
+  const db = new Database(dbPath)
+  let metaRows: Array<{ key: string; value: string }>
+  let colRows: Array<{ name: string; original: string; time: string | null }>
+  try {
+    metaRows = db.prepare('SELECT key, value FROM pl_meta').all() as typeof metaRows
+    colRows = db.prepare('SELECT name, original, time FROM pl_columns ORDER BY idx').all() as typeof colRows
+  } catch {
+    db.close()
+    throw new Error('Not a pink-lemonade database')
+  }
+  applyQueryPragmas(db)
+  const m = Object.fromEntries(metaRows.map((r) => [r.key, r.value]))
+  const columns: ColumnMap[] = colRows.map((r) =>
+    r.time ? { name: r.name, original: r.original, time: r.time as TimeKind } : { name: r.name, original: r.original }
+  )
+  const meta: CsvTableMeta = {
+    tabId,
+    dbPath,
+    sourceName: m.source_name ?? basename(dbPath),
+    columns,
+    rowCount: Number(m.row_count ?? 0)
+  }
+  tables.set(tabId, { db, meta, indexes: new Set() })
+  return meta
+}
+
+/** Close any open connection to a session db and delete its files (Home "delete session"). */
+export function deleteDb(dbPath: string): void {
+  for (const [id, e] of tables) {
+    if (e.meta.dbPath === dbPath) closeTab(id)
+  }
+  removeDbFiles(dbPath)
 }
 
 /** Stable token identifying a predicate, so the page query and the materialized index agree. */
@@ -324,7 +399,8 @@ export function closeTab(tabId: string): void {
   } catch {
     /* ignore */
   }
-  removeDbFiles(e.meta.dbPath)
+  // The db file is persistent now (Slice A) — closing a tab just releases the connection; the
+  // session lives on until the user deletes it (deleteDb).
   tables.delete(tabId)
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Database, Loader2 } from 'lucide-react'
 import type { CsvDoc } from '../../state/documents'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { cellTimeToEpoch } from '../../state/timeKind'
@@ -194,6 +194,13 @@ export function CsvViewer({
         </span>
         {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
+        <span
+          className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-citrus-muted/70 dark:text-citrus-night-muted/70 truncate max-w-[360px]"
+          title={`Loaded from ${doc.dbPath}`}
+        >
+          <Database className="w-3 h-3 shrink-0" />
+          {doc.dbPath}
+        </span>
       </div>
 
       <SearchBar

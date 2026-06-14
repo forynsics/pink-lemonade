@@ -4,6 +4,7 @@ import { basename } from 'path'
 import {
   ingestCsv,
   queryRows,
+  ensureSortIndex,
   buildFilterIndex,
   getColumnUniqueValues,
   getColumnDistinctCount,
@@ -48,9 +49,13 @@ export function registerCsvIpc(): void {
     return { canceled: false }
   })
 
-  ipcMain.handle('csv:query', (_e, { tabId, opts }: { tabId: string; opts: QueryOpts }) =>
-    queryRows(tabId, normalizeOpts(opts))
-  )
+  ipcMain.handle('csv:query', (_e, { tabId, opts }: { tabId: string; opts: QueryOpts }) => {
+    const o = normalizeOpts(opts)
+    // On a large table, build the matching column index before sorting (Scale #3) — without it,
+    // a deep sorted scroll re-sorts the whole set per window (~90s at 12M rows). One-time, cached.
+    if (o.sort) ensureSortIndex(tabId, o.sort.col, !!o.sort.numeric)
+    return queryRows(tabId, o)
+  })
 
   // Prepare a filtered/searched view: materialize its matching rowids (Scale #1b) so paging is
   // O(1), and return the match count as a byproduct. Chunked + cancelable; reports the running

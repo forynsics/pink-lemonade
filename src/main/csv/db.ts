@@ -56,6 +56,8 @@ interface Entry {
   // The materialized filter index currently in the tab's _pl_filt table (Scale #1b): which
   // predicate it holds, how many rows so far, and whether the build finished.
   filt?: { token: string; count: number; complete: boolean }
+  // Keys of column indexes already built on demand for sorting (Scale #3), e.g. "c3:n".
+  indexes: Set<string>
 }
 
 const TEMP_PREFIX = 'pl_csv_'
@@ -165,7 +167,7 @@ export async function ingestCsv(args: IngestArgs): Promise<CsvTableMeta> {
 
     applyQueryPragmas(db)
     const meta: CsvTableMeta = { tabId, dbPath, sourceName, columns, rowCount }
-    tables.set(tabId, { db, meta })
+    tables.set(tabId, { db, meta, indexes: new Set() })
     return meta
   } catch (e) {
     try {
@@ -205,6 +207,26 @@ export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][] } 
   }
   const q = buildQueryRowsSql(e.meta.columns, opts)
   return { rows: e.db.prepare(q.sql).raw(true).all(...q.params) as string[][] }
+}
+
+// Below this many rows an unindexed sort is already fast enough that an index isn't worth building.
+const INDEX_MIN_ROWS = 200_000
+
+/**
+ * Build (once, on demand) a column index matching a sort's ORDER BY expression, so sorting a large
+ * table uses the index instead of re-sorting the whole set on every window fetch. Without this,
+ * a deep sorted scroll is catastrophic (~90s to page the middle of a 12M-row sort); with it,
+ * paging is ~100ms. The build is blocking but one-time per (column, numeric/text) per session.
+ */
+export function ensureSortIndex(tabId: string, col: string, numeric: boolean): void {
+  if (!/^c\d+$/.test(col)) throw new Error(`bad column: ${col}`) // SQL-injection boundary
+  const e = get(tabId)
+  if (e.meta.rowCount < INDEX_MIN_ROWS) return // small table: unindexed sort is already fast
+  const key = `${col}:${numeric ? 'n' : 't'}`
+  if (e.indexes.has(key)) return
+  const expr = numeric ? `CAST(${col} AS REAL)` : `${col} COLLATE NOCASE`
+  e.db.exec(`CREATE INDEX IF NOT EXISTS ix_${col}_${numeric ? 'n' : 't'} ON data (${expr})`)
+  e.indexes.add(key)
 }
 
 const FILT_CHUNK = 1_000_000

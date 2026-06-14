@@ -44,7 +44,9 @@ export default function App(): JSX.Element {
   const [csvImport, setCsvImport] = useState<{ tabId: string; name: string; rows: number } | null>(null)
   // Recently-opened CSV files (welcome-screen quick pivot) + whether the welcome screen is showing.
   const [recent, setRecent] = useState<RecentFile[]>(loadRecent)
-  const [home, setHome] = useState<boolean>(() => loadDocs() === null)
+  // The app opens on the Home/welcome screen by default (the user's saved tabs stay in the
+  // tab bar; clicking one — or any open/new action — leaves Home).
+  const [home, setHome] = useState<boolean>(true)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme

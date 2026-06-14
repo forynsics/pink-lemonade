@@ -301,7 +301,12 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
   if (!Array.isArray(filters) || filters.length === 0) return undefined
   const out: Filter[] = []
   for (const f of filters) {
-    if (!f || typeof f.col !== 'string') continue
+    if (!f) continue
+    if (f.op === 'tag') {
+      if (typeof f.tag === 'string' && f.tag) out.push({ op: 'tag', tag: f.tag })
+      continue
+    }
+    if (typeof f.col !== 'string') continue
     if (f.op === 'in') {
       const values = Array.isArray(f.values) ? f.values.map(String) : []
       if (values.length > 0) out.push({ col: f.col, op: 'in', values })

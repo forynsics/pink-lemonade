@@ -12,13 +12,15 @@ export interface TagDef {
   bar: string
   /** Small swatch in menus / legends (+ dark variant). */
   dot: string
+  /** Faint full-row background tint so tagged rows are spottable when scrolled far right. */
+  row: string
 }
 
 export const TAG_DEFS: TagDef[] = [
-  { id: 'malicious', label: 'Malicious', bar: 'bg-red-500 dark:bg-red-400', dot: 'bg-red-500 dark:bg-red-400' },
-  { id: 'suspicious', label: 'Suspicious', bar: 'bg-amber-500 dark:bg-amber-400', dot: 'bg-amber-500 dark:bg-amber-400' },
-  { id: 'unknown', label: 'Unknown', bar: 'bg-slate-400 dark:bg-slate-400', dot: 'bg-slate-400 dark:bg-slate-400' },
-  { id: 'benign', label: 'Benign', bar: 'bg-emerald-500 dark:bg-emerald-400', dot: 'bg-emerald-500 dark:bg-emerald-400' }
+  { id: 'malicious', label: 'Malicious', bar: 'bg-red-500 dark:bg-red-400', dot: 'bg-red-500 dark:bg-red-400', row: 'bg-red-500/10 dark:bg-red-500/20' },
+  { id: 'suspicious', label: 'Suspicious', bar: 'bg-amber-500 dark:bg-amber-400', dot: 'bg-amber-500 dark:bg-amber-400', row: 'bg-amber-400/10 dark:bg-amber-400/15' },
+  { id: 'unknown', label: 'Unknown', bar: 'bg-slate-400 dark:bg-slate-400', dot: 'bg-slate-400 dark:bg-slate-400', row: 'bg-slate-400/10 dark:bg-slate-400/15' },
+  { id: 'benign', label: 'Benign', bar: 'bg-emerald-500 dark:bg-emerald-400', dot: 'bg-emerald-500 dark:bg-emerald-400', row: 'bg-emerald-500/10 dark:bg-emerald-500/15' }
 ]
 
 const BY_ID: Record<string, TagDef> = Object.fromEntries(TAG_DEFS.map((t) => [t.id, t]))

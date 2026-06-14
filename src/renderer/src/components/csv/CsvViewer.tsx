@@ -83,6 +83,11 @@ export function CsvViewer({
     }
   }, [doc.tabId, taggable, wsId, sourceId])
 
+  // When tags change while a "show only tagged X" filter is active, the cached filtered view goes
+  // stale; bump this to force a re-query/re-count. Tracked via a ref so applyTag stays stable.
+  const [tagRev, setTagRev] = useState(0)
+  const hasTagFilterRef = useRef(false)
+
   // Set or clear the tag on a set of rows: persist, then update the local map optimistically.
   const applyTag = useCallback(
     (rids: number[], tag: TagId | null) => {
@@ -96,6 +101,7 @@ export function CsvViewer({
         }
         return next
       })
+      if (hasTagFilterRef.current) setTagRev((r) => r + 1) // refresh the filtered view
     },
     [taggable, wsId, sourceId]
   )
@@ -132,7 +138,8 @@ export function CsvViewer({
     doc.rowCount,
     sort,
     filters,
-    search
+    search,
+    tagRev
   )
 
   function toggleSort(col: string): void {
@@ -218,6 +225,19 @@ export function CsvViewer({
     })
   }
 
+  // Toggle a "show only rows tagged X" filter (from the toolbar legend). One tag filter at a time:
+  // clicking the active tag clears it; clicking another replaces it.
+  function toggleTagFilter(tag: TagId): void {
+    setFilters((fs) => {
+      const cur = fs.find((f) => f.op === 'tag')
+      if (cur && cur.op === 'tag' && cur.tag === tag) return fs.filter((f) => f.op !== 'tag')
+      return [...fs.filter((f) => f.op !== 'tag'), { op: 'tag', tag }]
+    })
+  }
+  const activeTagFilter = filters.find((f) => f.op === 'tag')
+  const activeTag = activeTagFilter?.op === 'tag' ? activeTagFilter.tag : undefined
+  hasTagFilterRef.current = activeTag !== undefined
+
   // Filter the whole CSV to rows within ±deltaSec of a time cell (one timearound filter per col).
   function applyTimeAround(cell: CellRef, deltaSec: number): void {
     if (!cell.tkind) return
@@ -247,12 +267,21 @@ export function CsvViewer({
         {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
         {taggable && tagCounts.size > 0 && (
-          <span className="csv-tag-legend flex items-center gap-2">
+          <span className="csv-tag-legend flex items-center gap-1.5">
             {TAG_DEFS.filter((d) => tagCounts.get(d.id)).map((d) => (
-              <span key={d.id} className="flex items-center gap-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted" title={d.label}>
+              <button
+                key={d.id}
+                onClick={() => toggleTagFilter(d.id)}
+                title={activeTag === d.id ? `Showing ${d.label} only — click to clear` : `Filter to ${d.label}`}
+                className={`flex items-center gap-1 rounded px-1 py-0.5 text-[11px] transition-colors ${
+                  activeTag === d.id
+                    ? 'bg-citrus-pink-light font-bold text-citrus-pink'
+                    : 'text-citrus-muted hover:bg-citrus-card/70 dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev'
+                }`}
+              >
                 <span className={`inline-block w-2 h-2 rounded-sm ${d.dot}`} />
                 {tagCounts.get(d.id)}
-              </span>
+              </button>
             ))}
           </span>
         )}

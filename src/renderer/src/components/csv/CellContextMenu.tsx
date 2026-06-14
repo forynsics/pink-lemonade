@@ -114,10 +114,10 @@ export function CellContextMenu({
               {currentTag === d.id && <span className="ml-auto text-citrus-pink">✓</span>}
             </button>
           ))}
-          {currentTag && (
+          {(currentTag || tagRids.length > 1) && (
             <button className={item} onClick={() => { onTag(tagRids, null); onClose() }}>
               <X className="w-3.5 h-3.5 shrink-0 text-citrus-muted dark:text-citrus-night-muted" />
-              Clear tag
+              {tagRids.length > 1 ? `Clear tags (${tagRids.length} rows)` : 'Clear tag'}
             </button>
           )}
         </>

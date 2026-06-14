@@ -25,7 +25,10 @@ export function useCsvQuery(
   rowCount: number,
   sort: CsvSort | undefined,
   filters: CsvFilter[],
-  search: string
+  search: string,
+  /** Bump to force a re-query + re-count without changing the predicate (e.g. tags changed while a
+   *  tag filter is active, so the cached filtered view is stale). */
+  refreshKey: number = 0
 ): {
   rows: string[][]
   rids: number[]
@@ -36,7 +39,7 @@ export function useCsvQuery(
   error?: string
   ensureRange: (first: number, last: number) => void
 } {
-  const key = JSON.stringify({ sort, filters, search })
+  const key = JSON.stringify({ sort, filters, search, refreshKey })
   const [state, setState] = useState<WindowState>({ rows: [], rids: [], baseOffset: 0, key: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -86,7 +89,7 @@ export function useCsvQuery(
 
   // --- match count (decoupled from the window fetch) ---
   const hasPredicate = filters.length > 0 || search !== ''
-  const countKey = JSON.stringify({ filters, search }) // sort doesn't change the count
+  const countKey = JSON.stringify({ filters, search, refreshKey }) // sort doesn't change the count
   const [countTotal, setCountTotal] = useState(0)
   const [counting, setCounting] = useState(false)
   const countReq = useRef(0)

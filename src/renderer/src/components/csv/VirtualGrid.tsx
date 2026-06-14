@@ -470,7 +470,7 @@ export function VirtualGrid({
           return (
             <div
               key={abs}
-              className="flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30"
+              className={`flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30 ${tag?.row ?? ''}`}
               style={{ position: 'absolute', top: abs * ROW_H, height: ROW_H, width: totalWidth }}
             >
               {tag && (

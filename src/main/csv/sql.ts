@@ -39,6 +39,14 @@ export type Filter =
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   // Open/closed range on a time column in epoch seconds: from→`>=`, to→`<=`, both→between.
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
+  // Row-tag membership: rows whose (source_id, rowid) carry the given tag in the `tags` table.
+  | { op: 'tag'; tag: string }
+
+/** The source id of a workspace data table (`data_<id>` → id), or null for the legacy `data` table. */
+function tableSourceId(table: string): number | null {
+  const m = /^data_(\d+)$/.exec(table)
+  return m ? Number(m[1]) : null
+}
 
 /** SQL expression turning a time column into epoch seconds, per its detected kind. */
 function colTimeExpr(col: string, kind: TimeKind): string {
@@ -100,12 +108,24 @@ export function buildInsertSql(cols: ColumnMap[], rowsInBatch: number, table = '
 
 function buildWhere(
   filters?: Filter[],
-  search?: { term: string; cols: ColumnMap[] }
+  search?: { term: string; cols: ColumnMap[] },
+  table = 'data'
 ): { sql: string; params: (string | number)[] } {
   const clauses: string[] = []
   const params: (string | number)[] = []
   if (filters) {
     for (const f of filters) {
+      // A tag filter isn't tied to a column — resolve it against the `tags` table by source id.
+      if (f.op === 'tag') {
+        const sid = tableSourceId(table)
+        if (sid == null) {
+          clauses.push('0') // legacy single-file table has no tags → match nothing
+        } else {
+          clauses.push('rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag = ?)')
+          params.push(sid, f.tag)
+        }
+        continue
+      }
       assertCol(f.col)
       if (f.op === 'like') {
         clauses.push(`${f.col} LIKE ? ESCAPE '\\'`)
@@ -177,7 +197,7 @@ export function buildQueryRowsSql(
   // When the caller needs each row's identity (tags, scroll-to-row), prepend the rowid as the
   // leading SELECT column. queryRows splits it off so the cell array stays exactly c0..cN.
   const names = withRowid ? `rowid, ${cnames}` : cnames
-  const where = buildWhere(o.filters, o.search ? { term: o.search, cols } : undefined)
+  const where = buildWhere(o.filters, o.search ? { term: o.search, cols } : undefined, table)
   let order = ''
   if (o.sort) {
     assertCol(o.sort.col)
@@ -208,7 +228,7 @@ export function buildCountSql(
   table = 'data'
 ): { sql: string; params: unknown[] } {
   assertTable(table)
-  const where = buildWhere(filters, search ? { term: search, cols } : undefined)
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
   return { sql: `SELECT COUNT(*) AS n FROM ${table}${where.sql}`, params: where.params }
 }
 
@@ -226,7 +246,7 @@ export function buildCountChunkSql(
   table = 'data'
 ): { sql: string; params: unknown[] } {
   assertTable(table)
-  const where = buildWhere(filters, search ? { term: search, cols } : undefined)
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
   const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
   return {
     sql: `SELECT COUNT(*) AS n FROM ${table} WHERE rowid > ? AND rowid <= ?${extra}`,
@@ -253,7 +273,7 @@ export function buildFilterInsertChunkSql(
 ): { sql: string; params: unknown[] } {
   assertTable(table)
   assertFilt(filtTable)
-  const where = buildWhere(filters, search ? { term: search, cols } : undefined)
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
   const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
   return {
     sql: `INSERT INTO ${filtTable} (rid) SELECT rowid FROM ${table} WHERE rowid > ? AND rowid <= ?${extra} ORDER BY rowid`,
@@ -297,7 +317,7 @@ export function buildDistinctSql(
 ): { sql: string; params: unknown[] } {
   assertTable(table)
   assertCol(col)
-  const where = buildWhere(filters)
+  const where = buildWhere(filters, undefined, table)
   const lim = clamp(limit, 1, DISTINCT_CAP)
   const sql =
     `SELECT ${col} AS val, COUNT(*) AS cnt FROM ${table}${where.sql}` +
@@ -313,7 +333,7 @@ export function buildDistinctCountSql(
 ): { sql: string; params: unknown[] } {
   assertTable(table)
   assertCol(col)
-  const where = buildWhere(filters)
+  const where = buildWhere(filters, undefined, table)
   return { sql: `SELECT COUNT(DISTINCT ${col}) AS n FROM ${table}${where.sql}`, params: where.params }
 }
 
@@ -335,7 +355,7 @@ export function buildColumnValuesSql(
 ): { sql: string; params: unknown[] } {
   assertTable(table)
   assertCol(col)
-  const where = buildWhere(filters)
+  const where = buildWhere(filters, undefined, table)
   const lim = clamp(cap, 1, VALUES_CAP)
   return { sql: `SELECT ${col} AS val FROM ${table}${where.sql} LIMIT ?`, params: [...where.params, lim] }
 }

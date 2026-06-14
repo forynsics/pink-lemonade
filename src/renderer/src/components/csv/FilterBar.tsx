@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Check, Filter, Plus, X } from 'lucide-react'
 import type { CsvColumn, CsvFilter } from '../../state/csvTypes'
 import { dtLocalToEpoch, epochToDtLocal, epochToLabel } from '../../state/timeKind'
+import { tagDef } from '../../state/tags'
 
 // Active row-filter chips + a compact add/edit form. Clicking a chip loads it back into the
 // form for editing (eq/like/neq and time ≥/≤/between); `in` and ± chips delegate to their own
@@ -16,6 +17,7 @@ function fmtDelta(sec: number): string {
 }
 
 function chipText(f: CsvFilter, label: (n: string) => string): string {
+  if (f.op === 'tag') return `tagged ${tagDef(f.tag)?.label ?? f.tag}`
   if (f.op === 'in') return `${label(f.col)} ∈ ${f.values.join(', ')}`
   if (f.op === 'timearound') return `${label(f.col)} ≈ ${f.value} ±${fmtDelta(f.deltaSec)}`
   if (f.op === 'timerange') {
@@ -66,6 +68,7 @@ export function FilterBar({
 
   // Clicking a chip → load it into the form for editing (or delegate the special kinds).
   function editChip(f: CsvFilter, i: number, at: { x: number; y: number }): void {
+    if (f.op === 'tag') return // tag chips are toggled from the legend; only the ✕ removes them
     if (f.op === 'timearound') return onEditTimearound(f, at)
     if (f.op === 'in') return onEditIn(f, at)
     setEditIndex(i)
@@ -119,15 +122,18 @@ export function FilterBar({
       <Filter className="w-3 h-3 text-citrus-muted dark:text-citrus-night-muted" />
       {filters.map((f, i) => (
         <span
-          key={`${f.col}-${f.op}-${i}`}
-          className={`filter-chip inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border font-mono cursor-pointer ${
+          key={`${f.op === 'tag' ? 'tag' : f.col}-${f.op}-${i}`}
+          className={`filter-chip inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border font-mono ${
+            f.op === 'tag' ? '' : 'cursor-pointer'
+          } ${
             editIndex === i
               ? 'bg-citrus-pink text-white border-citrus-pink'
               : 'bg-citrus-pink-light text-citrus-pink border-citrus-pink/20 hover:bg-citrus-pink-light/80'
           }`}
-          title="Click to edit"
+          title={f.op === 'tag' ? 'Tag filter — ✕ to clear' : 'Click to edit'}
           onClick={(e) => editChip(f, i, { x: e.clientX, y: e.clientY })}
         >
+          {f.op === 'tag' && <span className={`inline-block w-2 h-2 rounded-sm ${tagDef(f.tag)?.dot ?? ''}`} />}
           {chipText(f, label)}
           <button
             onClick={(e) => {

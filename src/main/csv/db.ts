@@ -428,6 +428,10 @@ export function setTags(wsId: string, sourceId: number, rids: number[], tag: str
     )
     w.db.transaction(() => ids.forEach((r) => up.run(sourceId, r, tag, now)))()
   }
+  // A materialized filter index that includes a tag predicate is now stale; drop the cache so the
+  // next count/query rebuilds it (the renderer re-counts when a tag filter is active).
+  const e = tables.get(sourceKey(wsId, sourceId))
+  if (e) e.filt = undefined
 }
 
 export function closeWorkspace(wsId: string): void {

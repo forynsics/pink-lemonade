@@ -126,6 +126,24 @@ describe('buildQueryRowsSql', () => {
     expect(params).toEqual(['%Clean%', 10, 0])
   })
 
+  it('renders a `tag` filter as a rowid subquery against the tags table (source id from the table)', () => {
+    const { sql, params } = buildQueryRowsSql(
+      cols,
+      { limit: 10, offset: 0, filters: [{ op: 'tag', tag: 'malicious' }] },
+      'data_5'
+    )
+    expect(sql).toBe(
+      'SELECT c0, c1 FROM data_5 WHERE rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag = ?) LIMIT ? OFFSET ?'
+    )
+    expect(params).toEqual([5, 'malicious', 10, 0])
+  })
+
+  it('a `tag` filter on the legacy single-file table matches nothing (no tags there)', () => {
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'tag', tag: 'benign' }] }).sql).toBe(
+      'SELECT c0, c1 FROM data WHERE 0 LIMIT ? OFFSET ?'
+    )
+  })
+
   it('renders a multi-value `in` filter as one IN (...) clause with bound params', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 100,

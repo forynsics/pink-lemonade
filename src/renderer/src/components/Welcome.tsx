@@ -1,4 +1,4 @@
-import { FilePlus2, Table2, Clock, X } from 'lucide-react'
+import { NotebookPen, Table2, Clock, X } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
@@ -49,7 +49,7 @@ export function Welcome({
             onClick={onNewScratch}
             className="welcome__new flex items-center gap-3 px-4 py-3 rounded-xl border border-citrus-border bg-citrus-card text-left hover:border-citrus-pink/50 hover:shadow-sm transition dark:border-citrus-night-border dark:bg-citrus-night-card"
           >
-            <FilePlus2 className="w-5 h-5 text-citrus-pink shrink-0" />
+            <NotebookPen className="w-5 h-5 text-citrus-pink shrink-0" />
             <span>
               <span className="block text-sm font-bold text-citrus-dark dark:text-citrus-night-text">New notepad</span>
               <span className="block text-[11px] text-citrus-muted dark:text-citrus-night-muted">Text transforms + workflow</span>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, X, Table2, Home } from 'lucide-react'
+import { Plus, X, Table2, Home, NotebookPen } from 'lucide-react'
 import type { PinkDoc } from '../state/documents'
 
 export function DocTabs({
@@ -89,7 +89,7 @@ export function DocTabs({
                   {doc.kind === 'csv' ? (
                     <Table2 className="w-3 h-3 text-citrus-pink shrink-0" />
                   ) : (
-                    isActive && <span className="w-1.5 h-1.5 rounded-full bg-citrus-pink animate-pulse" />
+                    <NotebookPen className="w-3 h-3 text-citrus-pink shrink-0" />
                   )}
                   <span className="truncate max-w-[140px]">{doc.name}</span>
                   <button

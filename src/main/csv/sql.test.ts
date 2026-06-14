@@ -41,10 +41,22 @@ describe('buildCreateTable / buildInsertSql', () => {
 })
 
 describe('buildQueryRowsSql', () => {
-  it('selects columns with LIMIT/OFFSET and caps the limit', () => {
+  it('uses keyset (rowid >) for the default order and caps the limit', () => {
+    // No WHERE/ORDER BY → keyset fast-path: `WHERE rowid > offset LIMIT limit` (same window as
+    // LIMIT/OFFSET but O(1) via the rowid PK). params are [offset, cappedLimit].
     const { sql, params } = buildQueryRowsSql(cols, { limit: 999_999, offset: 40 })
-    expect(sql).toBe('SELECT c0, c1 FROM data LIMIT ? OFFSET ?')
-    expect(params).toEqual([MAX_ROWS_LIMIT, 40])
+    expect(sql).toBe('SELECT c0, c1 FROM data WHERE rowid > ? LIMIT ?')
+    expect(params).toEqual([40, MAX_ROWS_LIMIT])
+  })
+
+  it('falls back to LIMIT/OFFSET once a filter/sort/search narrows the set', () => {
+    const { sql, params } = buildQueryRowsSql(cols, {
+      limit: 10,
+      offset: 40,
+      filters: [{ col: 'c0', op: 'eq', value: 'x' }]
+    })
+    expect(sql).toBe('SELECT c0, c1 FROM data WHERE c0 = ? LIMIT ? OFFSET ?')
+    expect(params).toEqual(['x', 10, 40])
   })
 
   it('sorts numerically with CAST and text with COLLATE NOCASE', () => {
@@ -111,15 +123,15 @@ describe('buildQueryRowsSql', () => {
     expect(between.params).toEqual([100, 200, 5, 0])
   })
 
-  it('drops a `timerange` with no bounds', () => {
+  it('drops a `timerange` with no bounds (back to the default keyset window)', () => {
     expect(buildQueryRowsSql(cols, { limit: 5, offset: 0, filters: [{ col: 'c0', op: 'timerange', tkind: 'iso' }] }).sql).toBe(
-      'SELECT c0, c1 FROM data LIMIT ? OFFSET ?'
+      'SELECT c0, c1 FROM data WHERE rowid > ? LIMIT ?'
     )
   })
 
-  it('drops an empty `in` filter (no constraint)', () => {
+  it('drops an empty `in` filter (no constraint → default keyset window)', () => {
     expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ col: 'c0', op: 'in', values: [] }] }).sql).toBe(
-      'SELECT c0, c1 FROM data LIMIT ? OFFSET ?'
+      'SELECT c0, c1 FROM data WHERE rowid > ? LIMIT ?'
     )
   })
 
@@ -190,8 +202,9 @@ describe('global search', () => {
   })
 
   it('an empty search term adds no predicate', () => {
+    // No predicate → the default keyset window.
     expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, search: '' }).sql).toBe(
-      'SELECT c0, c1 FROM data LIMIT ? OFFSET ?'
+      'SELECT c0, c1 FROM data WHERE rowid > ? LIMIT ?'
     )
     expect(buildCountSql(cols, undefined, '').sql).toBe('SELECT COUNT(*) AS n FROM data')
   })

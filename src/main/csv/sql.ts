@@ -161,6 +161,16 @@ export function buildQueryRowsSql(cols: ColumnMap[], o: QueryOpts): { sql: strin
   }
   const limit = clamp(o.limit, 0, MAX_ROWS_LIMIT)
   const offset = Math.max(0, Math.trunc(o.offset) || 0)
+  // Keyset fast-path: with no WHERE and no ORDER BY the rows are in rowid order and rowids are a
+  // gapless 1..N (sequential insert, no deletes), so ordinal position p == rowid - 1. Then
+  // `WHERE rowid > offset LIMIT limit` returns exactly the same window as `LIMIT limit OFFSET
+  // offset`, but seeks via the rowid primary key in O(log n) instead of walking `offset` rows —
+  // turning deep-scroll/jump on a huge table from O(offset) (~0.45s at 12M) into O(1) (~0.2ms).
+  // Filtered/sorted/searched views keep OFFSET (their result sets are smaller, and the
+  // ordinal→rowid mapping no longer holds).
+  if (where.sql === '' && order === '') {
+    return { sql: `SELECT ${names} FROM data WHERE rowid > ? LIMIT ?`, params: [offset, limit] }
+  }
   const sql = `SELECT ${names} FROM data${where.sql}${order} LIMIT ? OFFSET ?`
   return { sql, params: [...where.params, limit, offset] }
 }

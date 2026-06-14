@@ -28,7 +28,7 @@ export function SearchBar({
         <input
           className="csv-search w-full pl-7 pr-7 py-1 text-xs rounded-md border border-citrus-border bg-citrus-card text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night-card dark:text-citrus-night-text"
           value={value}
-          placeholder="Search all columns… (IP, hash, domain)"
+          placeholder="Search all columns…"
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => e.key === 'Escape' && onClear()}
           spellCheck={false}

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, X, Table2 } from 'lucide-react'
+import { Plus, X, Table2, Home } from 'lucide-react'
 import type { PinkDoc } from '../state/documents'
 
 export function DocTabs({
   docs,
   activeId,
+  home,
+  onHome,
   onSelect,
   onAdd,
   onAddCsv,
@@ -13,6 +15,8 @@ export function DocTabs({
 }: {
   docs: PinkDoc[]
   activeId: string
+  home: boolean
+  onHome: () => void
   onSelect: (id: string) => void
   onAdd: () => void
   onAddCsv: () => void
@@ -39,6 +43,17 @@ export function DocTabs({
 
   return (
     <div className="flex items-center gap-1 px-3 pt-2 border-b border-citrus-border bg-citrus-sand/60 dark:border-citrus-night-border dark:bg-citrus-night">
+      <button
+        className={`tabs__home mb-0.5 p-1.5 rounded-full transition-colors ${
+          home
+            ? 'text-citrus-pink bg-citrus-card dark:bg-citrus-night-card'
+            : 'text-citrus-muted hover:text-citrus-pink hover:bg-citrus-card dark:text-citrus-night-muted dark:hover:bg-citrus-night-card'
+        }`}
+        onClick={onHome}
+        title="Home / recent files"
+      >
+        <Home className="w-4 h-4" />
+      </button>
       <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
         {docs.map((doc) => {
           const isActive = doc.id === activeId

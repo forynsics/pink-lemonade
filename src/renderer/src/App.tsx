@@ -5,6 +5,7 @@ import { ToolPalette } from './components/ToolPalette'
 import { WorkflowBar } from './components/WorkflowBar'
 import { Workbench } from './components/Workbench'
 import { DocTabs } from './components/DocTabs'
+import { Welcome } from './components/Welcome'
 import { CsvViewer } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
 import { getById, defaultOptions } from './tools/registry'
@@ -21,6 +22,7 @@ import {
   type ScratchDoc
 } from './state/documents'
 import { loadTheme, saveTheme, type Theme } from './state/theme'
+import { addRecent, loadRecent, removeRecent, saveRecent, type RecentFile } from './state/recent'
 import type { ToolOptions } from './tools/types'
 
 const NO_STEPS: WorkflowStep[] = []
@@ -40,6 +42,9 @@ export default function App(): JSX.Element {
   const [theme, setTheme] = useState<Theme>(loadTheme)
   // Tracks an in-flight CSV ingest (for the import overlay + cancel).
   const [csvImport, setCsvImport] = useState<{ tabId: string; name: string; rows: number } | null>(null)
+  // Recently-opened CSV files (welcome-screen quick pivot) + whether the welcome screen is showing.
+  const [recent, setRecent] = useState<RecentFile[]>(loadRecent)
+  const [home, setHome] = useState<boolean>(() => loadDocs() === null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -90,28 +95,58 @@ export default function App(): JSX.Element {
 
   // ---- document operations ----
   function addDoc(): void {
+    setHome(false)
     setState((s) => {
       const doc = createDoc(`Untitled ${s.docs.length + 1}`)
       return { docs: [...s.docs, doc], activeId: doc.id }
     })
   }
 
-  async function openCsv(): Promise<void> {
-    const picked = await window.api.csv.pick()
-    if (!picked) return
+  function recordRecent(path: string, sourceName: string, rowCount: number): void {
+    setRecent((list) => {
+      const next = addRecent(list, { path, sourceName, rowCount, openedAt: Date.now() })
+      saveRecent(next)
+      return next
+    })
+  }
+
+  function dropRecent(path: string): void {
+    setRecent((list) => {
+      const next = removeRecent(list, path)
+      saveRecent(next)
+      return next
+    })
+  }
+
+  /** Ingest a file at `path` into a fresh CSV tab. Shared by the picker and recent-file pivots. */
+  async function ingestNewTab(path: string, sourceName: string): Promise<void> {
     const tabId = newId()
-    setCsvImport({ tabId, name: picked.sourceName, rows: 0 })
+    setCsvImport({ tabId, name: sourceName, rows: 0 })
     try {
-      const res = await window.api.csv.ingest(tabId, picked.path)
+      const res = await window.api.csv.ingest(tabId, path)
       if (res) {
+        setHome(false)
         setState((s) => {
           const doc = createCsvDoc(res)
           return { docs: [...s.docs, doc], activeId: doc.id }
         })
+        recordRecent(path, res.sourceName, res.rowCount)
       }
+    } catch {
+      // File missing/unreadable (common for a stale recent entry) — drop it from the list.
+      dropRecent(path)
     } finally {
       setCsvImport(null)
     }
+  }
+
+  async function openCsv(): Promise<void> {
+    const picked = await window.api.csv.pick()
+    if (picked) await ingestNewTab(picked.path, picked.sourceName)
+  }
+
+  function openRecent(f: RecentFile): void {
+    void ingestNewTab(f.path, f.sourceName)
   }
 
   async function reopenCsv(): Promise<void> {
@@ -130,6 +165,7 @@ export default function App(): JSX.Element {
           sourceName: res.sourceName,
           needsReopen: false
         })
+        recordRecent(picked.path, res.sourceName, res.rowCount)
       }
     } finally {
       setCsvImport(null)
@@ -138,6 +174,7 @@ export default function App(): JSX.Element {
 
   /** Open a fresh scratch tab pre-filled with a column's values (the CSV → scratchpad pivot). */
   function pivotToScratch(values: string[], label: string): void {
+    setHome(false)
     setState((s) => {
       const doc: ScratchDoc = { ...createDoc(label), input: values.join('\n') }
       return { docs: [...s.docs, doc], activeId: doc.id }
@@ -161,6 +198,7 @@ export default function App(): JSX.Element {
   }
 
   function selectDoc(id: string): void {
+    setHome(false)
     setState((s) => ({ ...s, activeId: id }))
   }
 
@@ -232,13 +270,27 @@ export default function App(): JSX.Element {
           <DocTabs
             docs={docs}
             activeId={activeId}
+            home={home}
+            onHome={() => setHome(true)}
             onSelect={selectDoc}
             onAdd={addDoc}
             onAddCsv={openCsv}
             onClose={closeDoc}
             onRename={renameDoc}
           />
-          {active.kind === 'csv' ? (
+          {home ? (
+            <Welcome
+              recent={recent}
+              onOpenRecent={openRecent}
+              onOpenCsv={openCsv}
+              onNewScratch={addDoc}
+              onRemoveRecent={dropRecent}
+              onClearRecent={() => {
+                setRecent([])
+                saveRecent([])
+              }}
+            />
+          ) : active.kind === 'csv' ? (
             active.needsReopen ? (
               <CsvPlaceholder doc={active} onReopen={reopenCsv} />
             ) : (

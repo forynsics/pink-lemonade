@@ -6,7 +6,8 @@ import { useCsvQuery } from '../../hooks/useCsvQuery'
 import { VirtualGrid } from './VirtualGrid'
 import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
-import { ColumnDrilldown } from './ColumnDrilldown'
+import { ColumnMenu } from './ColumnMenu'
+import { CellPopout } from './CellPopout'
 
 const SEARCH_DEBOUNCE_MS = 250
 
@@ -31,7 +32,8 @@ export function CsvViewer({
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
-  const [drill, setDrill] = useState<CsvColumn | null>(null)
+  const [menu, setMenu] = useState<{ col: CsvColumn; anchor: { left: number; bottom: number } } | null>(null)
+  const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
   // `searchInput` is what the user types; `search` is the debounced term that drives the
   // query — so a multi-million-row LIKE scan only runs once typing settles.
   const [searchInput, setSearchInput] = useState('')
@@ -110,20 +112,24 @@ export function CsvViewer({
           sort={sort}
           resetKey={`${JSON.stringify(sort)}|${JSON.stringify(filters)}|${search}`}
           onToggleSort={toggleSort}
-          onPickColumn={setDrill}
+          onOpenColumnMenu={(col, anchor) => setMenu({ col, anchor })}
+          onCellOpen={(value, label) => setPopout({ value, label })}
           ensureRange={ensureRange}
         />
-        {drill && (
-          <ColumnDrilldown
-            doc={doc}
-            col={drill}
-            filters={filters}
-            onClose={() => setDrill(null)}
-            onPivot={onPivot}
-            onAddFilter={addFilter}
-          />
-        )}
       </div>
+
+      {menu && (
+        <ColumnMenu
+          doc={doc}
+          col={menu.col}
+          filters={filters}
+          anchor={menu.anchor}
+          onClose={() => setMenu(null)}
+          onPivot={onPivot}
+          onAddFilter={addFilter}
+        />
+      )}
+      {popout && <CellPopout label={popout.label} value={popout.value} onClose={() => setPopout(null)} />}
     </div>
   )
 }

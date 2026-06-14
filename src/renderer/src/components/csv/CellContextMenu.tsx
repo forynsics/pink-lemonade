@@ -1,0 +1,139 @@
+import { useEffect, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, Ban, Clock, Filter } from 'lucide-react'
+import type { CellRef } from './VirtualGrid'
+
+// Right-click menu for a grid cell: quick filter-to / exclude the value, plus — when the cell
+// is a time column — a ± window pivot (presets + custom). Also reused to EDIT a ± chip, in
+// which case only the time section is shown, pre-filled with the chip's current window.
+
+const MENU_W = 214
+
+const PRESETS: Array<{ label: string; sec: number }> = [
+  { label: '± 1 minute', sec: 60 },
+  { label: '± 5 minutes', sec: 300 },
+  { label: '± 10 minutes', sec: 600 },
+  { label: '± 15 minutes', sec: 900 },
+  { label: '± 30 minutes', sec: 1800 },
+  { label: '± 1 hour', sec: 3600 }
+]
+
+export function CellContextMenu({
+  cell,
+  at,
+  defaultMinutes,
+  onFilter,
+  onPickTime,
+  onPickBound,
+  onClose
+}: {
+  cell: CellRef
+  at: { x: number; y: number }
+  /** When set, the menu is editing an existing ± chip — show only the time section, pre-filled. */
+  defaultMinutes?: number
+  onFilter: (cell: CellRef, exclude: boolean) => void
+  onPickTime: (cell: CellRef, deltaSec: number) => void
+  onPickBound: (cell: CellRef, which: 'from' | 'to') => void
+  onClose: () => void
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  const [custom, setCustom] = useState(defaultMinutes != null ? String(defaultMinutes) : '')
+  const editing = defaultMinutes != null
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  function applyCustom(): void {
+    const m = Number(custom)
+    if (Number.isFinite(m) && m > 0) {
+      onPickTime(cell, Math.round(m * 60))
+      onClose()
+    }
+  }
+
+  const left = Math.min(at.x, window.innerWidth - MENU_W - 8)
+  const top = Math.min(at.y, window.innerHeight - 320)
+  const item =
+    'w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
+
+  return (
+    <div
+      ref={ref}
+      className="cell-context-menu fixed z-50 flex flex-col rounded-lg border border-citrus-border bg-citrus-card shadow-lg overflow-hidden dark:border-citrus-night-border dark:bg-citrus-night-card"
+      style={{ top, left, width: MENU_W }}
+    >
+      <div className="px-3 py-1.5 border-b border-citrus-border/60 dark:border-citrus-night-border/60">
+        <span className="text-[10px] font-mono text-citrus-muted truncate block dark:text-citrus-night-muted" title={cell.value}>
+          {cell.value === '' ? '∅ (empty)' : cell.value}
+        </span>
+      </div>
+
+      {!editing && (
+        <>
+          <button className={item} onClick={() => { onFilter(cell, false); onClose() }}>
+            <Filter className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+            Filter to value
+          </button>
+          <button className={item} onClick={() => { onFilter(cell, true); onClose() }}>
+            <Ban className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+            Exclude value
+          </button>
+        </>
+      )}
+
+      {cell.tkind && (
+        <>
+          <div className="flex items-center gap-1.5 px-3 py-1 border-t border-citrus-border/60 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:border-citrus-night-border/60 dark:text-citrus-night-muted">
+            <Clock className="w-3 h-3" /> Time filter
+          </div>
+          {!editing && (
+            <>
+              <button className={item} onClick={() => { onPickBound(cell, 'from'); onClose() }}>
+                <ArrowUp className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+                On/after this (≥)
+              </button>
+              <button className={item} onClick={() => { onPickBound(cell, 'to'); onClose() }}>
+                <ArrowDown className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+                On/before this (≤)
+              </button>
+              <div className="px-3 py-0.5 text-[10px] text-citrus-muted dark:text-citrus-night-muted">around this:</div>
+            </>
+          )}
+          {PRESETS.map((o) => (
+            <button key={o.sec} className={item} onClick={() => { onPickTime(cell, o.sec); onClose() }}>
+              {o.label}
+            </button>
+          ))}
+          <div className="flex items-center gap-1.5 px-3 py-2 border-t border-citrus-border/60 dark:border-citrus-night-border/60">
+            <span className="text-xs text-citrus-muted dark:text-citrus-night-muted">±</span>
+            <input
+              autoFocus={editing}
+              type="number"
+              min={1}
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && applyCustom()}
+              placeholder="min"
+              className="w-14 px-1.5 py-0.5 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
+            />
+            <span className="text-xs text-citrus-muted dark:text-citrus-night-muted">min</span>
+            <button onClick={applyCustom} className="ml-auto px-2 py-0.5 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover">
+              Apply
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

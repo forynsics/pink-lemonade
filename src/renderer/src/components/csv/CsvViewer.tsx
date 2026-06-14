@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import type { CsvDoc } from '../../state/documents'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
+import { cellTimeToEpoch } from '../../state/timeKind'
 import { useCsvQuery } from '../../hooks/useCsvQuery'
-import { VirtualGrid } from './VirtualGrid'
+import { VirtualGrid, type CellRef } from './VirtualGrid'
+import { CellContextMenu } from './CellContextMenu'
 import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
@@ -33,10 +35,20 @@ export function CsvViewer({
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
-  const [menu, setMenu] = useState<{ col: CsvColumn; anchor: { left: number; bottom: number } } | null>(null)
+  const [menu, setMenu] = useState<{
+    col: CsvColumn
+    anchor: { left: number; bottom: number }
+    showFilter?: boolean
+  } | null>(null)
   const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
   // The column whose distinct values are shown in the side panel (null = panel closed).
   const [distinctCol, setDistinctCol] = useState<CsvColumn | null>(null)
+  // Right-clicked cell (or a clicked ± chip) → the cell menu at the cursor.
+  const [cellMenu, setCellMenu] = useState<{
+    cell: CellRef
+    at: { x: number; y: number }
+    defaultMinutes?: number
+  } | null>(null)
   // `searchInput` is what the user types; `search` is the debounced term that drives the
   // query — so a multi-million-row LIKE scan only runs once typing settles.
   const [searchInput, setSearchInput] = useState('')
@@ -69,13 +81,36 @@ export function CsvViewer({
   }
 
   function addFilter(f: CsvFilter): void {
-    setFilters((fs) => [
-      ...fs.filter((x) => !(x.col === f.col && x.op === f.op && x.op !== 'in' && f.op !== 'in' && x.value === f.value)),
-      f
-    ])
+    setFilters((fs) => {
+      // De-dupe only the single-value eq/like/neq kinds; the rest just append.
+      if (f.op === 'eq' || f.op === 'like' || f.op === 'neq') {
+        const dup = (x: CsvFilter): boolean =>
+          (x.op === 'eq' || x.op === 'like' || x.op === 'neq') &&
+          x.col === f.col &&
+          x.op === f.op &&
+          x.value === f.value
+        return [...fs.filter((x) => !dup(x)), f]
+      }
+      return [...fs, f]
+    })
   }
   function removeFilter(i: number): void {
     setFilters((fs) => fs.filter((_, j) => j !== i))
+  }
+  function updateFilter(index: number, f: CsvFilter): void {
+    setFilters((fs) => fs.map((x, j) => (j === index ? f : x)))
+  }
+
+  // Right-click "Filter to value" / "Exclude value" → an eq / neq filter on the cell's column.
+  function applyValueFilter(cell: CellRef, exclude: boolean): void {
+    addFilter({ col: cell.colName, op: exclude ? 'neq' : 'eq', value: cell.value })
+  }
+
+  // Clicking an `in` chip re-opens its column's multi-select submenu (pre-checked).
+  function editInFilter(f: CsvFilter, at: { x: number; y: number }): void {
+    if (f.op !== 'in') return
+    const col = doc.columns.find((c) => c.name === f.col)
+    if (col) setMenu({ col, anchor: { left: at.x, bottom: at.y }, showFilter: true })
   }
 
   // Apply a column's multi-select as ONE `in` filter: replace any existing `in` filter for
@@ -91,6 +126,42 @@ export function CsvViewer({
   function inValuesFor(col: string): string[] {
     const f = filters.find((x) => x.op === 'in' && x.col === col)
     return f && f.op === 'in' ? f.values : []
+  }
+
+  // Re-open the ± menu to edit an existing timearound chip (pre-filled with its current window).
+  function editTimearound(f: CsvFilter, at: { x: number; y: number }): void {
+    if (f.op !== 'timearound') return
+    const original = doc.columns.find((c) => c.name === f.col)?.original ?? f.col
+    setCellMenu({
+      cell: { colName: f.col, original, value: f.value, tkind: f.tkind },
+      at,
+      defaultMinutes: Math.round(f.deltaSec / 60)
+    })
+  }
+
+  // Right-click "On/after this" / "On/before this" → set a ≥ or ≤ bound from the cell's time,
+  // merging into the column's single `timerange` chip (so ≥ then ≤ become one "between").
+  function applyTimeBound(cell: CellRef, which: 'from' | 'to'): void {
+    if (!cell.tkind) return
+    const tkind = cell.tkind
+    const epoch = cellTimeToEpoch(cell.value, tkind)
+    if (epoch == null) return
+    setFilters((fs) => {
+      const existing = fs.find((f) => f.op === 'timerange' && f.col === cell.colName)
+      const base = existing && existing.op === 'timerange' ? { from: existing.from, to: existing.to } : {}
+      const without = fs.filter((f) => !(f.op === 'timerange' && f.col === cell.colName))
+      return [...without, { col: cell.colName, op: 'timerange', tkind, ...base, [which]: epoch }]
+    })
+  }
+
+  // Filter the whole CSV to rows within ±deltaSec of a time cell (one timearound filter per col).
+  function applyTimeAround(cell: CellRef, deltaSec: number): void {
+    if (!cell.tkind) return
+    const tkind = cell.tkind
+    setFilters((fs) => [
+      ...fs.filter((f) => !(f.op === 'timearound' && f.col === cell.colName)),
+      { col: cell.colName, op: 'timearound', value: cell.value, tkind, deltaSec }
+    ])
   }
 
   return (
@@ -119,7 +190,15 @@ export function CsvViewer({
         }}
       />
 
-      <FilterBar columns={doc.columns} filters={filters} onAdd={addFilter} onRemove={removeFilter} />
+      <FilterBar
+        columns={doc.columns}
+        filters={filters}
+        onAdd={addFilter}
+        onUpdate={updateFilter}
+        onRemove={removeFilter}
+        onEditTimearound={editTimearound}
+        onEditIn={editInFilter}
+      />
 
       <div className="flex flex-1 min-h-0">
         <VirtualGrid
@@ -133,6 +212,7 @@ export function CsvViewer({
           onOpenColumnMenu={(col, anchor) => setMenu({ col, anchor })}
           onCellOpen={(value, label) => setPopout({ value, label })}
           getLongest={(colName) => window.api.csv.longest(doc.tabId, colName)}
+          onCellContext={(cell, at) => setCellMenu({ cell, at })}
           ensureRange={ensureRange}
         />
         {distinctCol && (
@@ -155,12 +235,24 @@ export function CsvViewer({
           filters={filters.filter((f) => !(f.op === 'in' && f.col === menu.col.name))}
           currentValues={inValuesFor(menu.col.name)}
           anchor={menu.anchor}
+          initialShowFilter={menu.showFilter}
           onClose={() => setMenu(null)}
           onShowDistinct={(col) => setDistinctCol(col)}
           onApplyInFilter={applyInFilter}
         />
       )}
       {popout && <CellPopout label={popout.label} value={popout.value} onClose={() => setPopout(null)} />}
+      {cellMenu && (
+        <CellContextMenu
+          cell={cellMenu.cell}
+          at={cellMenu.at}
+          defaultMinutes={cellMenu.defaultMinutes}
+          onFilter={applyValueFilter}
+          onPickTime={applyTimeAround}
+          onPickBound={applyTimeBound}
+          onClose={() => setCellMenu(null)}
+        />
+      )}
     </div>
   )
 }

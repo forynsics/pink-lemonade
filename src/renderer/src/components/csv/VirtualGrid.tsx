@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, MoreVertical } from 'lucide-react'
-import type { CsvColumn, CsvSort } from '../../state/csvTypes'
+import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
+import { classifyCellTime } from '../../state/timeKind'
+
+export interface CellRef {
+  colName: string
+  original: string
+  value: string
+  /** Detected time kind, when the cell is a time column (or its value parses as a time). */
+  tkind?: TimeKind
+}
 
 const ROW_H = 28
 const DEFAULT_COL_W = 168
@@ -65,6 +74,7 @@ export function VirtualGrid({
   onOpenColumnMenu,
   onCellOpen,
   getLongest,
+  onCellContext,
   ensureRange
 }: {
   columns: CsvColumn[]
@@ -79,6 +89,8 @@ export function VirtualGrid({
   onCellOpen: (value: string, label: string) => void
   /** Fetch a column's longest value (whole table) for double-click auto-fit. */
   getLongest: (colName: string) => Promise<string>
+  /** Right-clicking any cell opens the cell menu (filter/exclude, + time pivots if applicable). */
+  onCellContext: (cell: CellRef, at: { x: number; y: number }) => void
   ensureRange: (first: number, last: number) => void
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -216,6 +228,21 @@ export function VirtualGrid({
     setSel(null)
   }, [resetKey])
 
+  // Right-click any cell → open the cell menu (filter to / exclude value, plus ± time pivots
+  // when the column is a time column or the value itself parses as a time).
+  const onContextMenu = useCallback(
+    (e: React.MouseEvent, r: number, c: number) => {
+      const col = columns[c]
+      const value = rows[r - baseOffset]?.[c]
+      if (col == null || value == null) return
+      e.preventDefault()
+      setSel({ anchor: { r, c }, focus: { r, c } }) // highlight what we're acting on
+      const tkind = col.time ?? classifyCellTime(value) ?? undefined
+      onCellContext({ colName: col.name, original: col.original, value, tkind }, { x: e.clientX, y: e.clientY })
+    },
+    [columns, rows, baseOffset, onCellContext]
+  )
+
   // Ensure the initial viewport is loaded once the row count is known / on resize.
   useEffect(() => {
     recompute()
@@ -321,6 +348,7 @@ export function VirtualGrid({
                   title={row[c]}
                   onMouseDown={(e) => beginCell(e, abs, c)}
                   onMouseEnter={() => enterCell(abs, c)}
+                  onContextMenu={(e) => onContextMenu(e, abs, c)}
                   onDoubleClick={() => onCellOpen(row[c] ?? '', `Row ${abs + 1} · ${col.original}`)}
                 >
                   <span className="truncate">{row[c]}</span>

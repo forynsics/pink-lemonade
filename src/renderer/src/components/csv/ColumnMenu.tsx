@@ -18,6 +18,7 @@ export function ColumnMenu({
   filters,
   currentValues,
   anchor,
+  initialShowFilter,
   onClose,
   onShowDistinct,
   onApplyInFilter
@@ -28,11 +29,13 @@ export function ColumnMenu({
   /** Values already selected for this column's existing `in` filter (pre-checked). */
   currentValues: string[]
   anchor: { left: number; bottom: number }
+  /** Open straight into the value multi-select (used when editing an `in` chip). */
+  initialShowFilter?: boolean
   onClose: () => void
   onShowDistinct: (col: CsvColumn) => void
   onApplyInFilter: (col: string, values: string[]) => void
 }): JSX.Element {
-  const [showFilter, setShowFilter] = useState(false)
+  const [showFilter, setShowFilter] = useState(!!initialShowFilter)
   const [rows, setRows] = useState<CsvDistinctRow[]>([])
   const [truncated, setTruncated] = useState(false)
   const [loading, setLoading] = useState(false)

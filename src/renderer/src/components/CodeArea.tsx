@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 // A textarea with a greyed line-number gutter (non-selectable, not part of the text)
 // and a live "words · chars" count in the bottom-right corner.
@@ -49,12 +49,22 @@ interface CodeAreaProps {
   /** Highlight every occurrence of `term` (Ctrl+F find); `active` is the char offset of the
    *  currently-focused match, shown in a stronger colour. Skipped on very large files. */
   highlight?: { term: string; active: number }
+  /** Report cursor/size metrics to the parent's status bar (line/col are 1-based). */
+  onMeta?: (m: { lines: number; chars: number; words: number | null; line: number; col: number }) => void
+}
+
+export interface CodeAreaMeta {
+  lines: number
+  chars: number
+  words: number | null
+  line: number
+  col: number
 }
 
 // forwardRef exposes the underlying <textarea> (for the Notepad's Ctrl+F find, which drives
 // native selection/scroll) while CodeArea keeps using it internally for measuring.
 export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function CodeArea(
-  { value, onChange, wrap, placeholder, className = '', readOnly = false, highlight },
+  { value, onChange, wrap, placeholder, className = '', readOnly = false, highlight, onMeta },
   externalRef
 ): JSX.Element {
   const taRef = useRef<HTMLTextAreaElement | null>(null)
@@ -69,15 +79,50 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
   )
   const gutterRef = useRef<HTMLDivElement>(null)
   const mirrorRef = useRef<HTMLDivElement>(null)
+  const bandRef = useRef<HTMLDivElement>(null)
   const rafId = useRef(0)
   const [clientW, setClientW] = useState(0)
   const [viewportH, setViewportH] = useState(0)
   const [fontsReady, setFontsReady] = useState(false)
   const [heights, setHeights] = useState<number[]>([])
   const [scrollTop, setScrollTop] = useState(0)
+  // Caret offset, for the current-line highlight (code-editor "active line"). Kept even when the
+  // pane is blurred (switching apps) so the user doesn't lose their place.
+  const [caret, setCaret] = useState(0)
 
   const lineCount = useMemo(() => countLines(value), [value])
   const perf = value.length > PERF_BYTES || lineCount > PERF_LINES
+
+  // The logical line the caret is on (0-based), and its top/height in content coords. In pretty
+  // mode a wrapped line's height is the measured sum of its visual rows; in perf mode it's one LH.
+  const curLine = useMemo(() => {
+    let n = 0
+    const lim = Math.min(caret, value.length)
+    for (let i = 0; i < lim; i++) if (value.charCodeAt(i) === 10) n++
+    return n
+  }, [caret, value])
+  const lineMetrics = useMemo(() => {
+    if (perf) return { top: PAD + curLine * LH, height: LH }
+    let top = PAD
+    for (let i = 0; i < curLine; i++) top += heights[i] ?? LH
+    return { top, height: heights[curLine] ?? LH }
+  }, [perf, curLine, heights])
+  // Held in a ref so the scroll handler can re-place the band without being re-created.
+  const bandTopRef = useRef(0)
+  bandTopRef.current = lineMetrics.top
+
+  // 1-based column = chars since the caret's line start.
+  const col = useMemo(() => {
+    const c = Math.min(caret, value.length)
+    let start = 0
+    for (let i = c - 1; i >= 0; i--) {
+      if (value.charCodeAt(i) === 10) {
+        start = i + 1
+        break
+      }
+    }
+    return c - start + 1
+  }, [caret, value])
 
   // Soft-wrap is impossible to virtualize with a fixed line height, so perf mode forces
   // it off (horizontal scroll). Pass the *effective* wrap to the textarea so the gutter's
@@ -130,6 +175,11 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
     [value]
   )
 
+  // Report metrics to the parent's status bar (kept out of the textarea so text never overlaps it).
+  useEffect(() => {
+    onMeta?.({ lines: lineCount, chars: value.length, words, line: curLine + 1, col })
+  }, [onMeta, lineCount, value, words, curLine, col])
+
   // Track the textarea's content box (width for the mirror, height for the perf window).
   useLayoutEffect(() => {
     const ta = taRef.current
@@ -167,6 +217,11 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
     if (ta && perf) setScrollTop(ta.scrollTop)
   }, [perf, value])
 
+  const syncCaret = useCallback(() => {
+    const ta = taRef.current
+    if (ta) setCaret(ta.selectionStart)
+  }, [])
+
   const onScroll = useCallback(() => {
     const ta = taRef.current
     if (!ta) return
@@ -175,6 +230,7 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
       bd.scrollTop = ta.scrollTop
       bd.scrollLeft = ta.scrollLeft
     }
+    if (bandRef.current) bandRef.current.style.transform = `translateY(${bandTopRef.current - ta.scrollTop}px)`
     if (perf) {
       // rAF-throttle: one state update per frame during fast scrolls.
       if (rafId.current) return
@@ -197,12 +253,23 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
     if (ta && g) g.style.transform = `translateY(${-ta.scrollTop}px)`
   }, [perf, value, heights])
 
+  // Re-place the current-line band when the caret moves or line heights change (no scroll event).
+  useLayoutEffect(() => {
+    const ta = taRef.current
+    const b = bandRef.current
+    if (ta && b) b.style.transform = `translateY(${lineMetrics.top - ta.scrollTop}px)`
+  }, [lineMetrics, value])
+
   // Scroll the active find match into view (Ctrl+F "next"). The backdrop lays matches out exactly
   // like the textarea, so we read the active <mark>'s measured position; in perf mode (no backdrop,
   // wrap forced off) we derive it from the line index. Only scrolls when it's outside the viewport.
   useLayoutEffect(() => {
     const ta = taRef.current
     if (!ta || !highlight || highlight.active < 0 || highlight.term === '') return
+    // Move the caret to the match (selection shows greyed; the current-line band follows it) so
+    // stepping feels like a text editor. We don't focus the textarea — the find box keeps focus.
+    ta.setSelectionRange(highlight.active, highlight.active + highlight.term.length)
+    setCaret(highlight.active)
     let cTop: number
     const mark = backdropRef.current?.querySelector('mark[data-active]') as HTMLElement | null
     if (mark) {
@@ -224,7 +291,8 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
       }
       if (perf) setScrollTop(ta.scrollTop) // keep the perf gutter window in sync
     }
-  }, [highlight, value, perf])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.active, highlight?.term, value, perf])
 
   // Perf-mode visible window [first, last] of 0-based line indices.
   const first = Math.max(0, Math.floor((scrollTop - PAD) / LH) - OVERSCAN)
@@ -291,6 +359,16 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
         </div>
       )}
 
+      {/* current-line band: a faint full-width strip behind the text, glued to the caret's
+          logical line (covers all its wrapped rows) and translated with scroll. Stays visible
+          when the pane is blurred so the user keeps their place when switching apps. */}
+      <div
+        ref={bandRef}
+        aria-hidden
+        className="absolute left-0 right-0 top-0 pointer-events-none bg-citrus-pink/[0.07] dark:bg-citrus-pink/[0.13]"
+        style={{ height: lineMetrics.height }}
+      />
+
       {/* find-highlight backdrop: same text/box as the textarea, behind it, scroll-synced.
           The textarea is transparent on top so its real glyphs show over the <mark> bands. */}
       {highlightNodes && (
@@ -323,15 +401,22 @@ export const CodeArea = forwardRef<HTMLTextAreaElement, CodeAreaProps>(function 
         readOnly={readOnly}
         spellCheck={false}
         placeholder={placeholder}
-        onChange={onChange ? (e) => onChange(e.target.value) : undefined}
+        onChange={
+          onChange
+            ? (e) => {
+                onChange(e.target.value)
+                setCaret(e.target.selectionStart)
+              }
+            : undefined
+        }
         onScroll={onScroll}
+        onSelect={syncCaret}
+        onKeyUp={syncCaret}
+        onClick={syncCaret}
+        onFocus={syncCaret}
         wrap={effectiveWrap ? 'soft' : 'off'}
       />
 
-      {/* live word / character count */}
-      <div className="absolute bottom-1.5 right-3 z-10 select-none pointer-events-none text-[10px] font-mono text-citrus-muted/70 dark:text-citrus-night-muted/70">
-        {words === null ? '—' : words.toLocaleString()} words · {value.length.toLocaleString()} chars
-      </div>
     </div>
   )
 })

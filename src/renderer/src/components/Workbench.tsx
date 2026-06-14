@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, FolderOpen, Loader2, Search, X } from 'lucide-react'
 import type { WorkflowResult } from '../state/workflow'
 import { iocMetrics, type IocMetrics } from '../state/metrics'
-import { CodeArea } from './CodeArea'
+import { CodeArea, type CodeAreaMeta } from './CodeArea'
 
 // Above this output size, IOC counts (six global-regex passes) aren't computed live —
 // the user can trigger them on demand. Char count stays free.
@@ -22,6 +22,13 @@ function nextPaint(): Promise<void> {
   return new Promise((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
   )
+}
+
+/** One-line cursor/size summary for a pane's status bar (Notepad++-style). */
+function metaText(m: CodeAreaMeta | null): string {
+  if (!m) return ''
+  const w = m.words === null ? '—' : m.words.toLocaleString()
+  return `Ln ${m.line.toLocaleString()}, Col ${m.col.toLocaleString()} · ${m.lines.toLocaleString()} lines · ${w} words · ${m.chars.toLocaleString()} chars`
 }
 
 function IocStat({ label, n, tone }: { label: string; n: number; tone: string }): JSX.Element {
@@ -47,6 +54,11 @@ export function Workbench({
   const [loading, setLoading] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [manualIoc, setManualIoc] = useState<IocMetrics | null>(null)
+  // Per-pane cursor/size metrics for the status bars (reported up from each CodeArea).
+  const [inputMeta, setInputMeta] = useState<CodeAreaMeta | null>(null)
+  const [outputMeta, setOutputMeta] = useState<CodeAreaMeta | null>(null)
+  const onInputMeta = useCallback((m: CodeAreaMeta) => setInputMeta(m), [])
+  const onOutputMeta = useCallback((m: CodeAreaMeta) => setOutputMeta(m), [])
 
   const out = result.output
   const iocTooBig = out.length > METRICS_MAX
@@ -253,7 +265,11 @@ export function Workbench({
           wrap={wrap}
           placeholder="Paste data here…"
           highlight={find?.target === 'input' ? { term: findTerm, active: matches[matchIdx] ?? -1 } : undefined}
+          onMeta={onInputMeta}
         />
+        <div className="mt-2 pt-2 border-t border-citrus-border/40 text-[10px] font-mono text-citrus-muted dark:text-citrus-night-muted dark:border-citrus-night-border/40">
+          {metaText(inputMeta)}
+        </div>
         {loading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-citrus-cream/70 backdrop-blur-sm dark:bg-citrus-night/70">
             <div className="flex items-center gap-2 text-sm font-semibold text-citrus-dark dark:text-citrus-night-text">
@@ -304,9 +320,12 @@ export function Workbench({
           readOnly
           placeholder="Output appears here."
           highlight={find?.target === 'output' ? { term: findTerm, active: matches[matchIdx] ?? -1 } : undefined}
+          onMeta={onOutputMeta}
         />
-        {/* slim IOC counts */}
+        {/* status bar: cursor/size metrics + slim IOC counts */}
         <div className="mt-2 pt-2 border-t border-citrus-border/40 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono dark:border-citrus-night-border/40">
+          <span className="text-citrus-muted dark:text-citrus-night-muted">{metaText(outputMeta)}</span>
+          <span className="text-citrus-border dark:text-citrus-night-border">|</span>
           {im ? (
             <>
               <IocStat label="IPs" n={im.ipv4} tone="text-red-600 dark:text-red-400" />

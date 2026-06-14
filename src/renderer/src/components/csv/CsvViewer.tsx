@@ -7,6 +7,7 @@ import { VirtualGrid } from './VirtualGrid'
 import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
+import { DistinctPanel } from './DistinctPanel'
 import { CellPopout } from './CellPopout'
 
 const SEARCH_DEBOUNCE_MS = 250
@@ -34,6 +35,8 @@ export function CsvViewer({
   const [filters, setFilters] = useState<CsvFilter[]>([])
   const [menu, setMenu] = useState<{ col: CsvColumn; anchor: { left: number; bottom: number } } | null>(null)
   const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
+  // The column whose distinct values are shown in the side panel (null = panel closed).
+  const [distinctCol, setDistinctCol] = useState<CsvColumn | null>(null)
   // `searchInput` is what the user types; `search` is the debounced term that drives the
   // query — so a multi-million-row LIKE scan only runs once typing settles.
   const [searchInput, setSearchInput] = useState('')
@@ -67,12 +70,27 @@ export function CsvViewer({
 
   function addFilter(f: CsvFilter): void {
     setFilters((fs) => [
-      ...fs.filter((x) => !(x.col === f.col && x.op === f.op && x.value === f.value)),
+      ...fs.filter((x) => !(x.col === f.col && x.op === f.op && x.op !== 'in' && f.op !== 'in' && x.value === f.value)),
       f
     ])
   }
   function removeFilter(i: number): void {
     setFilters((fs) => fs.filter((_, j) => j !== i))
+  }
+
+  // Apply a column's multi-select as ONE `in` filter: replace any existing `in` filter for
+  // that column (so 3 chosen IPs are a single 3-value chip, not three chips); empty = remove.
+  function applyInFilter(col: string, values: string[]): void {
+    setFilters((fs) => {
+      const without = fs.filter((f) => !(f.op === 'in' && f.col === col))
+      return values.length > 0 ? [...without, { col, op: 'in', values }] : without
+    })
+  }
+
+  // Values currently selected for a column's `in` filter (pre-checks the Filter submenu).
+  function inValuesFor(col: string): string[] {
+    const f = filters.find((x) => x.op === 'in' && x.col === col)
+    return f && f.op === 'in' ? f.values : []
   }
 
   return (
@@ -116,17 +134,29 @@ export function CsvViewer({
           onCellOpen={(value, label) => setPopout({ value, label })}
           ensureRange={ensureRange}
         />
+        {distinctCol && (
+          <DistinctPanel
+            doc={doc}
+            col={distinctCol}
+            filters={filters}
+            onClose={() => setDistinctCol(null)}
+            onPivot={onPivot}
+          />
+        )}
       </div>
 
       {menu && (
         <ColumnMenu
           doc={doc}
           col={menu.col}
-          filters={filters}
+          // The submenu lists values available under the OTHER filters, so the column's own
+          // `in` selection can be freely changed.
+          filters={filters.filter((f) => !(f.op === 'in' && f.col === menu.col.name))}
+          currentValues={inValuesFor(menu.col.name)}
           anchor={menu.anchor}
           onClose={() => setMenu(null)}
-          onPivot={onPivot}
-          onAddFilter={addFilter}
+          onShowDistinct={(col) => setDistinctCol(col)}
+          onApplyInFilter={applyInFilter}
         />
       )}
       {popout && <CellPopout label={popout.label} value={popout.value} onClose={() => setPopout(null)} />}

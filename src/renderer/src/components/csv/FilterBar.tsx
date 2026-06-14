@@ -3,6 +3,8 @@ import { Filter, Plus, X } from 'lucide-react'
 import type { CsvColumn, CsvFilter } from '../../state/csvTypes'
 
 // Active row-filter chips + a compact "add filter" form (column + contains/equals + value).
+// Multi-value `in` filters come from a column's "Filter" submenu; this form only adds the
+// single-value equals/contains kind.
 
 export function FilterBar({
   columns,
@@ -35,10 +37,13 @@ export function FilterBar({
       <Filter className="w-3 h-3 text-citrus-muted dark:text-citrus-night-muted" />
       {filters.map((f, i) => (
         <span
-          key={`${f.col}-${f.op}-${f.value}-${i}`}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-citrus-pink-light text-citrus-pink border border-citrus-pink/20 font-mono"
+          key={`${f.col}-${f.op}-${i}`}
+          className="filter-chip inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-citrus-pink-light text-citrus-pink border border-citrus-pink/20 font-mono"
+          title={f.op === 'in' ? `${label(f.col)} in ${f.values.length} value(s)` : undefined}
         >
-          {label(f.col)} {f.op === 'eq' ? '=' : '⊇'} {f.value}
+          {f.op === 'in'
+            ? `${label(f.col)} ∈ ${f.values.join(', ')}`
+            : `${label(f.col)} ${f.op === 'eq' ? '=' : '⊇'} ${f.value}`}
           <button onClick={() => onRemove(i)} title="Remove filter" className="hover:text-citrus-pink-hover">
             <X className="w-3 h-3" />
           </button>

@@ -14,11 +14,9 @@ export interface CsvSort {
   dir: 'asc' | 'desc'
   numeric?: boolean
 }
-export interface CsvFilter {
-  col: string
-  op: 'eq' | 'like'
-  value: string
-}
+export type CsvFilter =
+  | { col: string; op: 'eq' | 'like'; value: string }
+  | { col: string; op: 'in'; values: string[] }
 export interface CsvQueryOpts {
   sort?: CsvSort
   filters?: CsvFilter[]

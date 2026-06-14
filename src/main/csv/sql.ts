@@ -16,11 +16,11 @@ export const MAX_ROWS_LIMIT = 10_000
 export const DISTINCT_CAP = 100_000
 export const VALUES_CAP = 1_000_000
 
-export interface Filter {
-  col: string
-  op: 'eq' | 'like'
-  value: string
-}
+// A row filter is either a single-value predicate (equals / contains) or a multi-value set
+// membership (`in`) — the latter is one chip holding several values for the same column.
+export type Filter =
+  | { col: string; op: 'eq' | 'like'; value: string }
+  | { col: string; op: 'in'; values: string[] }
 
 export interface Sort {
   col: string
@@ -76,6 +76,10 @@ function buildWhere(
       if (f.op === 'like') {
         clauses.push(`${f.col} LIKE ? ESCAPE '\\'`)
         params.push(`%${escapeLike(f.value)}%`)
+      } else if (f.op === 'in') {
+        if (f.values.length === 0) continue // an empty set adds no constraint
+        clauses.push(`${f.col} IN (${f.values.map(() => '?').join(', ')})`)
+        for (const v of f.values) params.push(v)
       } else {
         clauses.push(`${f.col} = ?`)
         params.push(f.value)

@@ -54,6 +54,22 @@ describe('buildQueryRowsSql', () => {
     )
   })
 
+  it('renders a multi-value `in` filter as one IN (...) clause with bound params', () => {
+    const { sql, params } = buildQueryRowsSql(cols, {
+      limit: 100,
+      offset: 0,
+      filters: [{ col: 'c0', op: 'in', values: ['1.1.1.1', '8.8.8.8', '9.9.9.9'] }]
+    })
+    expect(sql).toBe('SELECT c0, c1 FROM data WHERE c0 IN (?, ?, ?) LIMIT ? OFFSET ?')
+    expect(params).toEqual(['1.1.1.1', '8.8.8.8', '9.9.9.9', 100, 0])
+  })
+
+  it('drops an empty `in` filter (no constraint)', () => {
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ col: 'c0', op: 'in', values: [] }] }).sql).toBe(
+      'SELECT c0, c1 FROM data LIMIT ? OFFSET ?'
+    )
+  })
+
   it('binds filter values as params (eq and escaped like)', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 100,

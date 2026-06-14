@@ -147,7 +147,15 @@ function normalizeSort(sort?: Sort): Sort | undefined {
 
 function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
   if (!Array.isArray(filters) || filters.length === 0) return undefined
-  return filters
-    .filter((f) => f && typeof f.col === 'string')
-    .map((f) => ({ col: f.col, op: f.op === 'eq' ? 'eq' : 'like', value: String(f.value ?? '') }))
+  const out: Filter[] = []
+  for (const f of filters) {
+    if (!f || typeof f.col !== 'string') continue
+    if (f.op === 'in') {
+      const values = Array.isArray(f.values) ? f.values.map(String) : []
+      if (values.length > 0) out.push({ col: f.col, op: 'in', values })
+    } else {
+      out.push({ col: f.col, op: f.op === 'eq' ? 'eq' : 'like', value: String(f.value ?? '') })
+    }
+  }
+  return out.length > 0 ? out : undefined
 }

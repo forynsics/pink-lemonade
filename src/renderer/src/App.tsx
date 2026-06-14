@@ -406,6 +406,7 @@ export default function App(): JSX.Element {
             onRemoveSource={(sid) => void removeSource(active.id, active.wsId, sid)}
             tagSummary={tagSummary}
             onToggleTagFilter={(tag) => tagApiRef.current?.toggleTagFilter(tag)}
+            onClearTagFilter={() => tagApiRef.current?.clearTagFilter()}
           />
         )}
         <main className="flex flex-col flex-1 min-w-0 min-h-0">

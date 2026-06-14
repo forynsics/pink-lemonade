@@ -19,18 +19,21 @@ export function WorkspaceSidebar({
   onImport,
   onRemoveSource,
   tagSummary,
-  onToggleTagFilter
+  onToggleTagFilter,
+  onClearTagFilter
 }: {
   doc: WorkspaceDoc
   importing: boolean
   onSelectSource: (sourceId: number) => void
   onImport: () => void
   onRemoveSource: (sourceId: number) => void
-  /** Tag rollup for the active source (counts + the active tag filter), reported by its viewer. */
+  /** Tag rollup for the active source (counts + the active tag filter set), reported by its viewer. */
   tagSummary?: TagSummary | null
   onToggleTagFilter?: (tag: TagId) => void
+  onClearTagFilter?: () => void
 }): JSX.Element {
   const tagRows = TAG_DEFS.filter((d) => tagSummary?.counts[d.id])
+  const activeTags = tagSummary?.activeTags ?? []
   return (
     <aside className="workspace-sidebar flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-citrus-border bg-citrus-sand/40 p-3 dark:border-citrus-night-border dark:bg-citrus-night">
       <div className="flex items-center gap-2 px-1 text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
@@ -105,7 +108,7 @@ export function WorkspaceSidebar({
           </div>
           <div className="flex flex-col gap-0.5">
             {tagRows.map((d) => {
-              const active = tagSummary?.activeTag === d.id
+              const active = activeTags.includes(d.id)
               return (
                 <button
                   key={d.id}
@@ -129,12 +132,12 @@ export function WorkspaceSidebar({
               )
             })}
           </div>
-          {tagSummary?.activeTag && (
+          {activeTags.length > 0 && (
             <button
-              onClick={() => onToggleTagFilter?.(tagSummary.activeTag as TagId)}
+              onClick={() => onClearTagFilter?.()}
               className="mt-1 px-2 text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
             >
-              ✕ Clear tag filter
+              ✕ Clear tag filter{activeTags.length > 1 ? 's' : ''}
             </button>
           )}
         </div>

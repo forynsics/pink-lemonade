@@ -39,8 +39,9 @@ export type Filter =
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   // Open/closed range on a time column in epoch seconds: from→`>=`, to→`<=`, both→between.
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
-  // Row-tag membership: rows whose (source_id, rowid) carry the given tag in the `tags` table.
-  | { op: 'tag'; tag: string }
+  // Row-tag membership: rows whose (source_id, rowid) carry ANY of these tags in the `tags` table
+  // (OR across the set — a row has one tag, so AND would match nothing).
+  | { op: 'tag'; tags: string[] }
 
 /** The source id of a workspace data table (`data_<id>` → id), or null for the legacy `data` table. */
 function tableSourceId(table: string): number | null {
@@ -116,13 +117,16 @@ function buildWhere(
   if (filters) {
     for (const f of filters) {
       // A tag filter isn't tied to a column — resolve it against the `tags` table by source id.
+      // Matches rows carrying ANY of the chosen tags (OR via IN).
       if (f.op === 'tag') {
+        if (f.tags.length === 0) continue // empty set → no constraint
         const sid = tableSourceId(table)
         if (sid == null) {
           clauses.push('0') // legacy single-file table has no tags → match nothing
         } else {
-          clauses.push('rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag = ?)')
-          params.push(sid, f.tag)
+          const placeholders = f.tags.map(() => '?').join(', ')
+          clauses.push(`rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag IN (${placeholders}))`)
+          params.push(sid, ...f.tags)
         }
         continue
       }

@@ -17,7 +17,7 @@ function fmtDelta(sec: number): string {
 }
 
 function chipText(f: CsvFilter, label: (n: string) => string): string {
-  if (f.op === 'tag') return `tagged ${tagDef(f.tag)?.label ?? f.tag}`
+  if (f.op === 'tag') return `tagged ${f.tags.map((t) => tagDef(t)?.label ?? t).join(' / ')}`
   if (f.op === 'in') return `${label(f.col)} ∈ ${f.values.join(', ')}`
   if (f.op === 'timearound') return `${label(f.col)} ≈ ${f.value} ±${fmtDelta(f.deltaSec)}`
   if (f.op === 'timerange') {
@@ -133,7 +133,8 @@ export function FilterBar({
           title={f.op === 'tag' ? 'Tag filter — ✕ to clear' : 'Click to edit'}
           onClick={(e) => editChip(f, i, { x: e.clientX, y: e.clientY })}
         >
-          {f.op === 'tag' && <span className={`inline-block w-2 h-2 rounded-sm ${tagDef(f.tag)?.dot ?? ''}`} />}
+          {f.op === 'tag' &&
+            f.tags.map((t) => <span key={t} className={`inline-block w-2 h-2 rounded-sm ${tagDef(t)?.dot ?? ''}`} />)}
           {chipText(f, label)}
           <button
             onClick={(e) => {

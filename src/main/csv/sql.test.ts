@@ -128,20 +128,38 @@ describe('buildQueryRowsSql', () => {
     expect(params).toEqual(['%Clean%', 10, 0])
   })
 
-  it('renders a `tag` filter as a rowid subquery against the tags table (source id from the table)', () => {
+  it('renders a single-tag filter as a rowid subquery with tag IN (?) (source id from the table)', () => {
     const { sql, params } = buildQueryRowsSql(
       cols,
-      { limit: 10, offset: 0, filters: [{ op: 'tag', tag: 'malicious' }] },
+      { limit: 10, offset: 0, filters: [{ op: 'tag', tags: ['malicious'] }] },
       'data_5'
     )
     expect(sql).toBe(
-      'SELECT c0, c1 FROM data_5 WHERE rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag = ?) LIMIT ? OFFSET ?'
+      'SELECT c0, c1 FROM data_5 WHERE rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag IN (?)) LIMIT ? OFFSET ?'
     )
     expect(params).toEqual([5, 'malicious', 10, 0])
   })
 
+  it('renders a multi-tag filter as tag IN (?, ?) — OR across the chosen tags', () => {
+    const { sql, params } = buildQueryRowsSql(
+      cols,
+      { limit: 10, offset: 0, filters: [{ op: 'tag', tags: ['malicious', 'suspicious'] }] },
+      'data_2'
+    )
+    expect(sql).toBe(
+      'SELECT c0, c1 FROM data_2 WHERE rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag IN (?, ?)) LIMIT ? OFFSET ?'
+    )
+    expect(params).toEqual([2, 'malicious', 'suspicious', 10, 0])
+  })
+
+  it('an empty tag set adds no constraint (back to the default keyset window)', () => {
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'tag', tags: [] }] }, 'data_1').sql).toBe(
+      'SELECT c0, c1 FROM data_1 WHERE rowid > ? LIMIT ?'
+    )
+  })
+
   it('a `tag` filter on the legacy single-file table matches nothing (no tags there)', () => {
-    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'tag', tag: 'benign' }] }).sql).toBe(
+    expect(buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'tag', tags: ['benign'] }] }).sql).toBe(
       'SELECT c0, c1 FROM data WHERE 0 LIMIT ? OFFSET ?'
     )
   })

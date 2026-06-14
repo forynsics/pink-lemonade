@@ -29,7 +29,7 @@ export type CsvFilter =
   | { col: string; op: 'in'; values: string[] }
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
-  | { op: 'tag'; tag: string }
+  | { op: 'tag'; tags: string[] }
 
 export interface CsvQueryOpts {
   sort?: CsvSort

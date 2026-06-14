@@ -6,11 +6,13 @@ import { TAG_DEFS, type TagId } from '../../state/tags'
 /** Per-source tag rollup the viewer reports up so the sidebar can show + filter by tag. */
 export interface TagSummary {
   counts: Partial<Record<TagId, number>>
-  activeTag?: TagId
+  /** Tags currently in the OR filter set (empty = no tag filter). */
+  activeTags: TagId[]
 }
-/** Imperative surface the sidebar drives (the active source's tag-filter toggle). */
+/** Imperative surface the sidebar drives (the active source's tag-filter toggles). */
 export interface CsvViewerHandle {
   toggleTagFilter: (tag: TagId) => void
+  clearTagFilter: () => void
 }
 
 /** What the grid needs to render a source — satisfied by a workspace source view (or any table). */
@@ -256,21 +258,28 @@ export function CsvViewer({
     })
   }
 
-  // Toggle a "show only rows tagged X" filter (from the sidebar Tags facets). One tag filter at a
-  // time: clicking the active tag clears it; clicking another replaces it.
+  // Toggle a tag in the "show only rows tagged …" set (from the sidebar Tags facets). Tags OR
+  // together, so you can show e.g. Malicious + Suspicious at once. Removing the last tag drops the
+  // filter entirely.
   const toggleTagFilter = useCallback((tag: TagId): void => {
     setFilters((fs) => {
       const cur = fs.find((f) => f.op === 'tag')
-      if (cur && cur.op === 'tag' && cur.tag === tag) return fs.filter((f) => f.op !== 'tag')
-      return [...fs.filter((f) => f.op !== 'tag'), { op: 'tag', tag }]
+      const curTags = cur && cur.op === 'tag' ? cur.tags : []
+      const nextTags = curTags.includes(tag) ? curTags.filter((t) => t !== tag) : [...curTags, tag]
+      const without = fs.filter((f) => f.op !== 'tag')
+      return nextTags.length > 0 ? [...without, { op: 'tag', tags: nextTags }] : without
     })
   }, [])
+  const clearTagFilter = useCallback((): void => {
+    setFilters((fs) => fs.filter((f) => f.op !== 'tag'))
+  }, [])
   const activeTagFilter = filters.find((f) => f.op === 'tag')
-  const activeTag = activeTagFilter?.op === 'tag' ? (activeTagFilter.tag as TagId) : undefined
-  hasTagFilterRef.current = activeTag !== undefined
+  const activeTags = (activeTagFilter?.op === 'tag' ? activeTagFilter.tags : []) as TagId[]
+  hasTagFilterRef.current = activeTags.length > 0
 
-  // The active source exposes its tag-filter toggle and reports its tag rollup to the sidebar.
-  useImperativeHandle(apiRef, () => ({ toggleTagFilter }), [toggleTagFilter])
+  // The active source exposes its tag-filter controls and reports its tag rollup to the sidebar.
+  useImperativeHandle(apiRef, () => ({ toggleTagFilter, clearTagFilter }), [toggleTagFilter, clearTagFilter])
+  const activeTagsKey = activeTags.join(',')
   useEffect(() => {
     if (!onTagSummary) return
     if (!taggable) {
@@ -279,8 +288,8 @@ export function CsvViewer({
     }
     const counts: Partial<Record<TagId, number>> = {}
     for (const t of tags.values()) counts[t as TagId] = (counts[t as TagId] ?? 0) + 1
-    onTagSummary({ counts, activeTag })
-  }, [onTagSummary, taggable, tags, activeTag])
+    onTagSummary({ counts, activeTags: activeTagsKey ? (activeTagsKey.split(',') as TagId[]) : [] })
+  }, [onTagSummary, taggable, tags, activeTagsKey])
 
   // Filter the whole CSV to rows within ±deltaSec of a time cell (one timearound filter per col).
   function applyTimeAround(cell: CellRef, deltaSec: number): void {

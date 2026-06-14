@@ -318,7 +318,8 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
   for (const f of filters) {
     if (!f) continue
     if (f.op === 'tag') {
-      if (typeof f.tag === 'string' && f.tag) out.push({ op: 'tag', tag: f.tag })
+      const tags = Array.isArray(f.tags) ? f.tags.filter((t) => typeof t === 'string' && t) : []
+      if (tags.length > 0) out.push({ op: 'tag', tags })
       continue
     }
     if (typeof f.col !== 'string') continue

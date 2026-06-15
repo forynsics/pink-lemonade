@@ -116,6 +116,8 @@ export interface CsvApi {
     limit?: number
   ) => Promise<{ rows: CsvDistinctRow[]; total: number; truncated: boolean }>
   longest: (tabId: string, col: string) => Promise<string>
+  /** 0-based ordinal of a row (by rowid) in the current unsorted filtered view, or -1. */
+  locate: (tabId: string, rid: number, filters: CsvFilter[] | undefined, search: string | undefined) => Promise<number>
   values: (
     tabId: string,
     col: string,

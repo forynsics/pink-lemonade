@@ -15,6 +15,7 @@ import {
   listTags,
   setTags,
   tagByFilter,
+  locateRow,
   queryRows,
   ensureSortIndex,
   buildFilterIndex,
@@ -114,6 +115,15 @@ export function registerCsvIpc(): void {
 
   ipcMain.handle('csv:longest', (_e, { tabId, col }: { tabId: string; col: string }) =>
     getColumnLongest(tabId, col)
+  )
+
+  // Ordinal of a row (by rowid) in the current unsorted filtered view — so the grid can re-center
+  // the anchor row after a time pivot. Filters/search normalized exactly as the count path does so
+  // the filter-index token matches.
+  ipcMain.handle(
+    'csv:locate',
+    (_e, { tabId, rid, filters, search }: { tabId: string; rid: number; filters?: Filter[]; search?: string }) =>
+      locateRow(tabId, rid, normalizeFilters(filters), normalizeSearch(search))
   )
 
   ipcMain.handle(

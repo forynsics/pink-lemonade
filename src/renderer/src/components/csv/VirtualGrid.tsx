@@ -10,6 +10,8 @@ export interface CellRef {
   value: string
   /** Detected time kind, when the cell is a time column (or its value parses as a time). */
   tkind?: TimeKind
+  /** Positional rowid of the cell's row — the pivot anchor we scroll back to after a ± filter. */
+  rid?: number
 }
 
 /** Imperative handle for driving the grid from a parent (e.g. search "jump to next match"). */
@@ -371,7 +373,8 @@ export function VirtualGrid({
         ctxRids = rid != null ? [rid] : []
       }
       const tkind = col.time ?? classifyCellTime(value) ?? undefined
-      onCellContext({ colName: col.name, original: col.original, value, tkind }, { x: e.clientX, y: e.clientY }, ctxRids)
+      const rid = rids[r - baseOffset]
+      onCellContext({ colName: col.name, original: col.original, value, tkind, rid }, { x: e.clientX, y: e.clientY }, ctxRids)
     },
     [columns, rows, rids, baseOffset, dataIdx, sel, onCellContext]
   )

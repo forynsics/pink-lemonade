@@ -175,6 +175,24 @@ export function CsvViewer({
     tagRev
   )
 
+  // "Keep your spot" on a ± time pivot: remember the anchor row's rowid + the view it produced, then
+  // once that view's filter index is built (count done), re-center the grid on the anchor. wasCounting
+  // gates against firing on the stale (pre-count) render right after the filter changes.
+  const pendingAnchorRef = useRef<{ rid: number; key: string } | null>(null)
+  const wasCountingRef = useRef(false)
+  useEffect(() => {
+    if (counting) wasCountingRef.current = true
+    const p = pendingAnchorRef.current
+    if (!p || p.key !== JSON.stringify({ filters, search })) return
+    if (counting || !wasCountingRef.current) return // index still building / count not started yet
+    pendingAnchorRef.current = null
+    wasCountingRef.current = false
+    if (sort) return // unsorted pivot view only (the filter index is in rowid = display order)
+    void window.api.csv.locate(doc.tabId, p.rid, filters, search).then((idx) => {
+      if (idx >= 0) gridRef.current?.scrollToRow(idx)
+    })
+  }, [filters, search, counting, sort, doc.tabId])
+
   function toggleSort(col: string): void {
     setSort((s) => {
       // Rows arrive in original column order; index by the name's numeric suffix, not display pos.
@@ -292,13 +310,19 @@ export function CsvViewer({
   }, [onTagSummary, taggable, tags, activeTagsKey])
 
   // Filter the whole CSV to rows within ±deltaSec of a time cell (one timearound filter per col).
+  // Arm the pivot anchor so the grid re-centers on this row once the filtered view is ready.
   function applyTimeAround(cell: CellRef, deltaSec: number): void {
     if (!cell.tkind) return
     const tkind = cell.tkind
-    setFilters((fs) => [
-      ...fs.filter((f) => !(f.op === 'timearound' && f.col === cell.colName)),
+    const next: CsvFilter[] = [
+      ...filters.filter((f) => !(f.op === 'timearound' && f.col === cell.colName)),
       { col: cell.colName, op: 'timearound', value: cell.value, tkind, deltaSec }
-    ])
+    ]
+    setFilters(next)
+    if (cell.rid != null) {
+      pendingAnchorRef.current = { rid: cell.rid, key: JSON.stringify({ filters: next, search }) }
+      wasCountingRef.current = false
+    }
   }
 
   const hasPredicate = filters.length > 0 || search !== ''

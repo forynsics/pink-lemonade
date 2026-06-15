@@ -550,6 +550,31 @@ function hasPredicate(opts: QueryOpts): boolean {
   return (opts.filters != null && opts.filters.length > 0) || (opts.search != null && opts.search !== '')
 }
 
+/**
+ * 0-based ordinal of a row (by rowid) within an unsorted filtered/searched view — so the grid can
+ * scroll to/center it after a time pivot ("keep your spot"). Uses the materialized filter index
+ * (rids in rowid = display order), so it's O(1)-ish and free once the count built the index. Returns
+ * -1 if the index isn't current for this predicate (caller waits for the count) or the row isn't in it.
+ */
+export function locateRow(
+  tabId: string,
+  rid: number,
+  filters: Filter[] | undefined,
+  search: string | undefined
+): number {
+  const e = tables.get(tabId)
+  if (!e || !Number.isInteger(rid)) return -1
+  if (!e.filt || !e.filt.complete || e.filt.token !== filterToken(filters, search)) return -1
+  try {
+    const row = e.db.prepare(`SELECT rowid AS pos FROM ${e.filtTable} WHERE rid = ?`).get(rid) as
+      | { pos: number }
+      | undefined
+    return row ? row.pos - 1 : -1
+  } catch {
+    return -1
+  }
+}
+
 export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][]; rids: number[] } {
   const e = get(tabId)
   // Fast path for a no-sort filtered/searched view: page the materialized filter index by keyset

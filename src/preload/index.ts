@@ -39,6 +39,8 @@ const api = {
     distinct: (tabId: string, col: string, filters?: unknown, limit?: number) =>
       ipcRenderer.invoke('csv:distinct', { tabId, col, filters, limit }),
     longest: (tabId: string, col: string) => ipcRenderer.invoke('csv:longest', { tabId, col }),
+    locate: (tabId: string, rid: number, filters: unknown, search: string | undefined) =>
+      ipcRenderer.invoke('csv:locate', { tabId, rid, filters, search }),
     values: (tabId: string, col: string, filters?: unknown) =>
       ipcRenderer.invoke('csv:values', { tabId, col, filters }),
     stats: (tabId: string, col: string) => ipcRenderer.invoke('csv:stats', { tabId, col }),

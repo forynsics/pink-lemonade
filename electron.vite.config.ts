@@ -9,7 +9,16 @@ const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf-8')) as { vers
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        // The DB runs in a worker thread; emit it next to the main entry as out/main/worker.js.
+        input: {
+          index: resolve('src/main/index.ts'),
+          worker: resolve('src/main/csv/worker.ts')
+        }
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()]

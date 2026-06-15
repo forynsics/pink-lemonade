@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3'
-import { app } from 'electron'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import { statSync, unlinkSync, readdirSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -93,9 +92,19 @@ export interface WorkspaceInfo {
 const TEMP_PREFIX = 'pl_csv_' // legacy temp-db prefix (older builds) — still swept at startup
 const tables = new Map<string, Entry>()
 
+// db.ts runs in a worker thread (no Electron `app`); the userData dir is injected at worker init.
+let USER_DATA = ''
+export function initPaths(userDataDir: string): void {
+  USER_DATA = userDataDir
+}
+function userDataDir(): string {
+  if (!USER_DATA) throw new Error('db paths not initialized (initPaths must run first)')
+  return USER_DATA
+}
+
 /** Persistent per-import database directory: <userData>/sessions. Survives restarts (Slice A). */
 function sessionsDir(): string {
-  const dir = join(app.getPath('userData'), 'sessions')
+  const dir = join(userDataDir(), 'sessions')
   mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -246,7 +255,7 @@ export class CsvIngestCanceled extends Error {
 
 // ---- App settings (a tiny userData/settings.json) ----
 function settingsPath(): string {
-  return join(app.getPath('userData'), 'settings.json')
+  return join(userDataDir(), 'settings.json')
 }
 function readSettings(): Record<string, unknown> {
   try {
@@ -260,7 +269,7 @@ function readSettings(): Record<string, unknown> {
 export function getWorkspaceDir(): string {
   const s = readSettings()
   const dir =
-    typeof s.workspaceDir === 'string' && s.workspaceDir ? s.workspaceDir : join(app.getPath('userData'), 'workspaces')
+    typeof s.workspaceDir === 'string' && s.workspaceDir ? s.workspaceDir : join(userDataDir(), 'workspaces')
   mkdirSync(dir, { recursive: true })
   return dir
 }

@@ -4,7 +4,7 @@ import { join } from 'path'
 import { readFile, writeFile, stat } from 'fs/promises'
 import { basename } from 'path'
 import { registerCsvIpc } from './csv/ipc'
-import { sweepStaleTempDbs, closeAll } from './csv/db'
+import { initDbWorker, call as dbCall } from './csv/dbClient'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -96,7 +96,8 @@ function buildMenu(): void {
 }
 
 app.whenReady().then(() => {
-  sweepStaleTempDbs() // clear any temp CSV dbs left by a prior crash
+  initDbWorker() // the DB runs in a worker thread so slow queries never freeze the UI
+  void dbCall('sweepStaleTempDbs') // clear any temp CSV dbs left by a prior crash
   registerCsvIpc()
   buildMenu()
   createWindow()
@@ -105,9 +106,10 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => closeAll())
+// Best-effort cleanup of connections + temp dbs (also swept on next startup if this doesn't finish).
+app.on('before-quit', () => void dbCall('closeAll'))
 
 app.on('window-all-closed', () => {
-  closeAll() // delete temp CSV dbs
+  void dbCall('closeAll')
   if (process.platform !== 'darwin') app.quit()
 })

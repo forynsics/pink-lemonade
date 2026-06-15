@@ -1,41 +1,13 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import type { WebContents } from 'electron'
 import { basename } from 'path'
-import {
-  ingestCsv,
-  openDb,
-  deleteDb,
-  createWorkspace,
-  addSource,
-  openWorkspace,
-  closeWorkspace,
-  deleteWorkspace,
-  renameWorkspace,
-  removeSource,
-  renameSource,
-  getWorkspaceDir,
-  setWorkspaceDir,
-  listTags,
-  setTags,
-  tagByFilter,
-  locateRow,
-  queryRows,
-  ensureSortIndex,
-  buildFilterIndex,
-  getColumnUniqueValues,
-  getColumnDistinctCount,
-  getColumnLongest,
-  getColumnValues,
-  getColumnStats,
-  closeTab,
-  CsvIngestCanceled,
-  type SourceInfo
-} from './db'
+import * as dbw from './dbClient'
 import type { Filter, QueryOpts, Sort } from './sql'
+import type { CsvTableMeta, SourceInfo } from './db'
 
-// Registers the csv:* IPC surface. All heavy work runs here in main; the renderer only
-// receives small result sets (a page of rows, a distinct list, stats). Progress during
-// ingest is pushed back over the 'csv:progress' event.
+// Registers the csv:* / ws:* IPC surface. Every DB operation is forwarded to the worker thread
+// (dbClient) so a slow query never blocks the main process; the renderer only receives small
+// result sets. Ingest/count progress streams back over 'csv:progress' / 'csv:count-progress'.
 
 interface OpenResult {
   tabId: string
@@ -45,10 +17,6 @@ interface OpenResult {
   dbPath: string
 }
 
-const controllers = new Map<string, AbortController>()
-// Latest count request id per tab — a newer csv:count supersedes (aborts) the running one.
-const countReq = new Map<string, number>()
-
 export function registerCsvIpc(): void {
   // Pick (dialog) and ingest are separate so the renderer shows an import overlay only
   // during ingest — not while the user is still choosing a file.
@@ -57,48 +25,37 @@ export function registerCsvIpc(): void {
     doIngest(e.sender, tabId, path)
   )
 
+  // Abort an in-flight ingest (the worker holds the AbortController, keyed by this id).
   ipcMain.handle('csv:cancel', (_e, { tabId }: { tabId: string }) => {
-    const c = controllers.get(tabId)
-    if (c) {
-      c.abort()
-      return { canceled: true }
-    }
-    return { canceled: false }
+    dbw.cancel(tabId)
+    return { canceled: true }
   })
 
-  ipcMain.handle('csv:query', (_e, { tabId, opts }: { tabId: string; opts: QueryOpts }) => {
+  ipcMain.handle('csv:query', async (_e, { tabId, opts }: { tabId: string; opts: QueryOpts }) => {
     const o = normalizeOpts(opts)
     // On a large table, build the matching column index before sorting (Scale #3) — without it,
-    // a deep sorted scroll re-sorts the whole set per window (~90s at 12M rows). One-time, cached.
-    if (o.sort) ensureSortIndex(tabId, o.sort.col, !!o.sort.numeric)
-    return queryRows(tabId, o)
+    // a deep sorted scroll re-sorts the whole set per window. One-time, cached. Runs in the worker.
+    if (o.sort) await dbw.call('ensureSortIndex', tabId, o.sort.col, !!o.sort.numeric)
+    return dbw.call('queryRows', tabId, o)
   })
 
-  // Prepare a filtered/searched view: materialize its matching rowids (Scale #1b) so paging is
-  // O(1), and return the match count as a byproduct. Chunked + cancelable; reports the running
-  // total over 'csv:count-progress' (live count + a scrollbar that grows as it scans); resolves
-  // with the final count, or { canceled } if a newer request superseded it. Search is normalized
-  // exactly as the query path normalizes it, so the index token matches.
+  // Prepare a filtered/searched view: materialize its matching rowids (Scale #1b) and return the
+  // match count. Chunked + cancelable in the worker; the running total streams over
+  // 'csv:count-progress'. Resolves with { count } or { canceled } if a newer request superseded it.
   ipcMain.handle(
     'csv:count',
     async (
       e,
       { tabId, reqId, filters, search }: { tabId: string; reqId: number; filters?: Filter[]; search?: string }
     ) => {
-      countReq.set(tabId, reqId)
       const f = normalizeFilters(filters)
       const s = normalizeSearch(search)
-      const current = (): boolean => countReq.get(tabId) === reqId && !e.sender.isDestroyed()
       try {
-        const count = await buildFilterIndex(
-          tabId,
-          f,
-          s ?? '',
-          (c, scanned, max) => {
-            if (current()) e.sender.send('csv:count-progress', { tabId, reqId, count: c, scanned, max })
-          },
-          () => countReq.get(tabId) !== reqId
-        )
+        const count = await dbw.count(tabId, reqId, f, s ?? '', (p) => {
+          if (!e.sender.isDestroyed()) {
+            e.sender.send('csv:count-progress', { tabId, reqId, count: p.count, scanned: p.scanned, max: p.max })
+          }
+        })
         return count == null ? { canceled: true } : { count }
       } catch {
         return { canceled: true }
@@ -108,136 +65,105 @@ export function registerCsvIpc(): void {
 
   ipcMain.handle(
     'csv:distinct',
-    (_e, { tabId, col, filters, limit }: { tabId: string; col: string; filters?: Filter[]; limit?: number }) => {
+    async (_e, { tabId, col, filters, limit }: { tabId: string; col: string; filters?: Filter[]; limit?: number }) => {
       const f = normalizeFilters(filters)
-      const rows = getColumnUniqueValues(tabId, col, f, limit)
-      const total = getColumnDistinctCount(tabId, col, f) // true count, even if the list is capped
+      const rows = await dbw.call<Array<{ val: string; cnt: number }>>('getColumnUniqueValues', tabId, col, f, limit)
+      const total = await dbw.call<number>('getColumnDistinctCount', tabId, col, f) // true count, even if capped
       return { rows, total, truncated: total > rows.length }
     }
   )
 
   ipcMain.handle('csv:longest', (_e, { tabId, col }: { tabId: string; col: string }) =>
-    getColumnLongest(tabId, col)
+    dbw.call('getColumnLongest', tabId, col)
   )
 
-  // Ordinal of a row (by rowid) in the current unsorted filtered view — so the grid can re-center
-  // the anchor row after a time pivot. Filters/search normalized exactly as the count path does so
-  // the filter-index token matches.
+  // Ordinal of a row (by rowid) in the current unsorted filtered view — re-centers the time-pivot anchor.
   ipcMain.handle(
     'csv:locate',
     (_e, { tabId, rid, filters, search }: { tabId: string; rid: number; filters?: Filter[]; search?: string }) =>
-      locateRow(tabId, rid, normalizeFilters(filters), normalizeSearch(search))
+      dbw.call('locateRow', tabId, rid, normalizeFilters(filters), normalizeSearch(search))
   )
 
   ipcMain.handle(
     'csv:values',
-    (_e, { tabId, col, filters }: { tabId: string; col: string; filters?: Filter[] }) => ({
-      values: getColumnValues(tabId, col, normalizeFilters(filters)),
+    async (_e, { tabId, col, filters }: { tabId: string; col: string; filters?: Filter[] }) => ({
+      values: await dbw.call<string[]>('getColumnValues', tabId, col, normalizeFilters(filters)),
       truncated: false
     })
   )
 
   ipcMain.handle('csv:stats', (_e, { tabId, col }: { tabId: string; col: string }) =>
-    getColumnStats(tabId, col)
+    dbw.call('getColumnStats', tabId, col)
   )
 
-  ipcMain.handle('csv:close', (_e, { tabId }: { tabId: string }) => {
-    closeTab(tabId)
-    return null
-  })
+  ipcMain.handle('csv:close', (_e, { tabId }: { tabId: string }) => dbw.call('closeTab', tabId).then(() => null))
 
   // ---- Workspaces (capstone): one db holds many sources ----
   ipcMain.handle('ws:create', (_e, { wsId, name }: { wsId: string; name: string }) =>
-    createWorkspace(wsId, name)
+    dbw.call('createWorkspace', wsId, name)
   )
   ipcMain.handle('ws:open', (_e, { wsId, dbPath }: { wsId: string; dbPath: string }) =>
-    openWorkspace(wsId, dbPath)
+    dbw.call('openWorkspace', wsId, dbPath)
   )
-  ipcMain.handle('ws:close', (_e, { wsId }: { wsId: string }) => {
-    closeWorkspace(wsId)
-    return null
-  })
-  ipcMain.handle('ws:delete', (_e, { dbPath }: { dbPath: string }) => {
-    deleteWorkspace(dbPath)
-    return null
-  })
+  ipcMain.handle('ws:close', (_e, { wsId }: { wsId: string }) => dbw.call('closeWorkspace', wsId).then(() => null))
+  ipcMain.handle('ws:delete', (_e, { dbPath }: { dbPath: string }) => dbw.call('deleteWorkspace', dbPath).then(() => null))
   ipcMain.handle('ws:addSource', (e, { wsId, path }: { wsId: string; path: string }) =>
     doAddSource(e.sender, wsId, path)
   )
-  ipcMain.handle('ws:rename', (_e, { wsId, name }: { wsId: string; name: string }) => {
-    renameWorkspace(wsId, name)
-    return null
-  })
-  ipcMain.handle('ws:removeSource', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) => {
-    removeSource(wsId, sourceId)
-    return null
-  })
-  ipcMain.handle(
-    'ws:renameSource',
-    (_e, { wsId, sourceId, name }: { wsId: string; sourceId: number; name: string }) => {
-      renameSource(wsId, sourceId, name)
-      return null
-    }
+  ipcMain.handle('ws:rename', (_e, { wsId, name }: { wsId: string; name: string }) =>
+    dbw.call('renameWorkspace', wsId, name).then(() => null)
+  )
+  ipcMain.handle('ws:removeSource', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    dbw.call('removeSource', wsId, sourceId).then(() => null)
+  )
+  ipcMain.handle('ws:renameSource', (_e, { wsId, sourceId, name }: { wsId: string; sourceId: number; name: string }) =>
+    dbw.call('renameSource', wsId, sourceId, name).then(() => null)
   )
 
-  // Workspace storage folder (used as the Open-Workspace default + where new workspaces are saved).
-  ipcMain.handle('ws:getDir', () => getWorkspaceDir())
-  ipcMain.handle('ws:setDir', (_e, { dir }: { dir: string }) => setWorkspaceDir(dir))
-  ipcMain.handle('ws:pickDir', async (e) => {
-    const win = BrowserWindow.fromWebContents(e.sender)
-    const opts = {
-      properties: ['openDirectory' as const, 'createDirectory' as const],
-      defaultPath: getWorkspaceDir()
-    }
-    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
-  })
-
-  // Row tags: list all tags for a source (renderer caches them in a Map), and set/clear a tag on
-  // a set of rows (single right-click or a multi-row selection). tag === null clears.
+  // Row tags: list all tags for a source, and set/clear a tag on a set of rows.
   ipcMain.handle('ws:tagList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
-    listTags(wsId, sourceId)
+    dbw.call('listTags', wsId, sourceId)
   )
   ipcMain.handle(
     'ws:tagSet',
-    (_e, { wsId, sourceId, rids, tag }: { wsId: string; sourceId: number; rids: number[]; tag: string | null }) => {
-      setTags(wsId, sourceId, rids, tag)
-      return null
-    }
+    (_e, { wsId, sourceId, rids, tag }: { wsId: string; sourceId: number; rids: number[]; tag: string | null }) =>
+      dbw.call('setTags', wsId, sourceId, rids, tag).then(() => null)
   )
   // Bulk-tag every row matching the current view (filters + search), or clear if tag is null.
   ipcMain.handle(
     'ws:tagByFilter',
     (
       _e,
-      {
-        wsId,
-        sourceId,
-        filters,
-        search,
-        tag
-      }: { wsId: string; sourceId: number; filters?: Filter[]; search?: string; tag: string | null }
-    ) => tagByFilter(wsId, sourceId, normalizeFilters(filters), normalizeSearch(search), typeof tag === 'string' ? tag : null)
+      { wsId, sourceId, filters, search, tag }: { wsId: string; sourceId: number; filters?: Filter[]; search?: string; tag: string | null }
+    ) =>
+      dbw.call('tagByFilter', wsId, sourceId, normalizeFilters(filters), normalizeSearch(search), typeof tag === 'string' ? tag : null)
   )
 
-  // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".
-  ipcMain.handle('csv:open', (_e, { tabId, dbPath }: { tabId: string; dbPath: string }): OpenResult => {
-    const meta = openDb(tabId, dbPath)
-    return {
-      tabId,
-      sourceName: meta.sourceName,
-      columns: meta.columns,
-      rowCount: meta.rowCount,
-      dbPath: meta.dbPath
+  // Workspace storage folder (used as the Open-Workspace default + where new workspaces are saved).
+  ipcMain.handle('ws:getDir', () => dbw.call('getWorkspaceDir'))
+  ipcMain.handle('ws:setDir', (_e, { dir }: { dir: string }) => dbw.call('setWorkspaceDir', dir))
+  ipcMain.handle('ws:pickDir', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+      defaultPath: await dbw.call<string>('getWorkspaceDir')
     }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
 
-  // Pick a .db to open directly (Slice B). Returns its path, or null if canceled.
+  // Re-open a persistent session db by path (no re-ingest) — resume on restart or "Open Database…".
+  ipcMain.handle('csv:open', async (_e, { tabId, dbPath }: { tabId: string; dbPath: string }): Promise<OpenResult> => {
+    const meta = await dbw.call<CsvTableMeta>('openDb', tabId, dbPath)
+    return { tabId, sourceName: meta.sourceName, columns: meta.columns, rowCount: meta.rowCount, dbPath: meta.dbPath }
+  })
+
+  // Pick a .workspace/.db to open directly. Returns its path, or null if canceled.
   ipcMain.handle('csv:pickDb', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const opts = {
       properties: ['openFile' as const],
-      defaultPath: getWorkspaceDir(), // land in the workspaces folder instead of an arbitrary one
+      defaultPath: await dbw.call<string>('getWorkspaceDir'),
       filters: [{ name: 'Pink Lemonade workspace', extensions: ['workspace', 'db'] }]
     }
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
@@ -245,10 +171,7 @@ export function registerCsvIpc(): void {
   })
 
   // Delete a session's db files (Home "delete session").
-  ipcMain.handle('csv:deleteDb', (_e, { dbPath }: { dbPath: string }) => {
-    deleteDb(dbPath)
-    return null
-  })
+  ipcMain.handle('csv:deleteDb', (_e, { dbPath }: { dbPath: string }) => dbw.call('deleteDb', dbPath).then(() => null))
 }
 
 async function doPick(sender: WebContents): Promise<{ path: string; sourceName: string } | null> {
@@ -272,60 +195,36 @@ async function doPick(sender: WebContents): Promise<{ path: string; sourceName: 
 }
 
 async function doIngest(sender: WebContents, tabId: string, filePath: string): Promise<OpenResult | null> {
-  const controller = new AbortController()
-  controllers.set(tabId, controller)
-  try {
-    const meta = await ingestCsv({
-      tabId,
-      filePath,
-      sourceName: basename(filePath),
-      signal: controller.signal,
-      onProgress: (p) => {
-        if (!sender.isDestroyed()) sender.send('csv:progress', { tabId, ...p, phase: 'parsing' })
-      }
-    })
-    if (!sender.isDestroyed()) {
-      sender.send('csv:progress', { tabId, bytes: 0, rows: meta.rowCount, total: 0, phase: 'done' })
+  const meta = await dbw.ingest<CsvTableMeta | null>(
+    'ingestCsv',
+    { tabId, filePath, sourceName: basename(filePath) },
+    tabId,
+    (p) => {
+      if (!sender.isDestroyed()) sender.send('csv:progress', { tabId, ...p, phase: 'parsing' })
     }
-    return {
-      tabId,
-      sourceName: meta.sourceName,
-      columns: meta.columns,
-      rowCount: meta.rowCount,
-      dbPath: meta.dbPath
-    }
-  } catch (e) {
-    if (e instanceof CsvIngestCanceled) return null
-    throw e
-  } finally {
-    controllers.delete(tabId)
+  )
+  if (meta == null) return null // canceled
+  if (!sender.isDestroyed()) {
+    sender.send('csv:progress', { tabId, bytes: 0, rows: meta.rowCount, total: 0, phase: 'done' })
   }
+  return { tabId, sourceName: meta.sourceName, columns: meta.columns, rowCount: meta.rowCount, dbPath: meta.dbPath }
 }
 
 /** Ingest a CSV as a new source in an open workspace; progress is keyed on the workspace id. */
 async function doAddSource(sender: WebContents, wsId: string, filePath: string): Promise<SourceInfo | null> {
-  const controller = new AbortController()
-  controllers.set(wsId, controller)
-  try {
-    const src = await addSource({
-      wsId,
-      filePath,
-      sourceName: basename(filePath),
-      signal: controller.signal,
-      onProgress: (p) => {
-        if (!sender.isDestroyed()) sender.send('csv:progress', { tabId: wsId, ...p, phase: 'parsing' })
-      }
-    })
-    if (!sender.isDestroyed()) {
-      sender.send('csv:progress', { tabId: wsId, bytes: 0, rows: src.rowCount, total: 0, phase: 'done' })
+  const src = await dbw.ingest<SourceInfo | null>(
+    'addSource',
+    { wsId, filePath, sourceName: basename(filePath) },
+    wsId,
+    (p) => {
+      if (!sender.isDestroyed()) sender.send('csv:progress', { tabId: wsId, ...p, phase: 'parsing' })
     }
-    return src
-  } catch (e) {
-    if (e instanceof CsvIngestCanceled) return null
-    throw e
-  } finally {
-    controllers.delete(wsId)
+  )
+  if (src == null) return null // canceled
+  if (!sender.isDestroyed()) {
+    sender.send('csv:progress', { tabId: wsId, bytes: 0, rows: src.rowCount, total: 0, phase: 'done' })
   }
+  return src
 }
 
 function normalizeOpts(opts: QueryOpts): QueryOpts {

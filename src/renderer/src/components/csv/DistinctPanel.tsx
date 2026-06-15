@@ -128,16 +128,25 @@ export function DistinctPanel({
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-none">
-        {rows.map((r) => (
-          <div key={r.val} className="w-full flex items-center justify-between gap-2 px-3 py-1 text-[11px] font-mono">
-            <span className="truncate text-citrus-dark dark:text-citrus-night-text">{r.val === '' ? '∅ (empty)' : r.val}</span>
-            <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">{r.cnt.toLocaleString()}</span>
+        {loading ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-12 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+            <Loader2 className="w-5 h-5 animate-spin text-citrus-pink" />
+            Computing distinct values…
           </div>
-        ))}
-        {truncated && (
-          <div className="px-3 py-2 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
-            showing top {DISTINCT_LIMIT.toLocaleString()} of {total.toLocaleString()} — use “All” to export every value
-          </div>
+        ) : (
+          <>
+            {rows.map((r) => (
+              <div key={r.val} className="w-full flex items-center justify-between gap-2 px-3 py-1 text-[11px] font-mono">
+                <span className="truncate text-citrus-dark dark:text-citrus-night-text">{r.val === '' ? '∅ (empty)' : r.val}</span>
+                <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">{r.cnt.toLocaleString()}</span>
+              </div>
+            ))}
+            {truncated && (
+              <div className="px-3 py-2 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+                showing top {DISTINCT_LIMIT.toLocaleString()} of {total.toLocaleString()} — use “All” to export every value
+              </div>
+            )}
+          </>
         )}
       </div>
     </aside>

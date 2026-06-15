@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Download, Eraser, KeyRound, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, Copy, Download, Eraser, KeyRound, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
 import { classifyIndicator } from '../../tools/ioc/classify'
 import type { EnrichmentDoc } from '../../state/documents'
 import type { EnrichCachedRow, EnrichItem, EnrichProgress, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
@@ -36,6 +36,34 @@ const STATUS_STYLE: Record<string, string> = {
   private: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
 }
 
+/** A value cell with a hover "copy" button (copies just that cell) and a wrap/truncate mode. */
+function ValueCell({ text, wrap, mono, muted }: { text: string; wrap: boolean; mono?: boolean; muted?: boolean }): JSX.Element {
+  const [done, setDone] = useState(false)
+  return (
+    <td
+      className={`relative group px-2 py-1 ${wrap ? 'whitespace-normal break-words max-w-[16rem]' : 'whitespace-nowrap'} ${
+        mono ? 'font-mono' : ''
+      } ${muted ? 'text-citrus-muted dark:text-citrus-night-muted' : 'text-citrus-dark dark:text-citrus-night-text'}`}
+    >
+      {text}
+      {text !== '' && (
+        <button
+          className="absolute right-0.5 top-1 opacity-0 group-hover:opacity-100 text-citrus-muted hover:text-citrus-pink"
+          title="Copy value"
+          onClick={(e) => {
+            e.stopPropagation()
+            void navigator.clipboard.writeText(text)
+            setDone(true)
+            window.setTimeout(() => setDone(false), 900)
+          }}
+        >
+          {done ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+        </button>
+      )}
+    </td>
+  )
+}
+
 export function EnrichmentView({
   doc,
   visible,
@@ -54,6 +82,16 @@ export function EnrichmentView({
   // Row selection (by indicator value) + the right-click menu that enriches the selection.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [menu, setMenu] = useState<{ x: number; y: number; targets: string[] } | null>(null)
+  const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | null>(null)
+  const [wrap, setWrap] = useState(false)
+  const [addNote, setAddNote] = useState<string | null>(null)
+  // Excel-like row highlight (the "active" rows): click to highlight one, Shift+Arrow to extend.
+  // Independent of the tick boxes — the header checkbox ticks the highlighted rows.
+  const [highlighted, setHighlighted] = useState<Set<string>>(new Set())
+  const anchorRef = useRef(-1)
+  const focusRef = useRef(-1)
+  const gridRef = useRef<HTMLDivElement>(null)
+  const headerBoxRef = useRef<HTMLInputElement>(null)
 
   // Resizable paste box (full-width bottom drag bar).
   const [paneH, setPaneH] = useState(56)
@@ -130,7 +168,7 @@ export function EnrichmentView({
         if (byP[r.provider]) continue
         next[r.indicator] = {
           ...byP,
-          [r.provider]: { indicator: r.indicator, kind: r.kind, status: r.status, fields: r.fields, fromCache: true }
+          [r.provider]: { indicator: r.indicator, kind: r.kind, status: r.status, fields: r.fields, fromCache: true, fetchedAt: r.fetchedAt }
         }
       }
       return next
@@ -144,28 +182,92 @@ export function EnrichmentView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Add: parse the paste box, classify, append NEW indicators to the list. No lookup (that's explicit).
+  // Add: parse the paste box, classify, append NEW indicators. No lookup (that's explicit). Tokens
+  // that don't match any indicator pattern are KEPT in the box (so you can see + fix/remove them
+  // rather than have them silently vanish); a note summarizes what happened.
   function addFromDraft(): void {
     const tokens = doc.draft.split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean)
     const have = new Set(doc.indicators.map((i) => i.value))
     const added: EnrichItem[] = []
+    const unrecognized: string[] = []
+    let dupes = 0
     for (const t of tokens) {
-      if (have.has(t)) continue
       const kind = classifyIndicator(t)
-      if (!kind) continue
+      if (!kind) {
+        if (!unrecognized.includes(t)) unrecognized.push(t)
+        continue
+      }
+      if (have.has(t)) {
+        dupes++
+        continue
+      }
       have.add(t)
       added.push({ value: t, kind })
     }
-    onPatch({ draft: '', ...(added.length > 0 ? { indicators: [...doc.indicators, ...added] } : {}) })
-    // Load whatever's already cached for the new indicators (a READ — no provider is run). Buckets
-    // that exist from other rows show blank cells for any with no cached value.
+    // Recognized + new go to the list; dupes are dropped (already listed); unrecognized stay in the box.
+    onPatch({ draft: unrecognized.join('\n'), ...(added.length > 0 ? { indicators: [...doc.indicators, ...added] } : {}) })
     if (added.length > 0) void window.api.enrich.cacheGet(added.map((i) => i.value)).then(mergeCacheRows)
+    const parts: string[] = []
+    if (added.length) parts.push(`added ${added.length}`)
+    if (dupes) parts.push(`${dupes} already listed`)
+    if (unrecognized.length) parts.push(`${unrecognized.length} not recognized`)
+    setAddNote(parts.length ? parts.join(' · ') : null)
+  }
+
+  function highlightRange(a: number, b: number): void {
+    const lo = Math.min(a, b)
+    const hi = Math.max(a, b)
+    setHighlighted(new Set(sortedIndicators.slice(lo, hi + 1).map((i) => i.value)))
+  }
+  // Plain click highlights a single row (does NOT tick it). Highlight is the "active" selection.
+  function onRowClick(index: number, value: string): void {
+    setHighlighted(new Set([value]))
+    anchorRef.current = index
+    focusRef.current = index
+    gridRef.current?.focus()
+  }
+  // Arrow keys move the highlight; Shift+Arrow extends it (Excel-style).
+  function onGridKeyDown(e: React.KeyboardEvent): void {
+    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || sortedIndicators.length === 0) return
+    e.preventDefault()
+    if (focusRef.current < 0) {
+      anchorRef.current = 0
+      focusRef.current = 0
+      setHighlighted(new Set([sortedIndicators[0].value]))
+      return
+    }
+    const next = Math.min(sortedIndicators.length - 1, Math.max(0, focusRef.current + (e.key === 'ArrowDown' ? 1 : -1)))
+    focusRef.current = next
+    if (e.shiftKey) {
+      highlightRange(anchorRef.current, next)
+    } else {
+      anchorRef.current = next
+      setHighlighted(new Set([sortedIndicators[next].value]))
+    }
+  }
+  // Header checkbox escalates so there's always a path to "tick everything":
+  //  • everything already ticked        → clear all
+  //  • some rows highlighted, not all ticked → tick those highlighted rows
+  //  • nothing highlighted, or the highlighted ones are already ticked → tick ALL rows
+  function onHeaderToggle(): void {
+    const n = doc.indicators.length
+    if (n > 0 && selected.size === n) {
+      setSelected(new Set())
+      return
+    }
+    const hi = [...highlighted]
+    if (hi.length > 0 && !hi.every((v) => selected.has(v))) {
+      setSelected((prev) => new Set([...prev, ...hi]))
+      return
+    }
+    setSelected(new Set(doc.indicators.map((i) => i.value)))
   }
 
   function clearAll(): void {
     onPatch({ indicators: [], draft: '' })
     setResults({})
     setSelected(new Set())
+    setHighlighted(new Set())
   }
 
   // --- selection ---
@@ -181,12 +283,22 @@ export function EnrichmentView({
   function toggleAll(): void {
     setSelected(allSelected ? new Set() : new Set(doc.indicators.map((i) => i.value)))
   }
+  // Header checkbox shows a dash when only some rows are ticked.
+  useEffect(() => {
+    if (headerBoxRef.current) headerBoxRef.current.indeterminate = selected.size > 0 && !allSelected
+  }, [selected, allSelected])
 
   function openMenu(e: React.MouseEvent, value: string): void {
     e.preventDefault()
-    // Right-clicking a row outside the selection re-selects just it; inside, keep the selection.
-    const targets = selected.has(value) && selected.size > 0 ? [...selected] : [value]
-    if (!(selected.has(value) && selected.size > 0)) setSelected(new Set([value]))
+    // Act on the ticked set if this row is ticked; else the highlight if this row is highlighted;
+    // else just this row (and highlight it). No forced ticking.
+    let targets: string[]
+    if (selected.has(value) && selected.size > 0) targets = [...selected]
+    else if (highlighted.has(value) && highlighted.size > 0) targets = [...highlighted]
+    else {
+      targets = [value]
+      setHighlighted(new Set([value]))
+    }
     setMenu({ x: e.clientX, y: e.clientY, targets })
   }
   useEffect(() => {
@@ -292,6 +404,60 @@ export function EnrichmentView({
   const providerName = (pid: string): string => providers.find((p) => p.id === pid)?.name ?? pid
   const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
 
+  // --- sorting (presentation only; the persisted indicator list is never reordered) ---
+  // Column id: 'ind' | 'kind' | `p:<pid>:status` | `p:<pid>:source` | `p:<pid>:f:<field>`.
+  function sortValue(ind: EnrichItem, id: string): string {
+    if (id === 'ind') return ind.value
+    if (id === 'kind') return ind.kind
+    const parts = id.split(':')
+    if (parts[0] === 'p') {
+      const r = results[ind.value]?.[parts[1]]
+      if (parts[2] === 'status') return r?.status ?? ''
+      if (parts[2] === 'source') return r ? (r.fromCache ? 'cached' : 'fresh') : ''
+      if (parts[2] === 'f') return r?.fields[parts.slice(3).join(':')] ?? ''
+    }
+    return ''
+  }
+  function toggleSort(id: string): void {
+    setSort((s) => (s && s.id === id ? { id, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { id, dir: 'asc' }))
+  }
+  const arrow = (id: string): string => (sort?.id === id ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '')
+  const sortedIndicators = useMemo(() => {
+    if (!sort) return doc.indicators
+    const dir = sort.dir === 'asc' ? 1 : -1
+    return [...doc.indicators].sort(
+      (a, b) => sortValue(a, sort.id).localeCompare(sortValue(b, sort.id), undefined, { numeric: true, sensitivity: 'base' }) * dir
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort, doc.indicators, results])
+
+  // Copy the given rows as CSV (header row + one row per indicator) to the clipboard.
+  function copyAsCsv(targets: string[]): void {
+    const cols = ['Indicator', 'Kind']
+    for (const pid of providerIds) {
+      const name = providerName(pid)
+      cols.push(`${name} Status`)
+      for (const f of fieldsByProvider[pid]) cols.push(`${name} ${f}`)
+      cols.push(`${name} Source`)
+    }
+    const esc = (s: string): string => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
+    const set = new Set(targets)
+    const lines = [cols.map(esc).join(',')]
+    for (const ind of sortedIndicators) {
+      if (!set.has(ind.value)) continue
+      const row = [ind.value, ind.kind]
+      for (const pid of providerIds) {
+        const r = results[ind.value]?.[pid]
+        row.push(r?.status ?? '')
+        for (const f of fieldsByProvider[pid]) row.push(r?.fields[f] ?? '')
+        row.push(r ? (r.fromCache ? 'cached' : 'fresh') : '')
+      }
+      lines.push(row.map(esc).join(','))
+    }
+    void navigator.clipboard.writeText(lines.join('\n'))
+    setMenu(null)
+  }
+
   return (
     <div
       className="flex flex-col flex-1 min-w-0 min-h-0 bg-citrus-cream/30 dark:bg-citrus-night"
@@ -323,6 +489,17 @@ export function EnrichmentView({
           </span>
         ))}
         <div className="ml-auto flex items-center gap-2">
+          <button
+            className={`px-2 py-0.5 rounded text-[11px] font-semibold border transition-colors ${
+              wrap
+                ? 'border-citrus-pink/40 text-citrus-pink bg-citrus-pink-light/60 dark:bg-citrus-night-elev'
+                : 'border-citrus-border text-citrus-muted hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted'
+            }`}
+            onClick={() => setWrap((w) => !w)}
+            title="Wrap long values instead of truncating"
+          >
+            Wrap
+          </button>
           <span className="text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted">
             {doc.indicators.length.toLocaleString()} indicators
           </span>
@@ -396,7 +573,10 @@ export function EnrichmentView({
             style={{ height: paneH }}
             placeholder="Paste IPs / domains / hashes (whitespace, comma, or newline separated), then Add. Ctrl+Enter to add."
             value={doc.draft}
-            onChange={(e) => onPatch({ draft: e.target.value })}
+            onChange={(e) => {
+              onPatch({ draft: e.target.value })
+              if (addNote) setAddNote(null)
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault()
@@ -427,6 +607,11 @@ export function EnrichmentView({
         </button>
       </div>
 
+      {/* Add summary (e.g. "added 3 · 1 already listed · 2 not recognized — kept in the box") */}
+      {addNote && (
+        <div className="px-4 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">{addNote}</div>
+      )}
+
       {/* Progress */}
       {busy && progress && (
         <div className="flex items-center gap-2 px-4 py-1.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
@@ -443,12 +628,18 @@ export function EnrichmentView({
       {/* Hint */}
       {doc.indicators.length > 0 && (
         <div className="px-4 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
-          Select rows (checkboxes) and right-click → Enrich with a provider.
+          Click a row to highlight it; Shift+↑/↓ extends. Tick rows (or the header box to tick the highlighted ones), then right-click → Enrich. Click a header to sort; hover a cell to copy it.
         </div>
       )}
 
-      {/* Results matrix — one row per indicator, one column bucket per provider. */}
-      <div className="pane__text--out flex-1 min-h-0 overflow-auto px-2 py-2">
+      {/* Results matrix — one row per indicator, one column bucket per provider. Focusable so the
+          arrow keys can move/extend the row highlight. */}
+      <div
+        ref={gridRef}
+        tabIndex={0}
+        onKeyDown={onGridKeyDown}
+        className="pane__text--out flex-1 min-h-0 overflow-auto px-2 py-2 outline-none"
+      >
         {doc.indicators.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-citrus-muted dark:text-citrus-night-muted">
             No indicators yet — paste some above, or use “Send to Enrichment” from a notepad or workspace.
@@ -458,10 +649,34 @@ export function EnrichmentView({
             <thead className="sticky top-0 z-10 bg-citrus-cream/90 backdrop-blur dark:bg-citrus-night/90">
               <tr className="text-left text-citrus-muted dark:text-citrus-night-muted">
                 <th rowSpan={2} className="px-2 py-1 align-bottom">
-                  <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all" />
+                  <input
+                    ref={headerBoxRef}
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={onHeaderToggle}
+                    title={
+                      allSelected
+                        ? 'Clear all ticks'
+                        : highlighted.size > 0 && ![...highlighted].every((v) => selected.has(v))
+                          ? 'Tick highlighted rows'
+                          : 'Tick all rows'
+                    }
+                  />
                 </th>
-                <th rowSpan={2} className="px-2 py-1 font-semibold align-bottom">Indicator</th>
-                <th rowSpan={2} className="px-2 py-1 font-semibold align-bottom">Kind</th>
+                <th
+                  rowSpan={2}
+                  className="px-2 py-1 font-semibold align-bottom cursor-pointer select-none hover:text-citrus-pink"
+                  onClick={() => toggleSort('ind')}
+                >
+                  Indicator{arrow('ind')}
+                </th>
+                <th
+                  rowSpan={2}
+                  className="px-2 py-1 font-semibold align-bottom cursor-pointer select-none hover:text-citrus-pink"
+                  onClick={() => toggleSort('kind')}
+                >
+                  Kind{arrow('kind')}
+                </th>
                 {providerIds.map((pid) => (
                   <th
                     key={pid}
@@ -475,30 +690,60 @@ export function EnrichmentView({
               <tr className="text-left text-citrus-muted dark:text-citrus-night-muted">
                 {providerIds.map((pid) => (
                   <Fragment key={pid}>
-                    <th className="px-2 py-1 font-semibold border-l border-citrus-border/60 dark:border-citrus-night-border/60">Status</th>
+                    <th
+                      className="px-2 py-1 font-semibold border-l border-citrus-border/60 cursor-pointer select-none hover:text-citrus-pink dark:border-citrus-night-border/60"
+                      onClick={() => toggleSort(`p:${pid}:status`)}
+                    >
+                      Status{arrow(`p:${pid}:status`)}
+                    </th>
                     {fieldsByProvider[pid].map((f) => (
-                      <th key={f} className="px-2 py-1 font-semibold whitespace-nowrap">{f}</th>
+                      <th
+                        key={f}
+                        className="px-2 py-1 font-semibold whitespace-nowrap cursor-pointer select-none hover:text-citrus-pink"
+                        onClick={() => toggleSort(`p:${pid}:f:${f}`)}
+                      >
+                        {f}
+                        {arrow(`p:${pid}:f:${f}`)}
+                      </th>
                     ))}
-                    <th className="px-2 py-1 font-semibold">Source</th>
+                    <th
+                      className="px-2 py-1 font-semibold cursor-pointer select-none hover:text-citrus-pink"
+                      onClick={() => toggleSort(`p:${pid}:source`)}
+                    >
+                      Source{arrow(`p:${pid}:source`)}
+                    </th>
                   </Fragment>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {doc.indicators.map((ind, i) => {
+              {sortedIndicators.map((ind, i) => {
                 const isSel = selected.has(ind.value)
+                const isHi = highlighted.has(ind.value)
                 return (
                   <tr
                     key={`${ind.value}:${i}`}
-                    className={`border-t border-citrus-border/60 dark:border-citrus-night-border/60 ${
-                      isSel ? 'bg-citrus-pink-light/40 dark:bg-citrus-night-elev/60' : ''
+                    className={`cursor-pointer select-none border-t border-citrus-border/60 dark:border-citrus-night-border/60 hover:bg-citrus-sand/30 dark:hover:bg-citrus-night-elev/40 ${
+                      isHi
+                        ? 'bg-citrus-pink-light/60 dark:bg-citrus-night-elev/80'
+                        : isSel
+                          ? 'bg-citrus-pink-light/20 dark:bg-citrus-night-elev/40'
+                          : i % 2 === 1
+                            ? 'bg-citrus-sand/15 dark:bg-citrus-night-card/30'
+                            : ''
                     }`}
+                    onClick={() => onRowClick(i, ind.value)}
                     onContextMenu={(e) => openMenu(e, ind.value)}
                   >
                     <td className="px-2 py-1">
-                      <input type="checkbox" checked={isSel} onChange={() => toggleRow(ind.value)} />
+                      <input
+                        type="checkbox"
+                        checked={isSel}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => toggleRow(ind.value)}
+                      />
                     </td>
-                    <td className="px-2 py-1 font-mono text-citrus-dark dark:text-citrus-night-text whitespace-nowrap">{ind.value}</td>
+                    <ValueCell text={ind.value} wrap={wrap} mono />
                     <td className="px-2 py-1 font-mono text-citrus-muted dark:text-citrus-night-muted">{ind.kind}</td>
                     {providerIds.map((pid) => {
                       const r = results[ind.value]?.[pid]
@@ -519,11 +764,12 @@ export function EnrichmentView({
                             )}
                           </td>
                           {fieldsByProvider[pid].map((f) => (
-                            <td key={f} className="px-2 py-1 text-citrus-dark dark:text-citrus-night-text whitespace-nowrap">
-                              {r?.fields[f] ?? ''}
-                            </td>
+                            <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} />
                           ))}
-                          <td className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+                          <td
+                            className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted whitespace-nowrap"
+                            title={r?.fetchedAt ? `fetched ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
+                          >
                             {r ? (r.fromCache ? 'cached ✓' : 'fresh') : ''}
                           </td>
                         </Fragment>
@@ -536,13 +782,6 @@ export function EnrichmentView({
           </table>
         )}
       </div>
-
-      {/* GeoLite2 EULA requires attribution wherever its data is shown. */}
-      {maxmind?.ready && (
-        <div className="px-4 py-1 border-t border-citrus-border/60 text-[10px] text-citrus-muted dark:border-citrus-night-border/60 dark:text-citrus-night-muted">
-          This product includes GeoLite2 data created by MaxMind, available from maxmind.com.
-        </div>
-      )}
 
       {/* Right-click menu: enrich the selected row(s) with a provider, or remove them. */}
       {menu && (
@@ -569,6 +808,13 @@ export function EnrichmentView({
           ))}
           <button
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 border-t border-citrus-border/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev dark:border-citrus-night-border/60"
+            onClick={() => copyAsCsv(menu.targets)}
+          >
+            <Copy className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+            Copy as CSV
+          </button>
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
             onClick={() => clearCacheTargets(menu.targets)}
           >
             <Eraser className="w-3.5 h-3.5 shrink-0 text-citrus-muted dark:text-citrus-night-muted" />

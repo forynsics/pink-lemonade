@@ -135,6 +135,7 @@ interface EnrichBulkResult {
     status: 'ok' | 'notfound' | 'error' | 'skipped' | 'private'
     fields: Record<string, string>
     fromCache: boolean
+    fetchedAt?: number
     message?: string
   }>
   canceled?: boolean

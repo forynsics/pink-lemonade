@@ -163,6 +163,7 @@ export interface EnrichResultRow {
   status: 'ok' | 'notfound' | 'error' | 'skipped' | 'private'
   fields: Record<string, string>
   fromCache: boolean
+  fetchedAt?: number
   message?: string
 }
 export interface EnrichProgress {

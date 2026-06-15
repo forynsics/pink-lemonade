@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sun, Moon, Loader2 } from 'lucide-react'
+import { Sun, Moon, Loader2, Info } from 'lucide-react'
 import { Logo } from './components/Logo'
 import { ToolPalette } from './components/ToolPalette'
 import { ScratchEditor } from './components/ScratchEditor'
@@ -61,6 +61,8 @@ export default function App(): JSX.Element {
   // The app opens on the Home/welcome screen by default (the user's saved tabs stay in the
   // tab bar; clicking one — or any open/new action — leaves Home).
   const [home, setHome] = useState<boolean>(true)
+  // About / credits dialog (holds the MaxMind GeoLite2 attribution, out of the working view).
+  const [about, setAbout] = useState(false)
   // Tag rollup of the active workspace source (for the sidebar Tags facets) + a handle to drive its
   // tag filter. Only the active source's viewer populates these.
   const [tagSummary, setTagSummary] = useState<TagSummary | null>(null)
@@ -230,9 +232,11 @@ export default function App(): JSX.Element {
     recordRecent(ws.dbPath, ws.name, 0)
   }
 
-  /** Open an existing workspace db by path (activating it if already open). */
+  /** Open an existing workspace db by path (activating it if already open — no duplicate tabs).
+   *  Matches regardless of needsReopen: a restored-but-not-yet-reopened tab is still the same
+   *  workspace, so we just activate it (the auto-reopen effect fires once it's the active doc). */
   async function openWorkspaceByPath(dbPath: string): Promise<void> {
-    const existing = docs.find((d) => d.kind === 'workspace' && d.dbPath === dbPath && !d.needsReopen)
+    const existing = docs.find((d) => d.kind === 'workspace' && d.dbPath === dbPath)
     if (existing) {
       setHome(false)
       setState((s) => ({ ...s, activeId: existing.id }))
@@ -469,14 +473,23 @@ export default function App(): JSX.Element {
             Local investigation toolkit — parse, pivot, and triage all in one space.
           </span>
         </div>
-        <button
-          className="theme-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
-          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-          title="Toggle light / dark"
-        >
-          {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-          {theme === 'dark' ? 'Light' : 'Dark'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex items-center justify-center p-1.5 rounded-full border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev"
+            onClick={() => setAbout(true)}
+            title="About & credits"
+          >
+            <Info className="w-3.5 h-3.5" />
+          </button>
+          <button
+            className="theme-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            title="Toggle light / dark"
+          >
+            {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-1 min-h-0">
@@ -600,6 +613,49 @@ export default function App(): JSX.Element {
           })}
         </main>
       </div>
+
+      {about && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          onClick={() => setAbout(false)}
+        >
+          <div
+            className="w-[30rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2.5">
+              <Logo />
+              <span className="text-lg font-bold tracking-tight text-citrus-dark dark:text-citrus-night-text">
+                pink<span className="text-citrus-pink">lemonade</span>
+              </span>
+              <span className="text-[10px] font-mono text-citrus-muted dark:text-citrus-night-muted">v{__APP_VERSION__}</span>
+            </div>
+            <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">
+              Desktop toolkit for cybersecurity investigation and data wrangling.
+            </p>
+            <div className="mt-4 space-y-3 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+              <div>
+                <div className="font-semibold text-citrus-dark dark:text-citrus-night-text">License</div>
+                MIT © forynsics
+              </div>
+              <div>
+                <div className="font-semibold text-citrus-dark dark:text-citrus-night-text">Data &amp; credits</div>
+                This product includes GeoLite2 data created by MaxMind, available from
+                https://www.maxmind.com. GeoLite2 databases are downloaded and used under your own
+                MaxMind license; the data is not distributed with this app.
+              </div>
+            </div>
+            <div className="mt-5 text-right">
+              <button
+                className="px-3 py-1 rounded-md text-[11px] font-bold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+                onClick={() => setAbout(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {csvImport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm">

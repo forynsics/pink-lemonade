@@ -23,6 +23,8 @@ export interface EnrichResultRow {
   status: 'ok' | 'notfound' | 'error' | 'skipped' | 'private'
   fields: Record<string, string>
   fromCache: boolean
+  /** When this result was fetched (epoch ms); set for ok/notfound rows, absent for skipped/private/error. */
+  fetchedAt?: number
   message?: string
 }
 
@@ -113,7 +115,7 @@ export async function bulkLookup(
     const hit = cached.get(it.value)
     const isFresh = hit && (provider.ttlSeconds === Infinity || (now - hit.fetchedAt) / 1000 < provider.ttlSeconds)
     if (hit && isFresh) {
-      rows.push({ indicator: it.value, kind: it.kind, status: hit.status, fields: hit.fields, fromCache: true })
+      rows.push({ indicator: it.value, kind: it.kind, status: hit.status, fields: hit.fields, fromCache: true, fetchedAt: hit.fetchedAt })
       onProgress({ done: ++done, total, current: it.value, fromCache: true })
       continue
     }
@@ -130,6 +132,7 @@ export async function bulkLookup(
       status: result.status,
       fields: result.fields,
       fromCache: false,
+      fetchedAt: now,
       message: result.message
     })
     // Don't poison the cache with transient errors (bad config, network) — only persist real answers.

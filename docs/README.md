@@ -1,14 +1,11 @@
 # pink-lemonade
 
-**A local, offline desktop toolkit for cybersecurity investigation and data wrangling.**
+**A desktop toolkit for cybersecurity investigation and data wrangling.**
 
-pink-lemonade is a “swiss-army knife” for the messy middle of an investigation: pulling
-indicators out of a blob of text, cleaning up exports, and pivoting through big CSV/TSV
-timelines (Splunk exports, plaso timelines, EVTX dumps, firewall logs) — all without
-leaving your machine or pasting sensitive data into an online tool.
-
-Everything runs **100% locally**. There is no server, no account, and no network calls —
-so it’s safe for sensitive or air-gapped work.
+pink-lemonade handles the messy middle of an investigation — the parsing, cleanup, and
+pivoting you do between your bigger tools: pull indicators out of a blob of text, clean up
+exports, and work through big CSV/TSV timelines (Splunk exports, plaso timelines, EVTX dumps,
+firewall logs), all in one place instead of juggling Notepad++ and a stack of single-purpose tools.
 
 ---
 
@@ -46,7 +43,7 @@ tags saved for next time.
 
 ## Good to know
 
-- **Local & offline.** No data ever leaves your computer.
+- **Desktop app.** Your workspaces and tags are saved as local files on your machine.
 - **It remembers your work.** Open tabs and workspaces (with their tags) come back when you relaunch.
 - **Built for big files.** The grid stays responsive on multi-GB timelines; heavy operations show a
   spinner with progress and can be canceled.

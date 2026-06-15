@@ -116,7 +116,7 @@ export function CellContextMenu({
           {onSend && (
             <button className={item} onClick={() => { onSend(); onClose() }}>
               <Radar className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
-              Send to Enrichment
+              Send to Intel
             </button>
           )}
         </>

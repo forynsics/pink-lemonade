@@ -141,9 +141,11 @@ interface EnrichBulkResult {
   canceled?: boolean
 }
 
-/** Bulk-enrich indicators against a provider; streams per-indicator progress via `onPartial`. */
+/** Bulk-enrich indicators against a provider, writing results to the intel DB at `dbPath`; streams
+ *  per-indicator progress via `onPartial`. */
 export function enrichBulk(
   reqId: number,
+  dbPath: string,
   providerId: string,
   items: Array<{ value: string; kind: string }>,
   now: number,
@@ -156,7 +158,7 @@ export function enrichBulk(
       reject,
       onProgress: (p) => onPartial(p as { done: number; total: number; current: string; fromCache: boolean })
     })
-    w().postMessage({ t: 'enrich', id, reqId, providerId, items, now })
+    w().postMessage({ t: 'enrich', id, reqId, dbPath, providerId, items, now })
   })
 }
 

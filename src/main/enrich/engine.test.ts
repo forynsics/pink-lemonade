@@ -44,6 +44,7 @@ describe('engine.bulkLookup', () => {
     cacheGet.mockReturnValue(new Map())
     lookup.mockResolvedValue({ status: 'ok', fields: { Country: 'US' } } as EnrichmentResult)
     const res = await bulkLookup(
+      'db',
       'fake',
       [
         { value: '8.8.8.8', kind: 'ipv4' },
@@ -64,6 +65,7 @@ describe('engine.bulkLookup', () => {
     )
     lookup.mockResolvedValue({ status: 'ok', fields: { Country: 'AU' } } as EnrichmentResult)
     const res = await bulkLookup(
+      'db',
       'fake',
       [
         { value: '8.8.8.8', kind: 'ipv4' },
@@ -80,7 +82,7 @@ describe('engine.bulkLookup', () => {
 
   it('skips indicator kinds the provider does not support (no lookup, status=skipped)', async () => {
     cacheGet.mockReturnValue(new Map())
-    const res = await bulkLookup('fake', [{ value: 'evil.com', kind: 'domain' }], 1000, noProgress, noAbort)
+    const res = await bulkLookup('db', 'fake', [{ value: 'evil.com', kind: 'domain' }], 1000, noProgress, noAbort)
     expect(lookup).not.toHaveBeenCalled()
     expect(res.rows[0].status).toBe('skipped')
   })
@@ -91,6 +93,7 @@ describe('engine.bulkLookup', () => {
       Promise.resolve(v === '1.1.1.1' ? { status: 'error', fields: {} } : { status: 'ok', fields: { Country: 'US' } })
     )
     await bulkLookup(
+      'db',
       'fake',
       [
         { value: '8.8.8.8', kind: 'ipv4' },
@@ -101,7 +104,7 @@ describe('engine.bulkLookup', () => {
       noAbort
     )
     expect(cachePut).toHaveBeenCalledTimes(1)
-    const entries = cachePut.mock.calls[0][1] as Array<{ indicator: string }>
+    const entries = cachePut.mock.calls[0][2] as Array<{ indicator: string }>
     expect(entries.map((e) => e.indicator)).toEqual(['8.8.8.8']) // the error one was not persisted
   })
 
@@ -111,6 +114,7 @@ describe('engine.bulkLookup', () => {
     let calls = 0
     const abortAfterOne = (): boolean => calls++ >= 1
     const res = await bulkLookup(
+      'db',
       'fake',
       [
         { value: '8.8.8.8', kind: 'ipv4' },
@@ -124,6 +128,6 @@ describe('engine.bulkLookup', () => {
   })
 
   it('throws on an unknown provider', async () => {
-    await expect(bulkLookup('nope', [], 1000, noProgress, noAbort)).rejects.toThrow(/unknown/)
+    await expect(bulkLookup('db', 'nope', [], 1000, noProgress, noAbort)).rejects.toThrow(/unknown/)
   })
 })

@@ -314,9 +314,9 @@ export function Workbench({
                 className={pill}
                 onClick={() => onSendToEnrichment(out === '' ? [] : [out])}
                 disabled={out === ''}
-                title="Send the output's IPs / domains / hashes to the Enrichment tab"
+                title="Send the output's IPs / domains / hashes to the Intel tab"
               >
-                <span className="inline-flex items-center gap-1"><Radar className="w-3 h-3" /> Enrich</span>
+                <span className="inline-flex items-center gap-1"><Radar className="w-3 h-3" /> Send to Intel</span>
               </button>
             )}
             <button

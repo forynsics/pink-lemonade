@@ -201,12 +201,17 @@ export interface EnrichApi {
   clearKey: () => Promise<null>
   maxmindSetup: (key: string | undefined, editions?: string[]) => Promise<MaxmindSetupResult>
   onSetupProgress: (cb: (p: EnrichSetupProgress) => void) => () => void
-  bulk: (reqId: number, providerId: string, items: EnrichItem[]) => Promise<EnrichBulkResult>
+  defaultDb: () => Promise<string>
+  openDb: () => Promise<string | null>
+  newDb: () => Promise<string | null>
+  bulk: (reqId: number, dbPath: string, providerId: string, items: EnrichItem[]) => Promise<EnrichBulkResult>
   cancel: () => Promise<null>
-  cacheStats: () => Promise<Array<{ provider: string; n: number }>>
-  cacheClear: (provider?: string | null) => Promise<null>
-  cacheGet: (indicators: string[]) => Promise<EnrichCachedRow[]>
-  cacheDelete: (indicators: string[]) => Promise<null>
+  cacheStats: (dbPath: string) => Promise<Array<{ provider: string; n: number }>>
+  cacheCount: (dbPath: string) => Promise<number>
+  cacheClear: (dbPath: string, provider?: string | null) => Promise<null>
+  cacheGet: (dbPath: string, indicators: string[]) => Promise<EnrichCachedRow[]>
+  cacheDump: (dbPath: string, limit?: number) => Promise<EnrichCachedRow[]>
+  cacheDelete: (dbPath: string, indicators: string[]) => Promise<null>
   onProgress: (cb: (p: EnrichProgress) => void) => () => void
 }
 
@@ -217,7 +222,7 @@ export interface Api {
     size: number
     tooLarge?: boolean
   } | null>
-  saveFile: (content: string) => Promise<string | null>
+  saveFile: (content: string, defaultName?: string) => Promise<string | null>
   csv: CsvApi
   enrich: EnrichApi
 }

@@ -50,6 +50,9 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   enrichCacheClear: enrichCache.clear,
   enrichCacheGet: enrichCache.getMany,
   enrichCacheDelete: enrichCache.deleteMany,
+  enrichCacheDump: enrichCache.dump,
+  enrichCacheCount: enrichCache.indicatorCount,
+  enrichDefaultDb: enrichCache.defaultDbPath,
   enrichClose: enrichCache.close
 }
 
@@ -69,7 +72,7 @@ type Msg =
   | { t: 'count'; id: number; tabId: string; reqId: number; filters?: unknown; search?: string }
   | { t: 'distinct'; id: number; tabId: string; reqId: number; col: string; filters?: unknown; limit: number }
   | { t: 'distinctCancel'; tabId: string }
-  | { t: 'enrich'; id: number; reqId: number; providerId: string; items: unknown[]; now: number }
+  | { t: 'enrich'; id: number; reqId: number; dbPath: string; providerId: string; items: unknown[]; now: number }
   | { t: 'enrichCancel' }
 
 port.on('message', async (msg: Msg) => {
@@ -143,6 +146,7 @@ port.on('message', async (msg: Msg) => {
       }
       const shouldAbort = (): boolean => enrichReq !== msg.reqId
       const value = await enrichEngine.bulkLookup(
+        msg.dbPath,
         msg.providerId,
         msg.items as enrichEngine.EnrichItem[],
         msg.now,

@@ -330,6 +330,37 @@ export function VirtualGrid({
     [sel, rows, baseOffset, dataIdx]
   )
 
+  // Keep row `r` just inside the viewport (no centering) — used while arrow-navigating selection.
+  const scrollRowIntoView = useCallback((r: number) => {
+    const el = scrollRef.current
+    if (!el) return
+    const top = r * ROW_H
+    if (top < el.scrollTop) el.scrollTop = top
+    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight
+  }, [])
+
+  // ArrowUp/Down move the selected row; Shift+ArrowUp/Down extend it (full-width rows). Other keys
+  // (Ctrl/Cmd+C) fall through to the copy handler.
+  const onGridKey = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') {
+        onCopy(e)
+        return
+      }
+      if (total === 0) return
+      e.preventDefault()
+      const cur = sel ? sel.focus.r : -1
+      const nextR = cur < 0 ? 0 : Math.min(total - 1, Math.max(0, cur + (e.key === 'ArrowDown' ? 1 : -1)))
+      setSel((prev) =>
+        e.shiftKey && prev
+          ? { anchor: { r: prev.anchor.r, c: 0 }, focus: { r: nextR, c: lastCol } }
+          : { anchor: { r: nextR, c: 0 }, focus: { r: nextR, c: lastCol } }
+      )
+      scrollRowIntoView(nextR)
+    },
+    [onCopy, total, sel, lastCol, scrollRowIntoView]
+  )
+
   const recompute = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
@@ -395,7 +426,7 @@ export function VirtualGrid({
     <div
       ref={scrollRef}
       onScroll={onScroll}
-      onKeyDown={onCopy}
+      onKeyDown={onGridKey}
       tabIndex={0}
       className="csv-grid relative flex-1 min-w-0 min-h-0 overflow-auto select-none outline-none"
     >

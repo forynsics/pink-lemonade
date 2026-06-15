@@ -1,5 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, app, safeStorage } from 'electron'
 import { join } from 'path'
+import { mkdirSync } from 'fs'
 import * as dbw from '../csv/dbClient'
 import { downloadEdition, DEFAULT_EDITIONS } from './maxmindSetup'
 
@@ -10,6 +11,12 @@ import { downloadEdition, DEFAULT_EDITIONS } from './maxmindSetup'
 
 function geoipDir(): string {
   return join(app.getPath('userData'), 'geoip')
+}
+// Default folder for user intel DBs (open/create dialogs default here).
+function intelDir(): string {
+  const d = join(app.getPath('userData'), 'intel')
+  mkdirSync(d, { recursive: true })
+  return d
 }
 
 /** Encrypt the license key at rest (Electron safeStorage / OS keychain). null if unavailable. */
@@ -31,18 +38,47 @@ export function registerEnrichIpc(): void {
   ipcMain.handle('enrich:setConfig', (_e, { patch }: { patch: Record<string, unknown> }) =>
     dbw.call('enrichSetConfig', patch)
   )
-  ipcMain.handle('enrich:cacheStats', () => dbw.call('enrichCacheStats'))
+  // All cache ops are scoped to a specific intel DB file (dbPath).
+  ipcMain.handle('enrich:defaultDb', () => dbw.call('enrichDefaultDb'))
+  ipcMain.handle('enrich:cacheStats', (_e, { dbPath }: { dbPath: string }) => dbw.call('enrichCacheStats', dbPath))
+  ipcMain.handle('enrich:cacheCount', (_e, { dbPath }: { dbPath: string }) => dbw.call('enrichCacheCount', dbPath))
   // Cache READ only (no provider call) — load what's already known for these indicators.
-  ipcMain.handle('enrich:cacheGet', (_e, { indicators }: { indicators: string[] }) =>
-    dbw.call('enrichCacheGet', indicators ?? [])
+  ipcMain.handle('enrich:cacheGet', (_e, { dbPath, indicators }: { dbPath: string; indicators: string[] }) =>
+    dbw.call('enrichCacheGet', dbPath, indicators ?? [])
+  )
+  // Load every entry in the DB (capped) — powers "Load all from DB".
+  ipcMain.handle('enrich:cacheDump', (_e, { dbPath, limit }: { dbPath: string; limit?: number }) =>
+    dbw.call('enrichCacheDump', dbPath, limit ?? 5000)
   )
   // Drop all cached results (every provider) for these indicators — so the next enrich is fresh.
-  ipcMain.handle('enrich:cacheDelete', (_e, { indicators }: { indicators: string[] }) =>
-    dbw.call('enrichCacheDelete', indicators ?? []).then(() => null)
+  ipcMain.handle('enrich:cacheDelete', (_e, { dbPath, indicators }: { dbPath: string; indicators: string[] }) =>
+    dbw.call('enrichCacheDelete', dbPath, indicators ?? []).then(() => null)
   )
-  ipcMain.handle('enrich:cacheClear', (_e, { provider }: { provider?: string | null }) =>
-    dbw.call('enrichCacheClear', provider ?? null).then(() => null)
+  ipcMain.handle('enrich:cacheClear', (_e, { dbPath, provider }: { dbPath: string; provider?: string | null }) =>
+    dbw.call('enrichCacheClear', dbPath, provider ?? null).then(() => null)
   )
+
+  // Open an existing intel DB file, or create a new one. Both just return a path; the file + table
+  // are created lazily on first cache op.
+  ipcMain.handle('enrich:openDb', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      properties: ['openFile' as const],
+      defaultPath: intelDir(),
+      filters: [{ name: 'Intel database', extensions: ['db'] }, { name: 'All files', extensions: ['*'] }]
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+  ipcMain.handle('enrich:newDb', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      defaultPath: join(intelDir(), 'intel.db'),
+      filters: [{ name: 'Intel database', extensions: ['db'] }]
+    }
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    return r.canceled || !r.filePath ? null : r.filePath
+  })
 
   // Manual fallback: pick a .mmdb yourself (e.g. you already have one). Sets the City slot.
   ipcMain.handle('enrich:pickMmdb', async (e) => {
@@ -118,9 +154,9 @@ export function registerEnrichIpc(): void {
     'enrich:bulk',
     async (
       e,
-      { reqId, providerId, items }: { reqId: number; providerId: string; items: Array<{ value: string; kind: string }> }
+      { reqId, dbPath, providerId, items }: { reqId: number; dbPath: string; providerId: string; items: Array<{ value: string; kind: string }> }
     ) => {
-      return dbw.enrichBulk(reqId, providerId, items ?? [], Date.now(), (p) => {
+      return dbw.enrichBulk(reqId, dbPath, providerId, items ?? [], Date.now(), (p) => {
         if (!e.sender.isDestroyed()) {
           e.sender.send('enrich:progress', { reqId, ...p })
         }

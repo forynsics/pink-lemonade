@@ -67,12 +67,21 @@ ipcMain.handle('file:open', async (): Promise<OpenResult | null> => {
   }
 })
 
-ipcMain.handle('file:save', async (_event, content: string): Promise<string | null> => {
-  const result = await dialog.showSaveDialog({ defaultPath: 'pink-lemonade-output.txt' })
-  if (result.canceled || !result.filePath) return null
-  await writeFile(result.filePath, content, 'utf-8')
-  return result.filePath
-})
+ipcMain.handle(
+  'file:save',
+  async (_event, { content, defaultName }: { content: string; defaultName?: string }): Promise<string | null> => {
+    const name = defaultName || 'pink-lemonade-output.txt'
+    const result = await dialog.showSaveDialog({
+      defaultPath: name,
+      filters: name.toLowerCase().endsWith('.csv')
+        ? [{ name: 'CSV', extensions: ['csv'] }, { name: 'All files', extensions: ['*'] }]
+        : undefined
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, content, 'utf-8')
+    return result.filePath
+  }
+)
 
 // Minimal menu kept (hidden behind autoHideMenuBar) so the standard zoom
 // accelerators work — important under WSLg/HiDPI where text can render small.

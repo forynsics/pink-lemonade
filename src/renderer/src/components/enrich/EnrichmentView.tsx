@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, Copy, Download, Eraser, KeyRound, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, Copy, Database, Download, Eraser, FilePlus, FolderOpen, KeyRound, ListTree, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
 import { classifyIndicator } from '../../tools/ioc/classify'
 import type { EnrichmentDoc } from '../../state/documents'
 import type { EnrichCachedRow, EnrichItem, EnrichProgress, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
@@ -50,6 +50,7 @@ function ValueCell({ text, wrap, mono, muted }: { text: string; wrap: boolean; m
         <button
           className="absolute right-0.5 top-1 opacity-0 group-hover:opacity-100 text-citrus-muted hover:text-citrus-pink"
           title="Copy value"
+          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation()
             void navigator.clipboard.writeText(text)
@@ -67,14 +68,21 @@ function ValueCell({ text, wrap, mono, muted }: { text: string; wrap: boolean; m
 export function EnrichmentView({
   doc,
   visible,
-  onPatch
+  defaultDbPath,
+  onPatch,
+  onOpenIntelDb,
+  onNewIntelDb
 }: {
   doc: EnrichmentDoc
   visible: boolean
+  defaultDbPath: string
   onPatch: (patch: Partial<EnrichmentDoc>) => void
+  onOpenIntelDb: () => void
+  onNewIntelDb: () => void
 }): JSX.Element {
   const [providers, setProviders] = useState<EnrichProviderInfo[]>([])
   const [results, setResults] = useState<ResultMap>({})
+  const [entryCount, setEntryCount] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null)
   const reqRef = useRef(0)
@@ -85,11 +93,13 @@ export function EnrichmentView({
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | null>(null)
   const [wrap, setWrap] = useState(false)
   const [addNote, setAddNote] = useState<string | null>(null)
+  const [exportOpen, setExportOpen] = useState(false)
   // Excel-like row highlight (the "active" rows): click to highlight one, Shift+Arrow to extend.
   // Independent of the tick boxes — the header checkbox ticks the highlighted rows.
   const [highlighted, setHighlighted] = useState<Set<string>>(new Set())
   const anchorRef = useRef(-1)
   const focusRef = useRef(-1)
+  const dragRef = useRef(false) // true while a mouse row-drag is in progress
   const gridRef = useRef<HTMLDivElement>(null)
   const headerBoxRef = useRef<HTMLInputElement>(null)
 
@@ -125,15 +135,15 @@ export function EnrichmentView({
 
   const maxmind = providers.find((p) => p.id === 'maxmind')
 
-  // Look up `items` against one provider, merging results into the matrix under that provider.
+  // Look up `items` against one provider, writing to this tab's intel DB and merging results.
   const runLookup = useCallback((providerId: string, items: EnrichItem[]) => {
-    if (items.length === 0) return
+    if (items.length === 0 || !doc.dbPath) return
     const reqId = ++lookupCounter
     reqRef.current = reqId
     setBusy(true)
     setProgress({ done: 0, total: items.length, current: '' })
     window.api.enrich
-      .bulk(reqId, providerId, items)
+      .bulk(reqId, doc.dbPath, providerId, items)
       .then((res) => {
         if (reqRef.current !== reqId || res.canceled) return
         setResults((prev) => {
@@ -146,9 +156,10 @@ export function EnrichmentView({
         if (reqRef.current === reqId) {
           setBusy(false)
           setProgress(null)
+          if (doc.dbPath) void window.api.enrich.cacheCount(doc.dbPath).then(setEntryCount)
         }
       })
-  }, [])
+  }, [doc.dbPath])
 
   function cancel(): void {
     reqRef.current = 0
@@ -175,12 +186,34 @@ export function EnrichmentView({
     })
   }, [])
 
-  // On open, load any already-cached values for the persisted indicators (cache read, no lookup).
+  // End a row-drag wherever the mouse is released.
   useEffect(() => {
-    if (doc.indicators.length === 0) return
-    void window.api.enrich.cacheGet(doc.indicators.map((i) => i.value)).then(mergeCacheRows)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const onUp = (): void => {
+      dragRef.current = false
+    }
+    window.addEventListener('mouseup', onUp)
+    return () => window.removeEventListener('mouseup', onUp)
   }, [])
+
+  // Resolve which intel DB this tab uses: a migrated/blank doc binds to the default DB.
+  useEffect(() => {
+    if (doc.dbPath) return
+    void (defaultDbPath ? Promise.resolve(defaultDbPath) : window.api.enrich.defaultDb()).then((p) => {
+      if (p) onPatch({ dbPath: p, name: p === defaultDbPath ? 'default' : p.split(/[\\/]/).pop()?.replace(/\.db$/i, '') || 'intel' })
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.dbPath, defaultDbPath])
+
+  // When the bound DB is known/changes: fetch its entry count and load any already-cached values
+  // for the persisted indicators (cache read, no lookup).
+  useEffect(() => {
+    if (!doc.dbPath) return
+    void window.api.enrich.cacheCount(doc.dbPath).then(setEntryCount)
+    if (doc.indicators.length > 0) {
+      void window.api.enrich.cacheGet(doc.dbPath, doc.indicators.map((i) => i.value)).then(mergeCacheRows)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.dbPath])
 
   // Add: parse the paste box, classify, append NEW indicators. No lookup (that's explicit). Tokens
   // that don't match any indicator pattern are KEPT in the box (so you can see + fix/remove them
@@ -206,7 +239,7 @@ export function EnrichmentView({
     }
     // Recognized + new go to the list; dupes are dropped (already listed); unrecognized stay in the box.
     onPatch({ draft: unrecognized.join('\n'), ...(added.length > 0 ? { indicators: [...doc.indicators, ...added] } : {}) })
-    if (added.length > 0) void window.api.enrich.cacheGet(added.map((i) => i.value)).then(mergeCacheRows)
+    if (added.length > 0 && doc.dbPath) void window.api.enrich.cacheGet(doc.dbPath, added.map((i) => i.value)).then(mergeCacheRows)
     const parts: string[] = []
     if (added.length) parts.push(`added ${added.length}`)
     if (dupes) parts.push(`${dupes} already listed`)
@@ -219,12 +252,19 @@ export function EnrichmentView({
     const hi = Math.max(a, b)
     setHighlighted(new Set(sortedIndicators.slice(lo, hi + 1).map((i) => i.value)))
   }
-  // Plain click highlights a single row (does NOT tick it). Highlight is the "active" selection.
-  function onRowClick(index: number, value: string): void {
+  // Mouse: press a row to highlight it; drag across rows to highlight a range (Excel/CSV-grid style).
+  // Highlight is the "active" selection and does NOT tick the row.
+  function beginRow(index: number, value: string): void {
     setHighlighted(new Set([value]))
     anchorRef.current = index
     focusRef.current = index
+    dragRef.current = true
     gridRef.current?.focus()
+  }
+  function enterRow(index: number): void {
+    if (!dragRef.current) return
+    focusRef.current = index
+    highlightRange(anchorRef.current, index)
   }
   // Arrow keys move the highlight; Shift+Arrow extends it (Excel-style).
   function onGridKeyDown(e: React.KeyboardEvent): void {
@@ -323,13 +363,35 @@ export function EnrichmentView({
   // Drop cached results for these indicators (every provider). The rows stay in the list and go
   // blank, so the next Enrich fetches fresh.
   function clearCacheTargets(targets: string[]): void {
-    void window.api.enrich.cacheDelete(targets)
+    if (doc.dbPath) {
+      void window.api.enrich.cacheDelete(doc.dbPath, targets).then(() => {
+        void window.api.enrich.cacheCount(doc.dbPath).then(setEntryCount)
+      })
+    }
     setResults((prev) => {
       const next = { ...prev }
       for (const t of targets) delete next[t]
       return next
     })
     setMenu(null)
+  }
+
+  // "Load all": pull every entry in the bound DB into the working list + results (capped).
+  function loadAll(): void {
+    if (!doc.dbPath) return
+    void window.api.enrich.cacheDump(doc.dbPath).then((rows) => {
+      const have = new Set(doc.indicators.map((i) => i.value))
+      const seen = new Set<string>()
+      const add: EnrichItem[] = []
+      for (const r of rows) {
+        if (have.has(r.indicator) || seen.has(r.indicator)) continue
+        seen.add(r.indicator)
+        add.push({ value: r.indicator, kind: r.kind as EnrichItem['kind'] })
+      }
+      if (add.length > 0) onPatch({ indicators: [...doc.indicators, ...add] })
+      mergeCacheRows(rows)
+      setAddNote(rows.length >= 5000 ? 'loaded first 5,000 entries from the database' : `loaded ${add.length} from the database`)
+    })
   }
 
   function removeTargets(targets: string[]): void {
@@ -431,8 +493,8 @@ export function EnrichmentView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort, doc.indicators, results])
 
-  // Copy the given rows as CSV (header row + one row per indicator) to the clipboard.
-  function copyAsCsv(targets: string[]): void {
+  // Build CSV (header row + one row per indicator, in current sort order) for the given rows.
+  function buildCsv(targets: string[]): string {
     const cols = ['Indicator', 'Kind']
     for (const pid of providerIds) {
       const name = providerName(pid)
@@ -454,8 +516,17 @@ export function EnrichmentView({
       }
       lines.push(row.map(esc).join(','))
     }
-    void navigator.clipboard.writeText(lines.join('\n'))
+    return lines.join('\n')
+  }
+  // Copy the given rows as CSV to the clipboard.
+  function copyAsCsv(targets: string[]): void {
+    void navigator.clipboard.writeText(buildCsv(targets))
     setMenu(null)
+  }
+  // Export the ticked rows to a .csv file (confirmed in a dialog that shows the count).
+  async function exportCsv(): Promise<void> {
+    setExportOpen(false)
+    await window.api.saveFile(buildCsv([...selected]), 'enrichment.csv')
   }
 
   return (
@@ -463,6 +534,43 @@ export function EnrichmentView({
       className="flex flex-col flex-1 min-w-0 min-h-0 bg-citrus-cream/30 dark:bg-citrus-night"
       style={{ display: visible ? 'flex' : 'none' }}
     >
+      {/* Intel DB bar — which database this tab reads/writes, + open/create/load-all. */}
+      <div className="flex flex-wrap items-center gap-2 px-4 py-1.5 border-b border-citrus-border dark:border-citrus-night-border">
+        <span
+          className="inline-flex items-center gap-1.5 text-[11px] text-citrus-dark dark:text-citrus-night-text"
+          title={doc.dbPath || 'resolving…'}
+        >
+          <Database className="w-3.5 h-3.5 text-citrus-pink" />
+          <span className="text-citrus-muted dark:text-citrus-night-muted">Intel DB:</span>
+          <strong>{doc.name}</strong>
+          {entryCount != null && (
+            <span className="text-citrus-muted dark:text-citrus-night-muted">· {entryCount.toLocaleString()} entries</span>
+          )}
+        </span>
+        <button
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+          onClick={onOpenIntelDb}
+          title="Open another intel DB in a new tab"
+        >
+          <FolderOpen className="w-3 h-3" /> Open…
+        </button>
+        <button
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+          onClick={onNewIntelDb}
+          title="Create a new intel DB in a new tab"
+        >
+          <FilePlus className="w-3 h-3" /> New…
+        </button>
+        <button
+          className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+          onClick={loadAll}
+          disabled={!doc.dbPath || entryCount === 0}
+          title="Load every entry stored in this database into the table"
+        >
+          <ListTree className="w-3 h-3" /> Load all
+        </button>
+      </div>
+
       {/* Providers status strip */}
       <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-citrus-border dark:border-citrus-night-border">
         <span className="text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">Providers</span>
@@ -489,6 +597,14 @@ export function EnrichmentView({
           </span>
         ))}
         <div className="ml-auto flex items-center gap-2">
+          <button
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+            onClick={() => setExportOpen(true)}
+            disabled={selected.size === 0}
+            title={selected.size === 0 ? 'Tick rows to export' : `Export ${selected.size} ticked row(s) to CSV`}
+          >
+            <Download className="w-3 h-3" /> Export CSV
+          </button>
           <button
             className={`px-2 py-0.5 rounded text-[11px] font-semibold border transition-colors ${
               wrap
@@ -628,7 +744,7 @@ export function EnrichmentView({
       {/* Hint */}
       {doc.indicators.length > 0 && (
         <div className="px-4 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
-          Click a row to highlight it; Shift+↑/↓ extends. Tick rows (or the header box to tick the highlighted ones), then right-click → Enrich. Click a header to sort; hover a cell to copy it.
+          Click a row to highlight it; Shift+↑/↓ extends. Tick rows (or the header box to tick the highlighted ones), then right-click → Look up. Click a header to sort; hover a cell to copy it.
         </div>
       )}
 
@@ -642,7 +758,7 @@ export function EnrichmentView({
       >
         {doc.indicators.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-citrus-muted dark:text-citrus-night-muted">
-            No indicators yet — paste some above, or use “Send to Enrichment” from a notepad or workspace.
+            No indicators yet — paste some above, or use “Send to Intel” from a notepad or workspace.
           </div>
         ) : (
           <table className="text-xs border-collapse">
@@ -663,6 +779,7 @@ export function EnrichmentView({
                     }
                   />
                 </th>
+                <th rowSpan={2} className="px-2 py-1 text-right align-bottom font-semibold">#</th>
                 <th
                   rowSpan={2}
                   className="px-2 py-1 font-semibold align-bottom cursor-pointer select-none hover:text-citrus-pink"
@@ -732,16 +849,22 @@ export function EnrichmentView({
                             ? 'bg-citrus-sand/15 dark:bg-citrus-night-card/30'
                             : ''
                     }`}
-                    onClick={() => onRowClick(i, ind.value)}
+                    onMouseDown={(e) => {
+                      if (e.button === 0) beginRow(i, ind.value)
+                    }}
+                    onMouseEnter={() => enterRow(i)}
                     onContextMenu={(e) => openMenu(e, ind.value)}
                   >
                     <td className="px-2 py-1">
                       <input
                         type="checkbox"
                         checked={isSel}
-                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
                         onChange={() => toggleRow(ind.value)}
                       />
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums text-citrus-muted/70 dark:text-citrus-night-muted/70">
+                      {i + 1}
                     </td>
                     <ValueCell text={ind.value} wrap={wrap} mono />
                     <td className="px-2 py-1 font-mono text-citrus-muted dark:text-citrus-night-muted">{ind.kind}</td>
@@ -783,6 +906,39 @@ export function EnrichmentView({
         )}
       </div>
 
+      {/* Export-to-CSV confirmation (shows how many ticked rows will be exported). */}
+      {exportOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          onClick={() => setExportOpen(false)}
+        >
+          <div
+            className="w-[22rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Export to CSV</div>
+            <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">
+              Export <strong className="text-citrus-dark dark:text-citrus-night-text">{selected.size}</strong>{' '}
+              {selected.size === 1 ? 'event' : 'events'} to a CSV file.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="px-3 py-1 rounded-md text-[11px] font-bold border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:border-citrus-pink/40 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted"
+                onClick={() => setExportOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors"
+                onClick={() => void exportCsv()}
+              >
+                <Download className="w-3 h-3" /> Export
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Right-click menu: enrich the selected row(s) with a provider, or remove them. */}
       {menu && (
         <div
@@ -791,7 +947,7 @@ export function EnrichmentView({
           onMouseDown={(e) => e.stopPropagation()}
         >
           <div className="px-3 py-1.5 border-b border-citrus-border/60 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:border-citrus-night-border/60 dark:text-citrus-night-muted">
-            Enrich {menu.targets.length} {menu.targets.length === 1 ? 'row' : 'rows'} with
+            Look up {menu.targets.length} {menu.targets.length === 1 ? 'row' : 'rows'} with
           </div>
           {providers.map((p) => (
             <button

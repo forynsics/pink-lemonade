@@ -56,6 +56,7 @@ export function listProviders(): ProviderInfo[] {
 }
 
 export async function bulkLookup(
+  dbPath: string,
   providerId: string,
   items: EnrichItem[],
   now: number,
@@ -78,7 +79,7 @@ export async function bulkLookup(
 
   // 2. Read the cache once for the supported indicators.
   const lookupable = unique.filter((it) => supported.has(it.kind)).map((it) => it.value)
-  const cached = cache.get(providerId, lookupable)
+  const cached = cache.get(dbPath, providerId, lookupable)
 
   const rows: EnrichResultRow[] = []
   const fresh: cache.PutEntry[] = []
@@ -142,6 +143,6 @@ export async function bulkLookup(
     if (done % 200 === 0) await new Promise<void>((r) => setImmediate(r)) // yield on big batches
   }
 
-  if (fresh.length > 0) cache.put(providerId, fresh, now)
+  if (fresh.length > 0) cache.put(dbPath, providerId, fresh, now)
   return { rows }
 }

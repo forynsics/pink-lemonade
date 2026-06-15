@@ -46,6 +46,9 @@ export interface EnrichmentDoc extends DocBase {
   indicators: EnrichItem[]
   /** The paste box's text (small, persisted). "Send to Enrichment" appends here; "Add" consumes it. */
   draft: string
+  /** Path to the intel DB file this tab reads/writes (the modular cache). Empty = resolve to the
+   *  default DB at runtime. `name` (DocBase) is the DB's display label, shown in the tab + header. */
+  dbPath: string
 }
 
 export type PinkDoc = ScratchDoc | WorkspaceDoc | EnrichmentDoc
@@ -78,8 +81,8 @@ export function createDoc(name: string): ScratchDoc {
   return { id: newId(), name, kind: 'scratch', input: '', steps: [] }
 }
 
-export function createEnrichmentDoc(): EnrichmentDoc {
-  return { id: newId(), name: 'Enrichment', kind: 'enrichment', provider: 'maxmind', indicators: [], draft: '' }
+export function createEnrichmentDoc(name = 'Enrichment', dbPath = ''): EnrichmentDoc {
+  return { id: newId(), name, kind: 'enrichment', provider: 'maxmind', indicators: [], draft: '', dbPath }
 }
 
 export function createWorkspaceDoc(info: WorkspaceInfo): WorkspaceDoc {
@@ -122,7 +125,8 @@ function migrate(raw: unknown): PinkDoc | null {
       kind: 'enrichment',
       provider: typeof d.provider === 'string' ? d.provider : 'maxmind',
       indicators: Array.isArray(d.indicators) ? (d.indicators as EnrichItem[]) : [],
-      draft: typeof d.draft === 'string' ? d.draft : ''
+      draft: typeof d.draft === 'string' ? d.draft : '',
+      dbPath: typeof d.dbPath === 'string' ? d.dbPath : ''
     }
   }
   if (d?.kind === 'workspace') {

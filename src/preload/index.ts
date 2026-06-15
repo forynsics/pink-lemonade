@@ -9,8 +9,8 @@ const api = {
     size: number
     tooLarge?: boolean
   } | null> => ipcRenderer.invoke('file:open'),
-  saveFile: (content: string): Promise<string | null> =>
-    ipcRenderer.invoke('file:save', content),
+  saveFile: (content: string, defaultName?: string): Promise<string | null> =>
+    ipcRenderer.invoke('file:save', { content, defaultName }),
 
   // CSV viewer: data lives in a main-process SQLite db; these return only small result sets.
   csv: {
@@ -87,13 +87,18 @@ const api = {
       ipcRenderer.on('enrich:setup-progress', h)
       return () => ipcRenderer.removeListener('enrich:setup-progress', h)
     },
-    bulk: (reqId: number, providerId: string, items: Array<{ value: string; kind: string }>) =>
-      ipcRenderer.invoke('enrich:bulk', { reqId, providerId, items }),
+    defaultDb: () => ipcRenderer.invoke('enrich:defaultDb'),
+    openDb: () => ipcRenderer.invoke('enrich:openDb'),
+    newDb: () => ipcRenderer.invoke('enrich:newDb'),
+    bulk: (reqId: number, dbPath: string, providerId: string, items: Array<{ value: string; kind: string }>) =>
+      ipcRenderer.invoke('enrich:bulk', { reqId, dbPath, providerId, items }),
     cancel: () => ipcRenderer.invoke('enrich:cancel'),
-    cacheStats: () => ipcRenderer.invoke('enrich:cacheStats'),
-    cacheClear: (provider?: string | null) => ipcRenderer.invoke('enrich:cacheClear', { provider }),
-    cacheGet: (indicators: string[]) => ipcRenderer.invoke('enrich:cacheGet', { indicators }),
-    cacheDelete: (indicators: string[]) => ipcRenderer.invoke('enrich:cacheDelete', { indicators }),
+    cacheStats: (dbPath: string) => ipcRenderer.invoke('enrich:cacheStats', { dbPath }),
+    cacheCount: (dbPath: string) => ipcRenderer.invoke('enrich:cacheCount', { dbPath }),
+    cacheClear: (dbPath: string, provider?: string | null) => ipcRenderer.invoke('enrich:cacheClear', { dbPath, provider }),
+    cacheGet: (dbPath: string, indicators: string[]) => ipcRenderer.invoke('enrich:cacheGet', { dbPath, indicators }),
+    cacheDump: (dbPath: string, limit?: number) => ipcRenderer.invoke('enrich:cacheDump', { dbPath, limit }),
+    cacheDelete: (dbPath: string, indicators: string[]) => ipcRenderer.invoke('enrich:cacheDelete', { dbPath, indicators }),
     // Subscribe to bulk-lookup progress; returns a disposer (contextBridge can't pass the listener back).
     onProgress: (cb: (p: unknown) => void) => {
       const h = (_e: unknown, p: unknown): void => cb(p)

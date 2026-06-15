@@ -63,6 +63,11 @@ export default function App(): JSX.Element {
   const [home, setHome] = useState<boolean>(true)
   // About / credits dialog (holds the MaxMind GeoLite2 attribution, out of the working view).
   const [about, setAbout] = useState(false)
+  // Path to the seamless default intel DB (resolved once from main).
+  const [enrichDefault, setEnrichDefault] = useState('')
+  useEffect(() => {
+    void window.api.enrich.defaultDb().then(setEnrichDefault)
+  }, [])
   // Tag rollup of the active workspace source (for the sidebar Tags facets) + a handle to drive its
   // tag filter. Only the active source's viewer populates these.
   const [tagSummary, setTagSummary] = useState<TagSummary | null>(null)
@@ -133,20 +138,43 @@ export default function App(): JSX.Element {
     }))
   }
 
-  // ---- Enrichment: a single Enrichment tab collects indicators; lookups view there. ----
-  /** Open (or focus) the Enrichment tab. */
-  function openEnrichmentTab(): void {
+  // ---- Enrichment: each tab is bound to an intel DB file (the modular cache). ----
+  /** Display label for an intel DB: "default" for the default DB, else its filename (no .db). */
+  function dbDisplayName(path: string): string {
+    if (path && path === enrichDefault) return 'default'
+    const base = path.split(/[\\/]/).pop() ?? 'intel'
+    return base.replace(/\.db$/i, '') || 'intel'
+  }
+
+  /** Open (or focus — no duplicate tabs) an Enrichment tab bound to a specific intel DB file. */
+  function openEnrichmentDb(dbPath: string): void {
     setHome(false)
     setState((s) => {
-      const existing = s.docs.find((d) => d.kind === 'enrichment')
+      const existing = s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment' && d.dbPath === dbPath)
       if (existing) return { ...s, activeId: existing.id }
-      const doc = createEnrichmentDoc()
+      const doc = createEnrichmentDoc(dbDisplayName(dbPath), dbPath)
       return { docs: [...s.docs, doc], activeId: doc.id }
     })
   }
 
-  /** Classify raw strings, keep recognized indicators, and drop them into the (single) Enrichment
-   *  tab's paste box (the user reviews, then clicks Add). Tokenized on whitespace/commas so a blob,
+  /** New Enrichment tab on the seamless default intel DB. */
+  async function openEnrichmentTab(): Promise<void> {
+    const path = enrichDefault || (await window.api.enrich.defaultDb())
+    if (!enrichDefault) setEnrichDefault(path)
+    openEnrichmentDb(path)
+  }
+  /** Pick / create an intel DB → open it in its own tab. */
+  async function openIntelDb(): Promise<void> {
+    const path = await window.api.enrich.openDb()
+    if (path) openEnrichmentDb(path)
+  }
+  async function newIntelDb(): Promise<void> {
+    const path = await window.api.enrich.newDb()
+    if (path) openEnrichmentDb(path)
+  }
+
+  /** Classify raw strings and drop the recognized ones into an Enrichment tab's paste box (the user
+   *  reviews, then Add). Routes to the default-DB tab (creating it if needed). Tokenized so a blob,
    *  a line, or one cell all work. */
   function sendToEnrichment(values: string[]): void {
     const seen = new Set<string>()
@@ -160,9 +188,11 @@ export default function App(): JSX.Element {
     if (recognized.length === 0) return // nothing looked like an indicator
     setHome(false)
     setState((s) => {
-      const existing = s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment')
+      // Prefer the default-DB tab; else any enrichment tab; else create one on the default DB.
+      const existing =
+        s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment' && d.dbPath === enrichDefault) ??
+        s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment')
       if (existing) {
-        // Append to the paste box, skipping lines already queued there.
         const lines = new Set(existing.draft.split(/\r?\n/).map((x) => x.trim()).filter(Boolean))
         const fresh = recognized.filter((v) => !lines.has(v))
         const draft = [existing.draft.trim(), ...fresh].filter(Boolean).join('\n')
@@ -172,7 +202,10 @@ export default function App(): JSX.Element {
           activeId: existing.id
         }
       }
-      const doc: EnrichmentDoc = { ...createEnrichmentDoc(), draft: recognized.join('\n') }
+      const doc: EnrichmentDoc = {
+        ...createEnrichmentDoc(enrichDefault ? dbDisplayName(enrichDefault) : 'Intel', enrichDefault),
+        draft: recognized.join('\n')
+      }
       return { docs: [...s.docs, doc], activeId: doc.id }
     })
   }
@@ -564,7 +597,10 @@ export default function App(): JSX.Element {
                   key={d.id}
                   doc={d}
                   visible={visible}
+                  defaultDbPath={enrichDefault}
                   onPatch={(patch) => patchEnrichmentById(d.id, patch)}
+                  onOpenIntelDb={openIntelDb}
+                  onNewIntelDb={newIntelDb}
                 />
               )
             }

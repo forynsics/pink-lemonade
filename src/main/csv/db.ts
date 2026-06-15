@@ -91,6 +91,9 @@ export interface WorkspaceInfo {
   dbPath: string
   name: string
   sources: SourceInfo[]
+  /** Which intel DB this workspace uses: 'global' (the app-wide Global Intel) or 'workspace'
+   *  (its own sibling .intel.db). Persisted in ws_meta so it travels with the case file. */
+  intelMode: 'global' | 'workspace'
 }
 
 const TEMP_PREFIX = 'pl_csv_' // legacy temp-db prefix (older builds) — still swept at startup
@@ -348,6 +351,7 @@ export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
   setMeta.run('name', name)
   setMeta.run('version', String(SCHEMA_VERSION))
   setMeta.run('created_at', String(Date.now()))
+  setMeta.run('intelMode', 'global') // default: use the app-wide Global Intel
   db.exec(
     'CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT, original_path TEXT, row_count INTEGER, num_cols INTEGER, added_at INTEGER)'
   )
@@ -357,7 +361,7 @@ export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
   db.exec(TAGS_DDL)
   applyQueryPragmas(db)
   workspaces.set(wsId, { db, dbPath, name, nextSourceId: 0 })
-  return { wsId, dbPath, name, sources: [] }
+  return { wsId, dbPath, name, sources: [], intelMode: 'global' }
 }
 
 /** Ingest a CSV as a new source (data_<id>) in an open workspace; updates the catalog. */
@@ -430,7 +434,15 @@ export function openWorkspace(wsId: string, dbPath: string): WorkspaceInfo {
     maxId = Math.max(maxId, s.id)
   }
   workspaces.set(wsId, { db, dbPath, name, nextSourceId: maxId + 1 })
-  return { wsId, dbPath, name, sources }
+  const intelMode = m.intelMode === 'workspace' ? 'workspace' : 'global'
+  return { wsId, dbPath, name, sources, intelMode }
+}
+
+/** Set which intel a workspace uses ('global' | 'workspace'); persists to ws_meta. */
+export function setWorkspaceIntelMode(wsId: string, mode: 'global' | 'workspace'): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.prepare('INSERT OR REPLACE INTO ws_meta (key, value) VALUES (?, ?)').run('intelMode', mode)
 }
 
 /** Rename a workspace — persists to ws_meta so it survives reopen. */

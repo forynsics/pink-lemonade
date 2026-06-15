@@ -54,7 +54,8 @@ export function CsvViewer({
   onReorderColumns,
   apiRef,
   onTagSummary,
-  onSendToEnrichment
+  onSendToEnrichment,
+  sendIntelLabel = 'Intel'
 }: {
   doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
@@ -63,8 +64,10 @@ export function CsvViewer({
   apiRef?: React.Ref<CsvViewerHandle>
   /** Set on the ACTIVE source only — reports tag counts + the active tag filter to the sidebar. */
   onTagSummary?: (s: TagSummary | null) => void
-  /** Send a cell value / a column's distinct values to the Enrichment tab. */
+  /** Send a cell value / a column's distinct values to this workspace's intel tab. */
   onSendToEnrichment?: (values: string[]) => void
+  /** Label for the send-to-intel action ("Global Intel" or "Workspace Intel"). */
+  sendIntelLabel?: string
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
@@ -451,6 +454,7 @@ export function CsvViewer({
             onClose={() => setDistinctCol(null)}
             onPivot={onPivot}
             onSendToEnrichment={onSendToEnrichment}
+            sendIntelLabel={sendIntelLabel}
           />
         )}
       </div>
@@ -487,6 +491,7 @@ export function CsvViewer({
               ? () => onSendToEnrichment([cellMenu.cell.value])
               : undefined
           }
+          sendLabel={sendIntelLabel}
           onClose={() => setCellMenu(null)}
         />
       )}

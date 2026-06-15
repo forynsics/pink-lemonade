@@ -22,6 +22,7 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   createWorkspace: db.createWorkspace,
   openWorkspace: db.openWorkspace,
   renameWorkspace: db.renameWorkspace,
+  setWorkspaceIntelMode: db.setWorkspaceIntelMode,
   renameSource: db.renameSource,
   removeSource: db.removeSource,
   closeWorkspace: db.closeWorkspace,

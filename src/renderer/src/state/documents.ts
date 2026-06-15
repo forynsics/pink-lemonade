@@ -31,6 +31,9 @@ export interface WorkspaceDoc extends DocBase {
   dbPath: string
   sources: WorkspaceSource[]
   activeSourceId: number | null
+  /** Which intel this workspace uses: 'global' (app-wide Global Intel) or 'workspace' (its own
+   *  sibling .intel.db). Source of truth is ws_meta; mirrored here for the open doc. */
+  intelMode: 'global' | 'workspace'
   /** True after a reload: the workspace db isn't open in main yet, so it must be re-opened by path. */
   needsReopen?: boolean
   /** Set if re-opening the workspace db by path failed (file missing/moved). */
@@ -64,6 +67,7 @@ export interface WorkspaceInfo {
   dbPath: string
   name: string
   sources: WorkspaceSource[]
+  intelMode: 'global' | 'workspace'
 }
 
 const STORAGE_KEY = 'pink-lemonade:docs'
@@ -93,7 +97,8 @@ export function createWorkspaceDoc(info: WorkspaceInfo): WorkspaceDoc {
     wsId: info.wsId,
     dbPath: info.dbPath,
     sources: info.sources,
-    activeSourceId: info.sources[0]?.sourceId ?? null
+    activeSourceId: info.sources[0]?.sourceId ?? null,
+    intelMode: info.intelMode
   }
 }
 
@@ -138,6 +143,7 @@ function migrate(raw: unknown): PinkDoc | null {
       dbPath: String(d.dbPath ?? ''),
       sources: Array.isArray(d.sources) ? (d.sources as WorkspaceSource[]) : [],
       activeSourceId: typeof d.activeSourceId === 'number' ? d.activeSourceId : null,
+      intelMode: d.intelMode === 'workspace' ? 'workspace' : 'global',
       needsReopen: true // main process is fresh after a restart — reopen the workspace db by path
     }
   }

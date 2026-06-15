@@ -199,7 +199,7 @@ export function EnrichmentView({
   useEffect(() => {
     if (doc.dbPath) return
     void (defaultDbPath ? Promise.resolve(defaultDbPath) : window.api.enrich.defaultDb()).then((p) => {
-      if (p) onPatch({ dbPath: p, name: p === defaultDbPath ? 'default' : p.split(/[\\/]/).pop()?.replace(/\.db$/i, '') || 'intel' })
+      if (p) onPatch({ dbPath: p, name: p === defaultDbPath ? 'Global Intel' : p.split(/[\\/]/).pop()?.replace(/\.db$/i, '') || 'intel' })
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.dbPath, defaultDbPath])

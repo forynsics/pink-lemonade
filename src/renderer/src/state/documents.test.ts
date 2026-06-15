@@ -58,7 +58,8 @@ describe('document persistence', () => {
       wsId: 'w1',
       name: 'ACME',
       dbPath: '/tmp/w1.workspace',
-      sources: [{ sourceId: 0, name: 'log.csv', columns: [{ name: 'c0', original: 'ip' }], rowCount: 1234 }]
+      sources: [{ sourceId: 0, name: 'log.csv', columns: [{ name: 'c0', original: 'ip' }], rowCount: 1234 }],
+      intelMode: 'global'
     })
     saveDocs({ docs: [ws], activeId: ws.id })
     const loaded = loadDocs()

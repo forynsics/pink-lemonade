@@ -125,6 +125,9 @@ export function registerCsvIpc(): void {
   ipcMain.handle('ws:rename', (_e, { wsId, name }: { wsId: string; name: string }) =>
     dbw.call('renameWorkspace', wsId, name).then(() => null)
   )
+  ipcMain.handle('ws:setIntelMode', (_e, { wsId, mode }: { wsId: string; mode: 'global' | 'workspace' }) =>
+    dbw.call('setWorkspaceIntelMode', wsId, mode).then(() => null)
+  )
   ipcMain.handle('ws:removeSource', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
     dbw.call('removeSource', wsId, sourceId).then(() => null)
   )

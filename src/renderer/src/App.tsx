@@ -139,22 +139,38 @@ export default function App(): JSX.Element {
   }
 
   // ---- Enrichment: each tab is bound to an intel DB file (the modular cache). ----
-  /** Display label for an intel DB: "default" for the default DB, else its filename (no .db). */
+  /** Display label for an intel DB: "Global Intel" for the default, else its filename (no .db). */
   function dbDisplayName(path: string): string {
-    if (path && path === enrichDefault) return 'default'
+    if (path && path === enrichDefault) return 'Global Intel'
     const base = path.split(/[\\/]/).pop() ?? 'intel'
     return base.replace(/\.db$/i, '') || 'intel'
   }
 
-  /** Open (or focus — no duplicate tabs) an Enrichment tab bound to a specific intel DB file. */
-  function openEnrichmentDb(dbPath: string): void {
+  /** A workspace's own intel DB = a sibling .intel.db next to its .workspace file. */
+  function workspaceIntelPath(wsDbPath: string): string {
+    return wsDbPath.replace(/\.workspace$/i, '') + '.intel.db'
+  }
+
+  /** Open (or focus — no duplicate tabs) an Intel tab bound to a specific intel DB file. */
+  function openEnrichmentDb(dbPath: string, nameOverride?: string): void {
     setHome(false)
     setState((s) => {
       const existing = s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment' && d.dbPath === dbPath)
       if (existing) return { ...s, activeId: existing.id }
-      const doc = createEnrichmentDoc(dbDisplayName(dbPath), dbPath)
+      const doc = createEnrichmentDoc(nameOverride ?? dbDisplayName(dbPath), dbPath)
       return { docs: [...s.docs, doc], activeId: doc.id }
     })
+  }
+
+  /** Open the Intel tab a workspace uses (Global Intel, or its own Workspace Intel). */
+  function openWorkspaceIntel(ws: WorkspaceDoc): void {
+    if (ws.intelMode === 'workspace') openEnrichmentDb(workspaceIntelPath(ws.dbPath), `${ws.name} Intel`)
+    else openEnrichmentDb(enrichDefault, 'Global Intel')
+  }
+  /** Switch a workspace between Global Intel and its own Workspace Intel (persists to ws_meta). */
+  async function changeWorkspaceIntelMode(docId: string, wsId: string, mode: 'global' | 'workspace'): Promise<void> {
+    await window.api.csv.wsSetIntelMode(wsId, mode)
+    patchWorkspaceById(docId, { intelMode: mode })
   }
 
   /** New Enrichment tab on the seamless default intel DB. */
@@ -173,10 +189,10 @@ export default function App(): JSX.Element {
     if (path) openEnrichmentDb(path)
   }
 
-  /** Classify raw strings and drop the recognized ones into an Enrichment tab's paste box (the user
-   *  reviews, then Add). Routes to the default-DB tab (creating it if needed). Tokenized so a blob,
-   *  a line, or one cell all work. */
-  function sendToEnrichment(values: string[]): void {
+  /** Classify raw strings and drop the recognized ones into an Intel tab's paste box (the user
+   *  reviews, then Add). Routes to `target` (a specific intel DB) or, by default, Global Intel.
+   *  Tokenized so a blob, a line, or one cell all work. */
+  function sendToEnrichment(values: string[], target?: { dbPath: string; name: string }): void {
     const seen = new Set<string>()
     const recognized: string[] = []
     for (const raw of values.flatMap((v) => v.split(/[\s,]+/))) {
@@ -187,11 +203,10 @@ export default function App(): JSX.Element {
     }
     if (recognized.length === 0) return // nothing looked like an indicator
     setHome(false)
+    const dbPath = target?.dbPath || enrichDefault
+    const label = target?.name || 'Global Intel'
     setState((s) => {
-      // Prefer the default-DB tab; else any enrichment tab; else create one on the default DB.
-      const existing =
-        s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment' && d.dbPath === enrichDefault) ??
-        s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment')
+      const existing = s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment' && d.dbPath === dbPath)
       if (existing) {
         const lines = new Set(existing.draft.split(/\r?\n/).map((x) => x.trim()).filter(Boolean))
         const fresh = recognized.filter((v) => !lines.has(v))
@@ -202,10 +217,7 @@ export default function App(): JSX.Element {
           activeId: existing.id
         }
       }
-      const doc: EnrichmentDoc = {
-        ...createEnrichmentDoc(enrichDefault ? dbDisplayName(enrichDefault) : 'Intel', enrichDefault),
-        draft: recognized.join('\n')
-      }
+      const doc: EnrichmentDoc = { ...createEnrichmentDoc(label, dbPath), draft: recognized.join('\n') }
       return { docs: [...s.docs, doc], activeId: doc.id }
     })
   }
@@ -339,6 +351,7 @@ export default function App(): JSX.Element {
         name: info.name,
         sources: info.sources,
         activeSourceId: doc.activeSourceId ?? info.sources[0]?.sourceId ?? null,
+        intelMode: info.intelMode,
         needsReopen: false,
         reopenFailed: false
       })
@@ -540,6 +553,9 @@ export default function App(): JSX.Element {
             tagSummary={tagSummary}
             onToggleTagFilter={(tag) => tagApiRef.current?.toggleTagFilter(tag)}
             onClearTagFilter={() => tagApiRef.current?.clearTagFilter()}
+            intelMode={active.intelMode}
+            onSetIntelMode={(mode) => void changeWorkspaceIntelMode(active.id, active.wsId, mode)}
+            onOpenIntel={() => openWorkspaceIntel(active)}
           />
         )}
         <main className="flex flex-col flex-1 min-w-0 min-h-0">
@@ -638,7 +654,15 @@ export default function App(): JSX.Element {
                           onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
                           apiRef={isActiveSource ? tagApiRef : undefined}
                           onTagSummary={isActiveSource ? setTagSummary : undefined}
-                          onSendToEnrichment={sendToEnrichment}
+                          onSendToEnrichment={(vals) =>
+                            sendToEnrichment(
+                              vals,
+                              d.intelMode === 'workspace'
+                                ? { dbPath: workspaceIntelPath(d.dbPath), name: `${d.name} Intel` }
+                                : { dbPath: enrichDefault, name: 'Global Intel' }
+                            )
+                          }
+                          sendIntelLabel={d.intelMode === 'workspace' ? 'Workspace Intel' : 'Global Intel'}
                         />
                       </div>
                     )

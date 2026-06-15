@@ -29,6 +29,7 @@ export function CellContextMenu({
   onPickBound,
   onTag,
   onSend,
+  sendLabel = 'Intel',
   onClose
 }: {
   cell: CellRef
@@ -44,8 +45,10 @@ export function CellContextMenu({
   onPickTime: (cell: CellRef, deltaSec: number) => void
   onPickBound: (cell: CellRef, which: 'from' | 'to') => void
   onTag?: (rids: number[], tag: TagId | null) => void
-  /** Set only when the cell value looks like an indicator (IP/domain/hash) → show "Send to Enrichment". */
+  /** Set only when the cell value looks like an indicator (IP/domain/hash) → show "Send to <Intel>". */
   onSend?: () => void
+  /** Label for the destination intel ("Global Intel" / "Workspace Intel"). */
+  sendLabel?: string
   onClose: () => void
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
@@ -116,7 +119,7 @@ export function CellContextMenu({
           {onSend && (
             <button className={item} onClick={() => { onSend(); onClose() }}>
               <Radar className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
-              Send to Intel
+              Send to {sendLabel}
             </button>
           )}
         </>

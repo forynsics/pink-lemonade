@@ -26,6 +26,7 @@ const api = {
     wsDelete: (dbPath: string) => ipcRenderer.invoke('ws:delete', { dbPath }),
     wsAddSource: (wsId: string, path: string) => ipcRenderer.invoke('ws:addSource', { wsId, path }),
     wsRename: (wsId: string, name: string) => ipcRenderer.invoke('ws:rename', { wsId, name }),
+    wsSetIntelMode: (wsId: string, mode: 'global' | 'workspace') => ipcRenderer.invoke('ws:setIntelMode', { wsId, mode }),
     wsRemoveSource: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:removeSource', { wsId, sourceId }),
     wsRenameSource: (wsId: string, sourceId: number, name: string) =>
       ipcRenderer.invoke('ws:renameSource', { wsId, sourceId, name }),

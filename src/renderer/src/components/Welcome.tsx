@@ -89,7 +89,7 @@ export function Welcome({
           <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start an empty investigation" />
           <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Open an existing .workspace file" />
           <Action cls="welcome__new" onClick={onNewScratch} icon={<NotebookPen className={ico} />} title="New notepad" sub="Text transforms + workflow" />
-          <Action cls="welcome__new-enrichment" onClick={onNewEnrichment} icon={<Radar className={ico} />} title="Intel" sub="Bulk-look-up IPs / domains / hashes" />
+          <Action cls="welcome__new-enrichment" onClick={onNewEnrichment} icon={<Radar className={ico} />} title="Global Intel" sub="Bulk-look-up IPs / domains / hashes" />
         </div>
 
         <div className="welcome__ws-dir mb-10 flex items-center gap-2 rounded-lg border border-citrus-border/70 bg-citrus-card/50 px-3 py-2 text-[11px] dark:border-citrus-night-border/70 dark:bg-citrus-night-card/40">

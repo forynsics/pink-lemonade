@@ -24,6 +24,7 @@ export interface WorkspaceInfo {
   dbPath: string
   name: string
   sources: SourceInfo[]
+  intelMode: 'global' | 'workspace'
 }
 export interface CsvSort {
   col: string
@@ -99,6 +100,7 @@ export interface CsvApi {
   wsDelete: (dbPath: string) => Promise<null>
   wsAddSource: (wsId: string, path: string) => Promise<SourceInfo | null>
   wsRename: (wsId: string, name: string) => Promise<null>
+  wsSetIntelMode: (wsId: string, mode: 'global' | 'workspace') => Promise<null>
   wsRemoveSource: (wsId: string, sourceId: number) => Promise<null>
   wsRenameSource: (wsId: string, sourceId: number, name: string) => Promise<null>
   wsGetDir: () => Promise<string>

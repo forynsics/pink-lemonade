@@ -1,5 +1,5 @@
 import { useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
-import { Database, FileText, FolderOpen, Filter, Loader2, Pencil, Plus, X } from 'lucide-react'
+import { Database, FileText, FolderOpen, Filter, Loader2, Pencil, Plus, Radar, X } from 'lucide-react'
 import type { WorkspaceDoc } from '../../state/documents'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 import type { TagSummary } from './CsvViewer'
@@ -23,7 +23,10 @@ export function WorkspaceSidebar({
   onRenameSource,
   tagSummary,
   onToggleTagFilter,
-  onClearTagFilter
+  onClearTagFilter,
+  intelMode,
+  onSetIntelMode,
+  onOpenIntel
 }: {
   doc: WorkspaceDoc
   importing: boolean
@@ -38,6 +41,10 @@ export function WorkspaceSidebar({
   tagSummary?: TagSummary | null
   onToggleTagFilter?: (tag: TagId) => void
   onClearTagFilter?: () => void
+  /** Which intel this workspace uses + controls to switch / open it. */
+  intelMode: 'global' | 'workspace'
+  onSetIntelMode: (mode: 'global' | 'workspace') => void
+  onOpenIntel: () => void
 }): JSX.Element {
   const tagRows = TAG_DEFS.filter((d) => tagSummary?.counts[d.id])
   const activeTags = tagSummary?.activeTags ?? []
@@ -208,6 +215,33 @@ export function WorkspaceSidebar({
           )}
         </div>
       )}
+
+      {/* Intel: which intel DB this workspace looks up against. */}
+      <div className="workspace-sidebar__intel">
+        <div className="px-1 mb-1.5 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
+          Intel
+        </div>
+        <button
+          onClick={onOpenIntel}
+          title="Open this workspace's intel tab"
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-citrus-dark hover:bg-citrus-card/70 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+        >
+          <Radar className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+          <span className="flex-1 text-left truncate">{intelMode === 'workspace' ? 'Workspace Intel' : 'Global Intel'}</span>
+          <FolderOpen className="w-3 h-3 shrink-0 text-citrus-muted dark:text-citrus-night-muted" />
+        </button>
+        <button
+          onClick={() => onSetIntelMode(intelMode === 'workspace' ? 'global' : 'workspace')}
+          className="mt-0.5 px-2 text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          title={
+            intelMode === 'workspace'
+              ? 'Switch this workspace back to Global Intel'
+              : 'Give this workspace its own Workspace Intel (a separate file)'
+          }
+        >
+          {intelMode === 'workspace' ? 'Use Global Intel instead' : 'Use a Workspace Intel'}
+        </button>
+      </div>
 
       <div className="mt-auto flex items-start gap-1.5 border-t border-citrus-border/60 pt-2 text-[10px] font-mono text-citrus-muted/70 dark:border-citrus-night-border/60 dark:text-citrus-night-muted/70 break-all">
         <Database className="w-3 h-3 mt-px shrink-0" />

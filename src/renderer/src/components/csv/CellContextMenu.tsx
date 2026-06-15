@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Ban, Clock, Filter, Tag, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Ban, Clock, Filter, Radar, Tag, X } from 'lucide-react'
 import type { CellRef } from './VirtualGrid'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -28,6 +28,7 @@ export function CellContextMenu({
   onPickTime,
   onPickBound,
   onTag,
+  onSend,
   onClose
 }: {
   cell: CellRef
@@ -43,6 +44,8 @@ export function CellContextMenu({
   onPickTime: (cell: CellRef, deltaSec: number) => void
   onPickBound: (cell: CellRef, which: 'from' | 'to') => void
   onTag?: (rids: number[], tag: TagId | null) => void
+  /** Set only when the cell value looks like an indicator (IP/domain/hash) → show "Send to Enrichment". */
+  onSend?: () => void
   onClose: () => void
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
@@ -110,6 +113,12 @@ export function CellContextMenu({
             <Ban className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
             Exclude value
           </button>
+          {onSend && (
+            <button className={item} onClick={() => { onSend(); onClose() }}>
+              <Radar className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+              Send to Enrichment
+            </button>
+          )}
         </>
       )}
 

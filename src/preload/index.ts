@@ -68,6 +68,38 @@ const api = {
       ipcRenderer.on('csv:count-progress', h)
       return () => ipcRenderer.removeListener('csv:count-progress', h)
     }
+  },
+
+  // Threat-intel / enrichment: bulk-look-up indicators against a provider (MaxMind, …). The
+  // cache DB + providers live in the worker; results stream back over 'enrich:progress'.
+  enrich: {
+    providers: () => ipcRenderer.invoke('enrich:providers'),
+    getConfig: () => ipcRenderer.invoke('enrich:getConfig'),
+    setConfig: (patch: Record<string, unknown>) => ipcRenderer.invoke('enrich:setConfig', { patch }),
+    pickMmdb: () => ipcRenderer.invoke('enrich:pickMmdb'),
+    // MaxMind "set it up for me": download GeoLite2 with the user's free key (key stored encrypted).
+    hasKey: () => ipcRenderer.invoke('enrich:hasKey'),
+    clearKey: () => ipcRenderer.invoke('enrich:clearKey'),
+    maxmindSetup: (key: string | undefined, editions?: string[]) =>
+      ipcRenderer.invoke('enrich:maxmindSetup', { key, editions }),
+    onSetupProgress: (cb: (p: unknown) => void) => {
+      const h = (_e: unknown, p: unknown): void => cb(p)
+      ipcRenderer.on('enrich:setup-progress', h)
+      return () => ipcRenderer.removeListener('enrich:setup-progress', h)
+    },
+    bulk: (reqId: number, providerId: string, items: Array<{ value: string; kind: string }>) =>
+      ipcRenderer.invoke('enrich:bulk', { reqId, providerId, items }),
+    cancel: () => ipcRenderer.invoke('enrich:cancel'),
+    cacheStats: () => ipcRenderer.invoke('enrich:cacheStats'),
+    cacheClear: (provider?: string | null) => ipcRenderer.invoke('enrich:cacheClear', { provider }),
+    cacheGet: (indicators: string[]) => ipcRenderer.invoke('enrich:cacheGet', { indicators }),
+    cacheDelete: (indicators: string[]) => ipcRenderer.invoke('enrich:cacheDelete', { indicators }),
+    // Subscribe to bulk-lookup progress; returns a disposer (contextBridge can't pass the listener back).
+    onProgress: (cb: (p: unknown) => void) => {
+      const h = (_e: unknown, p: unknown): void => cb(p)
+      ipcRenderer.on('enrich:progress', h)
+      return () => ipcRenderer.removeListener('enrich:progress', h)
+    }
   }
 }
 

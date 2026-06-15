@@ -31,6 +31,7 @@ import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
 import { DistinctPanel } from './DistinctPanel'
+import { classifyIndicator } from '../../tools/ioc/classify'
 import { CellPopout } from './CellPopout'
 
 const SEARCH_DEBOUNCE_MS = 250
@@ -52,7 +53,8 @@ export function CsvViewer({
   onPivot,
   onReorderColumns,
   apiRef,
-  onTagSummary
+  onTagSummary,
+  onSendToEnrichment
 }: {
   doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
@@ -61,6 +63,8 @@ export function CsvViewer({
   apiRef?: React.Ref<CsvViewerHandle>
   /** Set on the ACTIVE source only — reports tag counts + the active tag filter to the sidebar. */
   onTagSummary?: (s: TagSummary | null) => void
+  /** Send a cell value / a column's distinct values to the Enrichment tab. */
+  onSendToEnrichment?: (values: string[]) => void
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
@@ -446,6 +450,7 @@ export function CsvViewer({
             filters={filters}
             onClose={() => setDistinctCol(null)}
             onPivot={onPivot}
+            onSendToEnrichment={onSendToEnrichment}
           />
         )}
       </div>
@@ -477,6 +482,11 @@ export function CsvViewer({
           onPickTime={applyTimeAround}
           onPickBound={applyTimeBound}
           onTag={applyTag}
+          onSend={
+            onSendToEnrichment && classifyIndicator(cellMenu.cell.value)
+              ? () => onSendToEnrichment([cellMenu.cell.value])
+              : undefined
+          }
           onClose={() => setCellMenu(null)}
         />
       )}

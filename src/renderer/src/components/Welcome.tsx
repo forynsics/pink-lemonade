@@ -1,4 +1,4 @@
-import { NotebookPen, FolderPlus, FolderOpen, Clock, Plus, X, HardDrive } from 'lucide-react'
+import { NotebookPen, FolderPlus, FolderOpen, Clock, Plus, X, HardDrive, Radar } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
@@ -51,6 +51,7 @@ export function Welcome({
   onImportCsv,
   onOpenWorkspace,
   onNewScratch,
+  onNewEnrichment,
   workspaceDir,
   onChangeWorkspaceDir,
   onRemoveRecent,
@@ -62,6 +63,7 @@ export function Welcome({
   onImportCsv: () => void
   onOpenWorkspace: () => void
   onNewScratch: () => void
+  onNewEnrichment: () => void
   /** Where workspaces are stored + the Open-Workspace dialog default. */
   workspaceDir: string
   onChangeWorkspaceDir: () => void
@@ -87,6 +89,7 @@ export function Welcome({
           <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start an empty investigation" />
           <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Open an existing .workspace file" />
           <Action cls="welcome__new" onClick={onNewScratch} icon={<NotebookPen className={ico} />} title="New notepad" sub="Text transforms + workflow" />
+          <Action cls="welcome__new-enrichment" onClick={onNewEnrichment} icon={<Radar className={ico} />} title="Enrichment" sub="Bulk-look-up IPs / domains / hashes" />
         </div>
 
         <div className="welcome__ws-dir mb-10 flex items-center gap-2 rounded-lg border border-citrus-border/70 bg-citrus-card/50 px-3 py-2 text-[11px] dark:border-citrus-night-border/70 dark:bg-citrus-night-card/40">

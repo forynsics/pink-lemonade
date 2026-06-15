@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Loader2, NotebookPen, X } from 'lucide-react'
+import { Loader2, NotebookPen, Radar, X } from 'lucide-react'
 import type { CsvViewSource } from './CsvViewer'
 import type { CsvColumn, CsvFilter } from '../../state/csvTypes'
 import { useDistinctScan } from '../../hooks/useDistinctScan'
@@ -18,13 +18,16 @@ export function DistinctPanel({
   col,
   filters,
   onClose,
-  onPivot
+  onPivot,
+  onSendToEnrichment
 }: {
   doc: CsvViewSource
   col: CsvColumn
   filters: CsvFilter[]
   onClose: () => void
   onPivot: (values: string[], label: string) => void
+  /** Send these distinct values to the Enrichment tab (parent classifies + dedupes). */
+  onSendToEnrichment?: (values: string[]) => void
 }): JSX.Element {
   const [busyAll, setBusyAll] = useState(false)
   const [width, setWidth] = useState(DEFAULT_W)
@@ -114,6 +117,16 @@ export function DistinctPanel({
         >
           {busyAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <NotebookPen className="w-3.5 h-3.5" />} All
         </button>
+        {onSendToEnrichment && (
+          <button
+            className={`${btn} border border-citrus-pink/40 text-citrus-pink hover:bg-citrus-pink-light dark:hover:bg-citrus-night-elev`}
+            onClick={() => onSendToEnrichment(rows.map((r) => r.val))}
+            disabled={loading || rows.length === 0}
+            title="Send these distinct values to the Enrichment tab (only recognized indicators)"
+          >
+            <Radar className="w-3.5 h-3.5" /> Enrich
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-none">

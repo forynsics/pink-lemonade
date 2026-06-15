@@ -1,5 +1,6 @@
 import type { WorkflowStep } from './workflow'
 import type { CsvColumn } from './csvTypes'
+import type { EnrichItem } from './enrichTypes'
 
 interface DocBase {
   id: string
@@ -36,7 +37,18 @@ export interface WorkspaceDoc extends DocBase {
   reopenFailed?: boolean
 }
 
-export type PinkDoc = ScratchDoc | WorkspaceDoc
+/** The Enrichment tab: a list of indicators to bulk-look-up against a provider. Results aren't
+ * stored here — they re-read from the app-wide cache DB instantly on open, so only the (small)
+ * indicator list + chosen provider persist. There is at most one of these at a time. */
+export interface EnrichmentDoc extends DocBase {
+  kind: 'enrichment'
+  provider: string
+  indicators: EnrichItem[]
+  /** The paste box's text (small, persisted). "Send to Enrichment" appends here; "Add" consumes it. */
+  draft: string
+}
+
+export type PinkDoc = ScratchDoc | WorkspaceDoc | EnrichmentDoc
 
 export interface DocsState {
   docs: PinkDoc[]
@@ -64,6 +76,10 @@ export function newId(): string {
 
 export function createDoc(name: string): ScratchDoc {
   return { id: newId(), name, kind: 'scratch', input: '', steps: [] }
+}
+
+export function createEnrichmentDoc(): EnrichmentDoc {
+  return { id: newId(), name: 'Enrichment', kind: 'enrichment', provider: 'maxmind', indicators: [], draft: '' }
 }
 
 export function createWorkspaceDoc(info: WorkspaceInfo): WorkspaceDoc {
@@ -99,6 +115,16 @@ export function loadDocs(): DocsState | null {
 function migrate(raw: unknown): PinkDoc | null {
   const d = raw as Record<string, unknown>
   if (d?.kind === 'csv') return null // obsolete single-file CSV doc — reset
+  if (d?.kind === 'enrichment') {
+    return {
+      id: String(d.id),
+      name: String(d.name ?? 'Enrichment'),
+      kind: 'enrichment',
+      provider: typeof d.provider === 'string' ? d.provider : 'maxmind',
+      indicators: Array.isArray(d.indicators) ? (d.indicators as EnrichItem[]) : [],
+      draft: typeof d.draft === 'string' ? d.draft : ''
+    }
+  }
   if (d?.kind === 'workspace') {
     return {
       id: String(d.id),
@@ -127,6 +153,7 @@ function toPersisted(state: DocsState): DocsState {
     activeId: state.activeId,
     docs: state.docs.map((d) => {
       if (d.kind === 'workspace') return d // rows live in SQLite, never serialized
+      if (d.kind === 'enrichment') return d // small indicator list; results live in the cache DB
       return d.input.length > PERSIST_INPUT_MAX
         ? { ...d, input: '', inputDropped: true }
         : { ...d, inputDropped: false }

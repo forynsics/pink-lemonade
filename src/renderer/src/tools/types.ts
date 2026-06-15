@@ -19,9 +19,10 @@ export interface Tool {
   description: string
   options?: ToolOption[]
   /**
-   * The operation. Pure and synchronous so it runs offline in the renderer and
-   * is trivially testable. (v2 enrichment tools may return a Promise; runWorkflow
-   * is structured to absorb that without API changes.)
+   * The operation. Pure and synchronous so it runs in the renderer (no Node/IPC) and is
+   * trivially testable. runWorkflow chains these synchronously and does NOT await Promises,
+   * so a Tool must return a string. Async/networked work (enrichment) is a separate
+   * main-process surface (`enrich:*` / the Enrichment tab), not a Tool.
    */
   run: (input: string, opts?: ToolOptions) => string
 }

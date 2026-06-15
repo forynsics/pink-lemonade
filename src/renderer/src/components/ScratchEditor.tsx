@@ -18,7 +18,8 @@ export function ScratchEditor({
   onMoveStep,
   onUpdateOptions,
   onToggleStepEnabled,
-  onClearSteps
+  onClearSteps,
+  onSendToEnrichment
 }: {
   doc: ScratchDoc
   visible: boolean
@@ -28,6 +29,7 @@ export function ScratchEditor({
   onUpdateOptions: (uid: string, options: ToolOptions) => void
   onToggleStepEnabled: (uid: string) => void
   onClearSteps: () => void
+  onSendToEnrichment: (values: string[]) => void
 }): JSX.Element {
   const deferredInput = useDeferredValue(doc.input)
   const result = useMemo(() => runWorkflow(deferredInput, doc.steps), [deferredInput, doc.steps])
@@ -42,7 +44,13 @@ export function ScratchEditor({
         onToggleEnabled={onToggleStepEnabled}
         onClear={onClearSteps}
       />
-      <Workbench input={doc.input} onInput={onInput} result={result} active={visible} />
+      <Workbench
+        input={doc.input}
+        onInput={onInput}
+        result={result}
+        active={visible}
+        onSendToEnrichment={onSendToEnrichment}
+      />
     </div>
   )
 }

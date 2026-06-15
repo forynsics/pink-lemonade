@@ -26,10 +26,12 @@ import {
   type QueryOpts
 } from './sql'
 
-// The ONLY module that loads the native better-sqlite3 binding. One on-disk temp .db per
-// CSV tab, created on ingest and deleted on close. The renderer never touches this — it
-// reaches the data through the csv:* IPC, which calls these functions and returns small
-// result sets only.
+// Loads the native better-sqlite3 binding for the CSV/workspace engine (enrich/cache.ts is the
+// other better-sqlite3 user — both run only in the DB worker). Storage is PERSISTENT: a session
+// db per import at <userData>/sessions/<tab>.db, and one <workspaceDir>/<id>.workspace db per
+// workspace. Nothing is deleted on close (only explicit delete, or the startup sweep of legacy
+// temp files). The renderer never touches this — it reaches the data through the csv:* IPC,
+// which calls these functions and returns small result sets only.
 
 export interface CsvTableMeta {
   tabId: string
@@ -284,6 +286,24 @@ export function setWorkspaceDir(dir: string): string {
     /* ignore */
   }
   return getWorkspaceDir()
+}
+
+// ---- Enrichment config (lives under the `enrich` key in the same settings.json) ----
+// e.g. { maxmindDbPath: '…/GeoLite2-City.mmdb' }. No secrets today (MaxMind needs none); when a
+// network provider with an API key arrives, the key should go through Electron safeStorage, not here.
+export function getEnrichConfig(): Record<string, unknown> {
+  const s = readSettings()
+  return s.enrich && typeof s.enrich === 'object' ? (s.enrich as Record<string, unknown>) : {}
+}
+export function setEnrichConfig(patch: Record<string, unknown>): Record<string, unknown> {
+  const s = readSettings()
+  s.enrich = { ...getEnrichConfig(), ...patch }
+  try {
+    writeFileSync(settingsPath(), JSON.stringify(s, null, 2))
+  } catch {
+    /* ignore */
+  }
+  return getEnrichConfig()
 }
 
 function workspaceDbPath(wsId: string): string {

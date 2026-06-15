@@ -1,6 +1,7 @@
-// Main-process proxy for the DB worker. Every query/ingest/tag op is forwarded to worker.ts and
-// awaited; progress (ingest bytes/rows, count partials) streams back through per-request callbacks.
-// The renderer's csv:* IPC already returns Promises, so making these async is transparent to it.
+// Main-process proxy for the DB worker. Every query/ingest/tag/enrich op is forwarded to worker.ts
+// and awaited; progress (ingest bytes/rows, count + distinct partials, enrich per-indicator) streams
+// back through per-request callbacks. The renderer's csv:*/enrich:* IPC already returns Promises, so
+// making these async is transparent to it.
 
 import { Worker } from 'node:worker_threads'
 import { app } from 'electron'
@@ -125,6 +126,42 @@ export function distinct(
 /** Abort an in-flight distinct scan for a tab (panel closed / column changed). */
 export function distinctCancel(tabId: string): void {
   worker?.postMessage({ t: 'distinctCancel', tabId })
+}
+
+interface EnrichBulkResult {
+  rows: Array<{
+    indicator: string
+    kind: string
+    status: 'ok' | 'notfound' | 'error' | 'skipped' | 'private'
+    fields: Record<string, string>
+    fromCache: boolean
+    message?: string
+  }>
+  canceled?: boolean
+}
+
+/** Bulk-enrich indicators against a provider; streams per-indicator progress via `onPartial`. */
+export function enrichBulk(
+  reqId: number,
+  providerId: string,
+  items: Array<{ value: string; kind: string }>,
+  now: number,
+  onPartial: (p: { done: number; total: number; current: string; fromCache: boolean }) => void
+): Promise<EnrichBulkResult> {
+  return new Promise<EnrichBulkResult>((resolve, reject) => {
+    const id = nextId++
+    pending.set(id, {
+      resolve: resolve as (v: unknown) => void,
+      reject,
+      onProgress: (p) => onPartial(p as { done: number; total: number; current: string; fromCache: boolean })
+    })
+    w().postMessage({ t: 'enrich', id, reqId, providerId, items, now })
+  })
+}
+
+/** Abort the in-flight bulk enrichment (a newer run or a user cancel). */
+export function enrichCancel(): void {
+  worker?.postMessage({ t: 'enrichCancel' })
 }
 
 export async function terminateDbWorker(): Promise<void> {

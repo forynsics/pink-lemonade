@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, FolderOpen, Loader2, Search, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, FolderOpen, Loader2, Radar, Search, X } from 'lucide-react'
 import type { WorkflowResult } from '../state/workflow'
 import { iocMetrics, type IocMetrics } from '../state/metrics'
 import { CodeArea, type CodeAreaMeta } from './CodeArea'
@@ -44,7 +44,8 @@ export function Workbench({
   input,
   onInput,
   result,
-  active = true
+  active = true,
+  onSendToEnrichment
 }: {
   input: string
   onInput: (v: string) => void
@@ -52,6 +53,8 @@ export function Workbench({
   /** Whether this is the visible/active editor — only the active one handles the Ctrl+F shortcut
    *  (every scratch doc keeps a mounted Workbench, so the window listener must be gated). */
   active?: boolean
+  /** Send the output's indicators to the Enrichment tab (classified + deduped by the parent). */
+  onSendToEnrichment?: (values: string[]) => void
 }): JSX.Element {
   const [copied, setCopied] = useState(false)
   const [wrap, setWrap] = useState(true)
@@ -306,6 +309,16 @@ export function Workbench({
             <button className={pill} onClick={saveFile}>
               <span className="inline-flex items-center gap-1"><Download className="w-3 h-3" /> Save…</span>
             </button>
+            {onSendToEnrichment && (
+              <button
+                className={pill}
+                onClick={() => onSendToEnrichment(out === '' ? [] : [out])}
+                disabled={out === ''}
+                title="Send the output's IPs / domains / hashes to the Enrichment tab"
+              >
+                <span className="inline-flex items-center gap-1"><Radar className="w-3 h-3" /> Enrich</span>
+              </button>
+            )}
             <button
               className="px-2.5 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors inline-flex items-center gap-1"
               onClick={copyOutput}

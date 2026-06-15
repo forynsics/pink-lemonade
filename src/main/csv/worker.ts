@@ -5,11 +5,15 @@
 
 import { parentPort, workerData } from 'node:worker_threads'
 import * as db from './db'
+import * as enrichEngine from '../enrich/engine'
+import * as enrichCache from '../enrich/cache'
 
 const port = parentPort
 if (!port) throw new Error('worker.ts must run as a worker thread')
 
-db.initPaths((workerData as { userDataDir: string }).userDataDir)
+const userDataDir = (workerData as { userDataDir: string }).userDataDir
+db.initPaths(userDataDir)
+enrichCache.initEnrichPaths(userDataDir)
 
 // Plain functions: serializable args in, serializable value out. Run synchronously in the worker.
 const FNS: Record<string, (...a: never[]) => unknown> = {
@@ -37,7 +41,16 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   deleteDb: db.deleteDb,
   closeTab: db.closeTab,
   closeAll: db.closeAll,
-  sweepStaleTempDbs: db.sweepStaleTempDbs
+  sweepStaleTempDbs: db.sweepStaleTempDbs,
+  // Enrichment (provider-agnostic): provider list, config, and cache maintenance.
+  enrichProviders: enrichEngine.listProviders,
+  enrichGetConfig: db.getEnrichConfig,
+  enrichSetConfig: db.setEnrichConfig,
+  enrichCacheStats: enrichCache.stats,
+  enrichCacheClear: enrichCache.clear,
+  enrichCacheGet: enrichCache.getMany,
+  enrichCacheDelete: enrichCache.deleteMany,
+  enrichClose: enrichCache.close
 }
 
 // In-flight ingest aborters keyed by cancelKey (tabId for a single import, wsId for a workspace
@@ -45,6 +58,9 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
 const aborters = new Map<string, AbortController>()
 const countReq = new Map<string, number>()
 const distinctReq = new Map<string, number>()
+// Latest enrichment bulk reqId (one Enrichment tab runs at a time). A newer run — or a cancel
+// (sets -1, which no positive reqId matches) — supersedes the running one.
+let enrichReq = 0
 
 type Msg =
   | { t: 'call'; id: number; fn: string; args: unknown[] }
@@ -53,6 +69,8 @@ type Msg =
   | { t: 'count'; id: number; tabId: string; reqId: number; filters?: unknown; search?: string }
   | { t: 'distinct'; id: number; tabId: string; reqId: number; col: string; filters?: unknown; limit: number }
   | { t: 'distinctCancel'; tabId: string }
+  | { t: 'enrich'; id: number; reqId: number; providerId: string; items: unknown[]; now: number }
+  | { t: 'enrichCancel' }
 
 port.on('message', async (msg: Msg) => {
   try {
@@ -112,6 +130,26 @@ port.on('message', async (msg: Msg) => {
       const shouldAbort = (): boolean => distinctReq.get(msg.tabId) !== msg.reqId
       const value = await db.getColumnDistinctChunked(msg.tabId, msg.col, msg.filters as never, msg.limit, onPartial, shouldAbort)
       port.postMessage({ t: 'result', id: msg.id, ok: true, value }) // value is the result or null (canceled)
+      return
+    }
+    if (msg.t === 'enrichCancel') {
+      enrichReq = -1 // no positive reqId matches → the running bulk lookup aborts
+      return
+    }
+    if (msg.t === 'enrich') {
+      enrichReq = msg.reqId
+      const onProgress = (p: enrichEngine.BulkProgress): void => {
+        if (enrichReq === msg.reqId) port.postMessage({ t: 'progress', id: msg.id, payload: p })
+      }
+      const shouldAbort = (): boolean => enrichReq !== msg.reqId
+      const value = await enrichEngine.bulkLookup(
+        msg.providerId,
+        msg.items as enrichEngine.EnrichItem[],
+        msg.now,
+        onProgress,
+        shouldAbort
+      )
+      port.postMessage({ t: 'result', id: msg.id, ok: true, value })
       return
     }
   } catch (e) {

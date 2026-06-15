@@ -8,19 +8,24 @@ import { Welcome } from './components/Welcome'
 import { CsvViewer, type CsvViewerHandle, type TagSummary } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
 import { WorkspaceSidebar } from './components/csv/WorkspaceSidebar'
+import { EnrichmentView } from './components/enrich/EnrichmentView'
 import { getById, defaultOptions } from './tools/registry'
+import { classifyIndicator } from './tools/ioc/classify'
 import {
   createDoc,
+  createEnrichmentDoc,
   createWorkspaceDoc,
   loadDocs,
   newId,
   saveDocs,
   type DocsState,
+  type EnrichmentDoc,
   type PinkDoc,
   type ScratchDoc,
   type WorkspaceDoc,
   type WorkspaceSource
 } from './state/documents'
+import type { EnrichItem } from './state/enrichTypes'
 import { loadTheme, saveTheme, type Theme } from './state/theme'
 import { addRecent, loadRecent, removeRecent, saveRecent, type RecentFile } from './state/recent'
 import type { ToolOptions } from './tools/types'
@@ -117,6 +122,57 @@ export default function App(): JSX.Element {
       ...s,
       docs: s.docs.map((d) => (d.id === id && d.kind === 'workspace' ? { ...d, ...patch } : d))
     }))
+  }
+
+  function patchEnrichmentById(id: string, patch: Partial<EnrichmentDoc>): void {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => (d.id === id && d.kind === 'enrichment' ? { ...d, ...patch } : d))
+    }))
+  }
+
+  // ---- Enrichment: a single Enrichment tab collects indicators; lookups view there. ----
+  /** Open (or focus) the Enrichment tab. */
+  function openEnrichmentTab(): void {
+    setHome(false)
+    setState((s) => {
+      const existing = s.docs.find((d) => d.kind === 'enrichment')
+      if (existing) return { ...s, activeId: existing.id }
+      const doc = createEnrichmentDoc()
+      return { docs: [...s.docs, doc], activeId: doc.id }
+    })
+  }
+
+  /** Classify raw strings, keep recognized indicators, and drop them into the (single) Enrichment
+   *  tab's paste box (the user reviews, then clicks Add). Tokenized on whitespace/commas so a blob,
+   *  a line, or one cell all work. */
+  function sendToEnrichment(values: string[]): void {
+    const seen = new Set<string>()
+    const recognized: string[] = []
+    for (const raw of values.flatMap((v) => v.split(/[\s,]+/))) {
+      const v = raw.trim()
+      if (!v || seen.has(v) || !classifyIndicator(v)) continue
+      seen.add(v)
+      recognized.push(v)
+    }
+    if (recognized.length === 0) return // nothing looked like an indicator
+    setHome(false)
+    setState((s) => {
+      const existing = s.docs.find((d): d is EnrichmentDoc => d.kind === 'enrichment')
+      if (existing) {
+        // Append to the paste box, skipping lines already queued there.
+        const lines = new Set(existing.draft.split(/\r?\n/).map((x) => x.trim()).filter(Boolean))
+        const fresh = recognized.filter((v) => !lines.has(v))
+        const draft = [existing.draft.trim(), ...fresh].filter(Boolean).join('\n')
+        return {
+          ...s,
+          docs: s.docs.map((d) => (d.id === existing.id ? { ...existing, draft } : d)),
+          activeId: existing.id
+        }
+      }
+      const doc: EnrichmentDoc = { ...createEnrichmentDoc(), draft: recognized.join('\n') }
+      return { docs: [...s.docs, doc], activeId: doc.id }
+    })
   }
 
   // ---- document operations ----
@@ -459,6 +515,7 @@ export default function App(): JSX.Element {
               onImportCsv={newWorkspaceFromCsv}
               onOpenWorkspace={openWorkspaceFile}
               onNewScratch={addDoc}
+              onNewEnrichment={openEnrichmentTab}
               workspaceDir={workspaceDir}
               onChangeWorkspaceDir={changeWorkspaceDir}
               onRemoveRecent={dropRecent}
@@ -484,6 +541,17 @@ export default function App(): JSX.Element {
                   onUpdateOptions={updateOptions}
                   onToggleStepEnabled={toggleStepEnabled}
                   onClearSteps={() => patchScratch({ steps: [] })}
+                  onSendToEnrichment={sendToEnrichment}
+                />
+              )
+            }
+            if (d.kind === 'enrichment') {
+              return (
+                <EnrichmentView
+                  key={d.id}
+                  doc={d}
+                  visible={visible}
+                  onPatch={(patch) => patchEnrichmentById(d.id, patch)}
                 />
               )
             }
@@ -521,6 +589,7 @@ export default function App(): JSX.Element {
                           onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
                           apiRef={isActiveSource ? tagApiRef : undefined}
                           onTagSummary={isActiveSource ? setTagSummary : undefined}
+                          onSendToEnrichment={sendToEnrichment}
                         />
                       </div>
                     )

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { readFile, writeFile, stat } from 'fs/promises'
 import { basename } from 'path'
 import { registerCsvIpc } from './csv/ipc'
+import { registerEnrichIpc } from './enrich/ipc'
 import { initDbWorker, call as dbCall } from './csv/dbClient'
 
 function createWindow(): void {
@@ -30,7 +31,8 @@ function createWindow(): void {
   win.webContents.setVisualZoomLevelLimits(1, 3)
 
   // Dev: electron-vite serves the renderer and sets ELECTRON_RENDERER_URL.
-  // Prod: load the bundled HTML from disk. The app makes no network requests.
+  // Prod: load the bundled HTML from disk (no remote origin). Network access is opt-in, only
+  // through user-configured enrichment providers in main (MaxMind is a local file; VT is roadmap).
   const devUrl = process.env['ELECTRON_RENDERER_URL']
   if (devUrl) {
     win.loadURL(devUrl)
@@ -99,6 +101,7 @@ app.whenReady().then(() => {
   initDbWorker() // the DB runs in a worker thread so slow queries never freeze the UI
   void dbCall('sweepStaleTempDbs') // clear any temp CSV dbs left by a prior crash
   registerCsvIpc()
+  registerEnrichIpc() // threat-intel/enrichment surface (cache DB + providers live in the worker)
   buildMenu()
   createWindow()
   app.on('activate', () => {
@@ -107,9 +110,13 @@ app.whenReady().then(() => {
 })
 
 // Best-effort cleanup of connections + temp dbs (also swept on next startup if this doesn't finish).
-app.on('before-quit', () => void dbCall('closeAll'))
+app.on('before-quit', () => {
+  void dbCall('closeAll')
+  void dbCall('enrichClose')
+})
 
 app.on('window-all-closed', () => {
   void dbCall('closeAll')
+  void dbCall('enrichClose')
   if (process.platform !== 'darwin') app.quit()
 })

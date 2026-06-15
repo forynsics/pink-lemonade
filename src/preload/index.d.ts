@@ -144,6 +144,71 @@ export interface CsvApi {
   onCountProgress: (cb: (p: CsvCountProgress) => void) => () => void
 }
 
+// ---- Enrichment (threat-intel) ----
+export type IndicatorKind = 'ipv4' | 'ipv6' | 'domain' | 'url' | 'email' | 'md5' | 'sha1' | 'sha256'
+export interface EnrichItem {
+  value: string
+  kind: IndicatorKind
+}
+export interface EnrichProviderInfo {
+  id: string
+  name: string
+  kinds: string[]
+  ready: boolean
+  detail: string
+}
+export interface EnrichResultRow {
+  indicator: string
+  kind: string
+  status: 'ok' | 'notfound' | 'error' | 'skipped' | 'private'
+  fields: Record<string, string>
+  fromCache: boolean
+  message?: string
+}
+export interface EnrichProgress {
+  reqId: number
+  done: number
+  total: number
+  current: string
+  fromCache: boolean
+}
+export type EnrichBulkResult = { rows: EnrichResultRow[]; canceled?: boolean }
+export interface EnrichCachedRow {
+  provider: string
+  indicator: string
+  kind: string
+  status: 'ok' | 'notfound' | 'error'
+  fields: Record<string, string>
+  fetchedAt: number
+}
+
+export interface EnrichSetupProgress {
+  editionId: string
+  received: number
+  total: number
+}
+export type MaxmindSetupResult =
+  | { ok: true; installed: Array<{ editionId: string; path: string }> }
+  | { ok: false; error: string }
+
+export interface EnrichApi {
+  providers: () => Promise<EnrichProviderInfo[]>
+  getConfig: () => Promise<Record<string, unknown>>
+  setConfig: (patch: Record<string, unknown>) => Promise<Record<string, unknown>>
+  pickMmdb: () => Promise<string | null>
+  hasKey: () => Promise<boolean>
+  clearKey: () => Promise<null>
+  maxmindSetup: (key: string | undefined, editions?: string[]) => Promise<MaxmindSetupResult>
+  onSetupProgress: (cb: (p: EnrichSetupProgress) => void) => () => void
+  bulk: (reqId: number, providerId: string, items: EnrichItem[]) => Promise<EnrichBulkResult>
+  cancel: () => Promise<null>
+  cacheStats: () => Promise<Array<{ provider: string; n: number }>>
+  cacheClear: (provider?: string | null) => Promise<null>
+  cacheGet: (indicators: string[]) => Promise<EnrichCachedRow[]>
+  cacheDelete: (indicators: string[]) => Promise<null>
+  onProgress: (cb: (p: EnrichProgress) => void) => () => void
+}
+
 export interface Api {
   openFile: () => Promise<{
     name: string
@@ -153,6 +218,7 @@ export interface Api {
   } | null>
   saveFile: (content: string) => Promise<string | null>
   csv: CsvApi
+  enrich: EnrichApi
 }
 
 declare global {

@@ -36,8 +36,8 @@ function initialDocs(): DocsState {
     const activeOk = loaded.docs.some((d) => d.id === loaded.activeId)
     return { docs: loaded.docs, activeId: activeOk ? loaded.activeId : loaded.docs[0].id }
   }
-  const first = createDoc('Untitled 1')
-  return { docs: [first], activeId: first.id }
+  // No saved tabs → open empty on the Home screen; the user explicitly creates the first tab.
+  return { docs: [], activeId: '' }
 }
 
 export default function App(): JSX.Element {
@@ -60,6 +60,11 @@ export default function App(): JSX.Element {
   // tag filter. Only the active source's viewer populates these.
   const [tagSummary, setTagSummary] = useState<TagSummary | null>(null)
   const tagApiRef = useRef<CsvViewerHandle | null>(null)
+  // The configurable workspace storage folder (Open-Workspace default + where new workspaces save).
+  const [workspaceDir, setWorkspaceDirState] = useState('')
+  useEffect(() => {
+    void window.api.csv.wsGetDir().then(setWorkspaceDirState)
+  }, [])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -88,10 +93,11 @@ export default function App(): JSX.Element {
     }
   }, [docs, activeId])
 
-  const active = docs.find((d) => d.id === activeId) ?? docs[0]
+  // May be undefined when no tabs are open (fresh start / closed the last tab) → Home screen shows.
+  const active = docs.find((d) => d.id === activeId)
 
   // Clear the sidebar tag rollup when the active source changes; the newly-active viewer re-reports.
-  const activeSrcKey = active.kind === 'workspace' ? `${active.id}:${active.activeSourceId}` : active.id
+  const activeSrcKey = active?.kind === 'workspace' ? `${active.id}:${active.activeSourceId}` : (active?.id ?? '')
   useEffect(() => {
     setTagSummary(null)
   }, [activeSrcKey])
@@ -198,13 +204,20 @@ export default function App(): JSX.Element {
     if (dbPath) await openWorkspaceByPath(dbPath)
   }
 
+  /** Pick a new workspace storage folder (new workspaces save there; Open-Workspace defaults there). */
+  async function changeWorkspaceDir(): Promise<void> {
+    const dir = await window.api.csv.wsPickDir()
+    if (!dir) return
+    setWorkspaceDirState(await window.api.csv.wsSetDir(dir))
+  }
+
   function openRecent(f: RecentFile): void {
     void openWorkspaceByPath(f.path)
   }
 
   /** Add a CSV as a new source to the active workspace (sidebar "Import"). */
   async function addSourceToActive(): Promise<void> {
-    if (active.kind !== 'workspace') return
+    if (active?.kind !== 'workspace') return
     const picked = await window.api.csv.pick()
     if (!picked) return
     const { wsId, id: docId } = active
@@ -250,13 +263,13 @@ export default function App(): JSX.Element {
   }
 
   // Auto-resume the active workspace when its db isn't open yet this session (after a restart).
-  const wsNeedsReopen = active.kind === 'workspace' && !!active.needsReopen
-  const wsReopenFailed = active.kind === 'workspace' && !!active.reopenFailed
+  const wsNeedsReopen = active?.kind === 'workspace' && !!active.needsReopen
+  const wsReopenFailed = active?.kind === 'workspace' && !!active.reopenFailed
   useEffect(() => {
-    if (!home && active.kind === 'workspace' && active.needsReopen && !active.reopenFailed) {
+    if (!home && active?.kind === 'workspace' && active.needsReopen && !active.reopenFailed) {
       void reopenWorkspace(active)
     }
-  }, [home, active.id, wsNeedsReopen, wsReopenFailed]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [home, active?.id, wsNeedsReopen, wsReopenFailed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function selectSource(docId: string, sourceId: number): void {
     patchWorkspaceById(docId, { activeSourceId: sourceId })
@@ -296,9 +309,10 @@ export default function App(): JSX.Element {
     const doc = docs.find((d) => d.id === id)
     if (doc?.kind === 'workspace' && doc.wsId) window.api.csv.wsClose(doc.wsId)
     setState((s) => {
+      // Closing the last tab leaves no tabs open → fall back to the Home screen.
       if (s.docs.length === 1) {
-        const fresh = createDoc('Untitled 1')
-        return { docs: [fresh], activeId: fresh.id }
+        setHome(true)
+        return { docs: [], activeId: '' }
       }
       const idx = s.docs.findIndex((d) => d.id === id)
       const docs = s.docs.filter((d) => d.id !== id)
@@ -336,34 +350,49 @@ export default function App(): JSX.Element {
     }))
   }
 
+  /** Rename a source's display label (persists to the workspace db + updates the open doc). */
+  async function renameSourceName(docId: string, wsId: string, sourceId: number, name: string): Promise<void> {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    await window.api.csv.wsRenameSource(wsId, sourceId, trimmed)
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) =>
+        d.id === docId && d.kind === 'workspace'
+          ? { ...d, sources: d.sources.map((src) => (src.sourceId === sourceId ? { ...src, name: trimmed } : src)) }
+          : d
+      )
+    }))
+  }
+
   // ---- workflow operations (act on the active scratch document) ----
   function addTool(toolId: string): void {
     const tool = getById(toolId)
-    if (!tool || active.kind !== 'scratch') return
+    if (!tool || active?.kind !== 'scratch') return
     patchScratch({
       steps: [...active.steps, { uid: newId(), toolId, options: defaultOptions(tool), enabled: true }]
     })
   }
 
   function removeStep(uid: string): void {
-    if (active.kind !== 'scratch') return
+    if (active?.kind !== 'scratch') return
     patchScratch({ steps: active.steps.filter((s) => s.uid !== uid) })
   }
 
   function toggleStepEnabled(uid: string): void {
-    if (active.kind !== 'scratch') return
+    if (active?.kind !== 'scratch') return
     patchScratch({
       steps: active.steps.map((s) => (s.uid === uid ? { ...s, enabled: s.enabled === false } : s))
     })
   }
 
   function updateOptions(uid: string, options: ToolOptions): void {
-    if (active.kind !== 'scratch') return
+    if (active?.kind !== 'scratch') return
     patchScratch({ steps: active.steps.map((s) => (s.uid === uid ? { ...s, options } : s)) })
   }
 
   function moveStep(uid: string, dir: -1 | 1): void {
-    if (active.kind !== 'scratch') return
+    if (active?.kind !== 'scratch') return
     const i = active.steps.findIndex((s) => s.uid === uid)
     const j = i + dir
     if (i < 0 || j < 0 || j >= active.steps.length) return
@@ -375,13 +404,19 @@ export default function App(): JSX.Element {
   return (
     <div className="app flex flex-col h-full">
       <header className="flex items-center justify-between px-4 py-2.5 border-b border-citrus-border bg-citrus-card dark:border-citrus-night-border dark:bg-citrus-night-card">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
           <Logo />
           <span className="text-lg font-bold tracking-tight text-citrus-dark dark:text-citrus-night-text">
             pink<span className="text-citrus-pink">lemonade</span>
           </span>
-          <span className="text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted">
-            local investigation toolkit
+          <span
+            className="self-end mb-1 text-[10px] font-mono text-citrus-muted/50 dark:text-citrus-night-muted/40"
+            title="Build version"
+          >
+            v{__APP_VERSION__}
+          </span>
+          <span className="hidden sm:block truncate text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+            Local investigation toolkit — parse, pivot, and triage all in one space.
           </span>
         </div>
         <button
@@ -396,14 +431,16 @@ export default function App(): JSX.Element {
 
       <div className="flex flex-1 min-h-0">
         {/* Contextual left rail: Tool Palette for a notepad, Imported-Files sidebar for a workspace. */}
-        {!home && active.kind === 'scratch' && <ToolPalette onPick={addTool} />}
-        {!home && active.kind === 'workspace' && (
+        {!home && active?.kind === 'scratch' && <ToolPalette onPick={addTool} />}
+        {!home && active?.kind === 'workspace' && (
           <WorkspaceSidebar
             doc={active}
             importing={csvImport?.tabId === active.wsId}
             onSelectSource={(sid) => selectSource(active.id, sid)}
             onImport={addSourceToActive}
             onRemoveSource={(sid) => void removeSource(active.id, active.wsId, sid)}
+            onRename={(name) => renameDoc(active.id, name)}
+            onRenameSource={(sid, name) => void renameSourceName(active.id, active.wsId, sid, name)}
             tagSummary={tagSummary}
             onToggleTagFilter={(tag) => tagApiRef.current?.toggleTagFilter(tag)}
             onClearTagFilter={() => tagApiRef.current?.clearTagFilter()}
@@ -417,11 +454,10 @@ export default function App(): JSX.Element {
             onHome={() => setHome(true)}
             onSelect={selectDoc}
             onAdd={addDoc}
-            onAddCsv={newWorkspaceFromCsv}
             onClose={closeDoc}
             onRename={renameDoc}
           />
-          {home && (
+          {(home || !active) && (
             <Welcome
               recent={recent}
               onOpenRecent={openRecent}
@@ -429,6 +465,8 @@ export default function App(): JSX.Element {
               onImportCsv={newWorkspaceFromCsv}
               onOpenWorkspace={openWorkspaceFile}
               onNewScratch={addDoc}
+              workspaceDir={workspaceDir}
+              onChangeWorkspaceDir={changeWorkspaceDir}
               onRemoveRecent={dropRecent}
               onClearRecent={() => {
                 setRecent([])
@@ -439,7 +477,7 @@ export default function App(): JSX.Element {
           {/* Every doc keeps its own mounted view (hidden when inactive) so editor/viewer state
               survives tab switches; within a workspace, each source keeps its own mounted grid. */}
           {docs.map((d) => {
-            const visible = !home && active.id === d.id
+            const visible = !home && active?.id === d.id
             if (d.kind === 'scratch') {
               return (
                 <ScratchEditor

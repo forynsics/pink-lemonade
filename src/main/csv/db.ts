@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
-import { statSync, unlinkSync, readdirSync, existsSync, mkdirSync } from 'fs'
+import { statSync, unlinkSync, readdirSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { parseCsvStream } from './parser'
 import type { ColumnMap } from './sanitize'
 import { detectColumnTime, type TimeKind } from './coltypes'
@@ -244,13 +244,39 @@ export class CsvIngestCanceled extends Error {
 
 // ---- Workspaces (capstone): one db file holds many sources as data_<id> tables ----
 
-function workspacesDir(): string {
-  const dir = join(app.getPath('userData'), 'workspaces')
+// ---- App settings (a tiny userData/settings.json) ----
+function settingsPath(): string {
+  return join(app.getPath('userData'), 'settings.json')
+}
+function readSettings(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(settingsPath(), 'utf-8')) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+/** Where workspaces live + the Open-Workspace dialog defaults — user-configurable, defaults to userData. */
+export function getWorkspaceDir(): string {
+  const s = readSettings()
+  const dir =
+    typeof s.workspaceDir === 'string' && s.workspaceDir ? s.workspaceDir : join(app.getPath('userData'), 'workspaces')
   mkdirSync(dir, { recursive: true })
   return dir
 }
+export function setWorkspaceDir(dir: string): string {
+  const s = readSettings()
+  s.workspaceDir = dir
+  try {
+    writeFileSync(settingsPath(), JSON.stringify(s, null, 2))
+  } catch {
+    /* ignore */
+  }
+  return getWorkspaceDir()
+}
+
 function workspaceDbPath(wsId: string): string {
-  return join(workspacesDir(), `${safe(wsId)}.workspace`)
+  return join(getWorkspaceDir(), `${safe(wsId)}.workspace`)
 }
 
 /** Composite key a workspace source is registered/queried under (used as `tabId` by the query IPC). */
@@ -382,6 +408,15 @@ export function renameWorkspace(wsId: string, name: string): void {
   if (!w) return
   w.db.prepare('INSERT OR REPLACE INTO ws_meta (key, value) VALUES (?, ?)').run('name', name)
   w.name = name
+}
+
+/** Rename a source's display label (sources.name) — a pure label, decoupled from the data table. */
+export function renameSource(wsId: string, sourceId: number, name: string): void {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId)) return
+  w.db.prepare('UPDATE sources SET name = ? WHERE id = ?').run(name, sourceId)
+  const e = tables.get(sourceKey(wsId, sourceId)) // keep the live viewer title in sync
+  if (e) e.meta.sourceName = name
 }
 
 /** Remove a source (imported file) from a workspace: drop its table + catalog rows + tags. */

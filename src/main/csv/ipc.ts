@@ -12,6 +12,9 @@ import {
   deleteWorkspace,
   renameWorkspace,
   removeSource,
+  renameSource,
+  getWorkspaceDir,
+  setWorkspaceDir,
   listTags,
   setTags,
   tagByFilter,
@@ -169,6 +172,26 @@ export function registerCsvIpc(): void {
     removeSource(wsId, sourceId)
     return null
   })
+  ipcMain.handle(
+    'ws:renameSource',
+    (_e, { wsId, sourceId, name }: { wsId: string; sourceId: number; name: string }) => {
+      renameSource(wsId, sourceId, name)
+      return null
+    }
+  )
+
+  // Workspace storage folder (used as the Open-Workspace default + where new workspaces are saved).
+  ipcMain.handle('ws:getDir', () => getWorkspaceDir())
+  ipcMain.handle('ws:setDir', (_e, { dir }: { dir: string }) => setWorkspaceDir(dir))
+  ipcMain.handle('ws:pickDir', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+      defaultPath: getWorkspaceDir()
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
 
   // Row tags: list all tags for a source (renderer caches them in a Map), and set/clear a tag on
   // a set of rows (single right-click or a multi-row selection). tag === null clears.
@@ -212,7 +235,11 @@ export function registerCsvIpc(): void {
   // Pick a .db to open directly (Slice B). Returns its path, or null if canceled.
   ipcMain.handle('csv:pickDb', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
-    const opts = { properties: ['openFile' as const], filters: [{ name: 'Pink Lemonade database', extensions: ['db'] }] }
+    const opts = {
+      properties: ['openFile' as const],
+      defaultPath: getWorkspaceDir(), // land in the workspaces folder instead of an arbitrary one
+      filters: [{ name: 'Pink Lemonade workspace', extensions: ['workspace', 'db'] }]
+    }
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })

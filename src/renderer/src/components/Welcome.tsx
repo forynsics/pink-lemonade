@@ -1,4 +1,4 @@
-import { NotebookPen, FolderPlus, FolderOpen, Clock, Plus, X } from 'lucide-react'
+import { NotebookPen, FolderPlus, FolderOpen, Clock, Plus, X, HardDrive } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
@@ -51,6 +51,8 @@ export function Welcome({
   onImportCsv,
   onOpenWorkspace,
   onNewScratch,
+  workspaceDir,
+  onChangeWorkspaceDir,
   onRemoveRecent,
   onClearRecent
 }: {
@@ -60,6 +62,9 @@ export function Welcome({
   onImportCsv: () => void
   onOpenWorkspace: () => void
   onNewScratch: () => void
+  /** Where workspaces are stored + the Open-Workspace dialog default. */
+  workspaceDir: string
+  onChangeWorkspaceDir: () => void
   onRemoveRecent: (path: string) => void
   onClearRecent: () => void
 }): JSX.Element {
@@ -74,7 +79,7 @@ export function Welcome({
           </span>
         </div>
         <p className="text-sm text-citrus-muted dark:text-citrus-night-muted mb-8">
-          Local investigation toolkit — parse, pivot, and triage without leaving your machine.
+          Local investigation toolkit — parse, pivot, and triage all in one space.
         </p>
 
         <div className="grid grid-cols-2 gap-3 mb-10">
@@ -82,6 +87,20 @@ export function Welcome({
           <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start an empty investigation" />
           <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Open an existing .workspace file" />
           <Action cls="welcome__new" onClick={onNewScratch} icon={<NotebookPen className={ico} />} title="New notepad" sub="Text transforms + workflow" />
+        </div>
+
+        <div className="welcome__ws-dir mb-10 flex items-center gap-2 rounded-lg border border-citrus-border/70 bg-citrus-card/50 px-3 py-2 text-[11px] dark:border-citrus-night-border/70 dark:bg-citrus-night-card/40">
+          <HardDrive className="w-3.5 h-3.5 shrink-0 text-citrus-muted dark:text-citrus-night-muted" />
+          <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">Workspace folder</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-citrus-dark dark:text-citrus-night-text" title={workspaceDir}>
+            {workspaceDir || '…'}
+          </span>
+          <button
+            onClick={onChangeWorkspaceDir}
+            className="welcome__change-dir shrink-0 rounded-md border border-citrus-border px-2 py-0.5 font-semibold text-citrus-muted hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted"
+          >
+            Change…
+          </button>
         </div>
 
         <div className="flex items-center justify-between mb-2">

@@ -1,4 +1,5 @@
-import { FileText, FolderOpen, Filter, Loader2, Plus, X } from 'lucide-react'
+import { useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { FileText, FolderOpen, Filter, Loader2, Pencil, Plus, X } from 'lucide-react'
 import type { WorkspaceDoc } from '../../state/documents'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 import type { TagSummary } from './CsvViewer'
@@ -18,6 +19,8 @@ export function WorkspaceSidebar({
   onSelectSource,
   onImport,
   onRemoveSource,
+  onRename,
+  onRenameSource,
   tagSummary,
   onToggleTagFilter,
   onClearTagFilter
@@ -27,6 +30,10 @@ export function WorkspaceSidebar({
   onSelectSource: (sourceId: number) => void
   onImport: () => void
   onRemoveSource: (sourceId: number) => void
+  /** Rename the workspace (persists to its db). */
+  onRename: (name: string) => void
+  /** Rename a source's display label. */
+  onRenameSource: (sourceId: number, name: string) => void
   /** Tag rollup for the active source (counts + the active tag filter set), reported by its viewer. */
   tagSummary?: TagSummary | null
   onToggleTagFilter?: (tag: TagId) => void
@@ -34,13 +41,55 @@ export function WorkspaceSidebar({
 }): JSX.Element {
   const tagRows = TAG_DEFS.filter((d) => tagSummary?.counts[d.id])
   const activeTags = tagSummary?.activeTags ?? []
+
+  // Inline rename: 'ws' = the workspace name, a number = that source id, null = not editing.
+  const [editing, setEditing] = useState<'ws' | number | null>(null)
+  const [draft, setDraft] = useState('')
+  function startEdit(target: 'ws' | number, current: string): void {
+    setEditing(target)
+    setDraft(current)
+  }
+  function commit(): void {
+    const v = draft.trim()
+    if (v) {
+      if (editing === 'ws') onRename(v)
+      else if (typeof editing === 'number') onRenameSource(editing, v)
+    }
+    setEditing(null)
+  }
+  const editCls =
+    'min-w-0 flex-1 bg-transparent outline-none border-b border-citrus-pink/60 text-citrus-dark dark:text-citrus-night-text'
+  const editProps = {
+    autoFocus: true,
+    value: draft,
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value),
+    onBlur: commit,
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key === 'Enter') commit()
+      if (e.key === 'Escape') setEditing(null)
+    },
+    onClick: (e: MouseEvent) => e.stopPropagation()
+  }
   return (
     <aside className="workspace-sidebar flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-citrus-border bg-citrus-sand/40 p-3 dark:border-citrus-night-border dark:bg-citrus-night">
-      <div className="flex items-center gap-2 px-1 text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
+      <div className="group flex items-center gap-2 px-1 text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
         <FolderOpen className="w-4 h-4 text-citrus-pink shrink-0" />
-        <span className="truncate" title={doc.name}>
-          {doc.name}
-        </span>
+        {editing === 'ws' ? (
+          <input {...editProps} className={editCls} />
+        ) : (
+          <>
+            <span className="truncate cursor-text" title="Double-click to rename" onDoubleClick={() => startEdit('ws', doc.name)}>
+              {doc.name}
+            </span>
+            <button
+              onClick={() => startEdit('ws', doc.name)}
+              title="Rename workspace"
+              className="shrink-0 text-citrus-muted opacity-0 group-hover:opacity-100 hover:text-citrus-pink dark:text-citrus-night-muted"
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+          </>
+        )}
       </div>
 
       <div>
@@ -64,26 +113,43 @@ export function WorkspaceSidebar({
                     : 'text-citrus-dark hover:bg-citrus-card/70 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
                 }`}
               >
-                <button
-                  onClick={() => onSelectSource(s.sourceId)}
-                  title={s.name}
-                  className="flex flex-1 min-w-0 items-center gap-2 px-2 py-1.5 text-left"
-                >
-                  <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
-                  <span className="flex-1 truncate">{s.name}</span>
-                  <span
-                    className={`text-[10px] font-mono ${active ? 'text-citrus-pink' : 'text-citrus-muted dark:text-citrus-night-muted'}`}
-                  >
-                    {fmtRows(s.rowCount)}
-                  </span>
-                </button>
-                <button
-                  onClick={() => onRemoveSource(s.sourceId)}
-                  title="Remove from workspace"
-                  className="shrink-0 px-1.5 py-1.5 text-citrus-muted opacity-0 group-hover:opacity-100 hover:text-citrus-pink dark:text-citrus-night-muted"
-                >
-                  <X className="w-3 h-3" />
-                </button>
+                {editing === s.sourceId ? (
+                  <div className="flex flex-1 min-w-0 items-center gap-2 px-2 py-1.5">
+                    <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                    <input {...editProps} className={editCls} />
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => onSelectSource(s.sourceId)}
+                      onDoubleClick={() => startEdit(s.sourceId, s.name)}
+                      title="Double-click to rename · click to open"
+                      className="flex flex-1 min-w-0 items-center gap-2 px-2 py-1.5 text-left"
+                    >
+                      <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                      <span className="flex-1 truncate">{s.name}</span>
+                      <span
+                        className={`text-[10px] font-mono ${active ? 'text-citrus-pink' : 'text-citrus-muted dark:text-citrus-night-muted'}`}
+                      >
+                        {fmtRows(s.rowCount)}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => startEdit(s.sourceId, s.name)}
+                      title="Rename source"
+                      className="shrink-0 px-1 py-1.5 text-citrus-muted opacity-0 group-hover:opacity-100 hover:text-citrus-pink dark:text-citrus-night-muted"
+                    >
+                      <Pencil className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => onRemoveSource(s.sourceId)}
+                      title="Remove from workspace"
+                      className="shrink-0 px-1.5 py-1.5 text-citrus-muted opacity-0 group-hover:opacity-100 hover:text-citrus-pink dark:text-citrus-night-muted"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </>
+                )}
               </div>
             )
           })}

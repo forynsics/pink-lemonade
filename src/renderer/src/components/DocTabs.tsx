@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, X, Table2, Home, NotebookPen, FolderOpen } from 'lucide-react'
+import { Plus, X, Home, NotebookPen, FolderOpen } from 'lucide-react'
 import type { PinkDoc } from '../state/documents'
 
 export function DocTabs({
@@ -9,7 +9,6 @@ export function DocTabs({
   onHome,
   onSelect,
   onAdd,
-  onAddCsv,
   onClose,
   onRename
 }: {
@@ -19,7 +18,6 @@ export function DocTabs({
   onHome: () => void
   onSelect: (id: string) => void
   onAdd: () => void
-  onAddCsv: () => void
   onClose: (id: string) => void
   onRename: (id: string, name: string) => void
 }): JSX.Element {
@@ -114,13 +112,6 @@ export function DocTabs({
         title="New notepad"
       >
         <Plus className="w-4 h-4" />
-      </button>
-      <button
-        className="tabs__add-csv inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold text-citrus-muted hover:text-citrus-pink hover:bg-citrus-card transition-colors dark:text-citrus-night-muted dark:hover:bg-citrus-night-card"
-        onClick={onAddCsv}
-        title="Open a CSV/TSV file in the table viewer"
-      >
-        <Table2 className="w-3.5 h-3.5" /> CSV
       </button>
     </div>
   )

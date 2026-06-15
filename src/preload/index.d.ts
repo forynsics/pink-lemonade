@@ -92,6 +92,10 @@ export interface CsvApi {
   wsAddSource: (wsId: string, path: string) => Promise<SourceInfo | null>
   wsRename: (wsId: string, name: string) => Promise<null>
   wsRemoveSource: (wsId: string, sourceId: number) => Promise<null>
+  wsRenameSource: (wsId: string, sourceId: number, name: string) => Promise<null>
+  wsGetDir: () => Promise<string>
+  wsSetDir: (dir: string) => Promise<string>
+  wsPickDir: () => Promise<string | null>
   wsTagList: (wsId: string, sourceId: number) => Promise<CsvRowTag[]>
   wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) => Promise<null>
   wsTagByFilter: (

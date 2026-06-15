@@ -27,6 +27,11 @@ const api = {
     wsAddSource: (wsId: string, path: string) => ipcRenderer.invoke('ws:addSource', { wsId, path }),
     wsRename: (wsId: string, name: string) => ipcRenderer.invoke('ws:rename', { wsId, name }),
     wsRemoveSource: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:removeSource', { wsId, sourceId }),
+    wsRenameSource: (wsId: string, sourceId: number, name: string) =>
+      ipcRenderer.invoke('ws:renameSource', { wsId, sourceId, name }),
+    wsGetDir: () => ipcRenderer.invoke('ws:getDir'),
+    wsSetDir: (dir: string) => ipcRenderer.invoke('ws:setDir', { dir }),
+    wsPickDir: () => ipcRenderer.invoke('ws:pickDir'),
     wsTagList: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:tagList', { wsId, sourceId }),
     wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) =>
       ipcRenderer.invoke('ws:tagSet', { wsId, sourceId, rids, tag }),

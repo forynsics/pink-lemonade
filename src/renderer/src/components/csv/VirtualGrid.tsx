@@ -397,7 +397,7 @@ export function VirtualGrid({
       onScroll={onScroll}
       onKeyDown={onCopy}
       tabIndex={0}
-      className="csv-grid relative flex-1 min-h-0 overflow-auto select-none outline-none"
+      className="csv-grid relative flex-1 min-w-0 min-h-0 overflow-auto select-none outline-none"
     >
       {/* sticky header */}
       <div

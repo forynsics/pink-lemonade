@@ -335,7 +335,7 @@ export function CsvViewer({
   const hasPredicate = filters.length > 0 || search !== ''
 
   return (
-    <div className="csv-viewer flex flex-col flex-1 min-h-0 bg-citrus-card dark:bg-citrus-night-card">
+    <div className="csv-viewer flex flex-col flex-1 min-w-0 min-h-0 bg-citrus-card dark:bg-citrus-night-card">
       <div className="flex items-center gap-3 px-3 py-2 text-xs border-b border-citrus-border dark:border-citrus-night-border">
         <span className="font-bold text-citrus-dark dark:text-citrus-night-text truncate max-w-[280px]">
           {doc.sourceName}
@@ -425,7 +425,7 @@ export function CsvViewer({
         onEditIn={editInFilter}
       />
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-w-0 min-h-0">
         <VirtualGrid
           columns={doc.columns}
           rows={rows}

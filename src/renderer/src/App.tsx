@@ -96,12 +96,6 @@ export default function App(): JSX.Element {
   // May be undefined when no tabs are open (fresh start / closed the last tab) → Home screen shows.
   const active = docs.find((d) => d.id === activeId)
 
-  // Clear the sidebar tag rollup when the active source changes; the newly-active viewer re-reports.
-  const activeSrcKey = active?.kind === 'workspace' ? `${active.id}:${active.activeSourceId}` : (active?.id ?? '')
-  useEffect(() => {
-    setTagSummary(null)
-  }, [activeSrcKey])
-
   function updateActive(fn: (d: PinkDoc) => PinkDoc): void {
     setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === s.activeId ? fn(d) : d)) }))
   }
@@ -496,7 +490,7 @@ export default function App(): JSX.Element {
             return (
               <div
                 key={d.id}
-                className="flex flex-col flex-1 min-h-0"
+                className="flex flex-col flex-1 min-w-0 min-h-0"
                 style={{ display: visible ? 'flex' : 'none' }}
               >
                 {d.needsReopen ? (
@@ -512,7 +506,7 @@ export default function App(): JSX.Element {
                     return (
                       <div
                         key={src.sourceId}
-                        className="flex flex-1 min-h-0"
+                        className="flex flex-1 min-w-0 min-h-0"
                         style={{ display: d.activeSourceId === src.sourceId ? 'flex' : 'none' }}
                       >
                         <CsvViewer

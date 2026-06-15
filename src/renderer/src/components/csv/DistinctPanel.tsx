@@ -89,10 +89,11 @@ export function DistinctPanel({
       className="csv-distinct relative flex flex-col shrink-0 border-l border-citrus-border bg-citrus-cream dark:border-citrus-night-border dark:bg-citrus-night"
       style={{ width }}
     >
-      {/* left-edge resize handle */}
+      {/* Left-edge resize divider. Wide + above the grid header (z-30) so it reliably wins over the
+          adjacent column's right-edge resize handle when a grid column abuts the panel. */}
       <div
         onMouseDown={startResize}
-        className="csv-distinct__resize absolute top-0 left-0 h-full w-1.5 -ml-0.5 cursor-col-resize hover:bg-citrus-pink/40 z-10"
+        className="csv-distinct__resize absolute top-0 left-0 h-full w-3 -ml-1.5 cursor-col-resize hover:bg-citrus-pink/40 z-30"
         title="Drag to resize"
       />
 

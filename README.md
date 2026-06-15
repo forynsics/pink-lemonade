@@ -82,4 +82,4 @@ over a small IPC surface.
 
 ## License
 
-_TODO: add a license before publishing._
+[MIT](LICENSE) © forynsics

@@ -1,7 +1,7 @@
 {
   "name": "pink-lemonade",
   "version": "0.1.0",
-  "description": "Local cybersecurity swiss-army-knife: parse, transform, and extract IOCs offline.",
+  "description": "Desktop toolkit for cybersecurity investigation and data wrangling: parse text, extract IOCs, and triage big CSV/TSV timelines.",
   "main": "./out/main/index.js",
   "author": "",
   "license": "MIT",

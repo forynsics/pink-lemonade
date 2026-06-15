@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Clock, MoreVertical } from 'lucide-react'
+import { ArrowDown, ArrowUp, Clock, MapPin, MoreVertical } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
 import { tagDef } from '../../state/tags'
@@ -101,6 +101,7 @@ export function VirtualGrid({
   rows,
   rids,
   tags,
+  anchorRid,
   baseOffset,
   total,
   sort,
@@ -121,6 +122,8 @@ export function VirtualGrid({
   rids: number[]
   /** Map of rowid → tag id; drives the colored left marker. Undefined when the source is untagged. */
   tags?: Map<number, string>
+  /** The pivot anchor's rowid — that row gets a persistent pink ring + pin so you don't lose your spot. */
+  anchorRid?: number
   baseOffset: number
   total: number
   sort?: CsvSort
@@ -470,10 +473,13 @@ export function VirtualGrid({
         {rows.map((row, i) => {
           const abs = baseOffset + i
           const tag = tags && rids[i] != null ? tagDef(tags.get(rids[i])) : undefined
+          const isAnchor = anchorRid != null && rids[i] === anchorRid
           return (
             <div
               key={abs}
-              className={`flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30 ${tag?.row ?? ''}`}
+              className={`flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30 ${tag?.row ?? ''} ${
+                isAnchor ? 'ring-2 ring-inset ring-citrus-pink bg-citrus-pink/10 z-[1] dark:bg-citrus-pink/15' : ''
+              }`}
               style={{ position: 'absolute', top: abs * ROW_H, height: ROW_H, width: totalWidth }}
             >
               {tag && (
@@ -483,12 +489,15 @@ export function VirtualGrid({
                 />
               )}
               <div
-                className="shrink-0 flex items-center justify-end pr-2 text-[10px] text-citrus-muted/70 select-none cursor-pointer hover:text-citrus-pink dark:text-citrus-night-muted/70"
+                className={`shrink-0 flex items-center justify-end gap-0.5 pr-2 text-[10px] select-none cursor-pointer hover:text-citrus-pink ${
+                  isAnchor ? 'font-bold text-citrus-pink' : 'text-citrus-muted/70 dark:text-citrus-night-muted/70'
+                }`}
                 style={{ width: IDX_W }}
                 onMouseDown={(e) => beginRow(e, abs)}
                 onMouseEnter={() => enterRow(abs)}
-                title="Select row"
+                title={isAnchor ? 'Pivot anchor — the row you pivoted from' : 'Select row'}
               >
+                {isAnchor && <MapPin className="w-3 h-3 shrink-0" />}
                 {abs + 1}
               </div>
               {columns.map((col, c) => {

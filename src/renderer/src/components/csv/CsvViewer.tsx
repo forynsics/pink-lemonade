@@ -180,6 +180,12 @@ export function CsvViewer({
   // gates against firing on the stale (pre-count) render right after the filter changes.
   const pendingAnchorRef = useRef<{ rid: number; key: string } | null>(null)
   const wasCountingRef = useRef(false)
+  // The pivot anchor's rowid — its row keeps a persistent pink ring + pin so you can always find
+  // where you pivoted from. Cleared once no ± (timearound) filter is active.
+  const [anchorRid, setAnchorRid] = useState<number | null>(null)
+  useEffect(() => {
+    if (!filters.some((f) => f.op === 'timearound')) setAnchorRid(null)
+  }, [filters])
   useEffect(() => {
     if (counting) wasCountingRef.current = true
     const p = pendingAnchorRef.current
@@ -322,6 +328,7 @@ export function CsvViewer({
     if (cell.rid != null) {
       pendingAnchorRef.current = { rid: cell.rid, key: JSON.stringify({ filters: next, search }) }
       wasCountingRef.current = false
+      setAnchorRid(cell.rid)
     }
   }
 
@@ -424,6 +431,7 @@ export function CsvViewer({
           rows={rows}
           rids={rids}
           tags={taggable ? tags : undefined}
+          anchorRid={anchorRid ?? undefined}
           baseOffset={baseOffset}
           total={total}
           sort={sort}

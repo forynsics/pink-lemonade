@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Ban, Clock, Filter, Tag, X } from 'lucide-react'
 import type { CellRef } from './VirtualGrid'
 import { TAG_DEFS, type TagId } from '../../state/tags'
@@ -72,16 +72,27 @@ export function CellContextMenu({
     }
   }
 
-  const left = Math.min(at.x, window.innerWidth - MENU_W - 8)
-  const top = Math.min(at.y, window.innerHeight - 320)
+  // Open at the cursor, then nudge fully on-screen once the real height is known (the menu can be
+  // tall — filter + tag + all the time presets). If it's still taller than the viewport it scrolls.
+  const MARGIN = 8
+  const [pos, setPos] = useState({ top: at.y, left: Math.min(at.x, window.innerWidth - MENU_W - MARGIN) })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const left = Math.max(MARGIN, Math.min(at.x, window.innerWidth - r.width - MARGIN))
+    const top = Math.max(MARGIN, Math.min(at.y, window.innerHeight - r.height - MARGIN))
+    setPos({ top, left })
+  }, [at.x, at.y])
+
   const item =
     'w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
 
   return (
     <div
       ref={ref}
-      className="cell-context-menu fixed z-50 flex flex-col rounded-lg border border-citrus-border bg-citrus-card shadow-lg overflow-hidden dark:border-citrus-night-border dark:bg-citrus-night-card"
-      style={{ top, left, width: MENU_W }}
+      className="cell-context-menu fixed z-50 flex flex-col rounded-lg border border-citrus-border bg-citrus-card shadow-lg overflow-y-auto overflow-x-hidden dark:border-citrus-night-border dark:bg-citrus-night-card"
+      style={{ top: pos.top, left: pos.left, width: MENU_W, maxHeight: `calc(100vh - ${2 * MARGIN}px)` }}
     >
       <div className="px-3 py-1.5 border-b border-citrus-border/60 dark:border-citrus-night-border/60">
         <span className="text-[10px] font-mono text-citrus-muted truncate block dark:text-citrus-night-muted" title={cell.value}>

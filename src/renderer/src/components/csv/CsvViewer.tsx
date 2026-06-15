@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { ChevronDown, Loader2, Tags } from 'lucide-react'
+import { ChevronDown, Download, Loader2, Tags } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -155,6 +155,26 @@ export function CsvViewer({
     [taggable, wsId, sourceId, filters, search]
   )
   const [bulkOpen, setBulkOpen] = useState(false)
+
+  // Export the whole current view (all rows under the active filters/search/sort) to a CSV file.
+  // The confirm dialog shows the live match count; the worker streams every matching row to the
+  // chosen path so the export covers the full result set, not just the loaded window.
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportDone, setExportDone] = useState<{ rows: number; path: string } | null>(null)
+  async function exportCsv(): Promise<void> {
+    setExportOpen(false)
+    setExporting(true)
+    setExportDone(null)
+    try {
+      const base = doc.sourceName.replace(/\.(csv|tsv|txt)$/i, '')
+      const name = `${base}${hasPredicate ? '-filtered' : ''}.csv`
+      const res = await window.api.csv.export(doc.tabId, name, { filters, search, sort })
+      if (!('canceled' in res)) setExportDone({ rows: res.rows, path: res.path })
+    } finally {
+      setExporting(false)
+    }
+  }
 
   // Enter in the search box steps through matches. When a search is active the grid is already
   // filtered to matches, so "next match" is simply the next row (0..total-1). `matchIndex` is the
@@ -355,8 +375,23 @@ export function CsvViewer({
         </span>
         {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
+
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setExportOpen(true)}
+            disabled={exporting}
+            className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink disabled:opacity-60 dark:border-citrus-night-border dark:text-citrus-night-text"
+            title={
+              hasPredicate
+                ? `Export the ${total.toLocaleString()} filtered row(s) to a CSV file`
+                : 'Export all rows to a CSV file'
+            }
+          >
+            {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            Export CSV
+          </button>
         {taggable && hasPredicate && (
-          <div className="relative ml-auto">
+          <div className="relative">
             <button
               onClick={() => setBulkOpen((o) => !o)}
               className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
@@ -398,6 +433,7 @@ export function CsvViewer({
             )}
           </div>
         )}
+        </div>
       </div>
 
       <SearchBar
@@ -494,6 +530,57 @@ export function CsvViewer({
           sendLabel={sendIntelLabel}
           onClose={() => setCellMenu(null)}
         />
+      )}
+
+      {/* Export-to-CSV confirmation — shows how many events (the live filtered count) will be written. */}
+      {exportOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          onClick={() => setExportOpen(false)}
+        >
+          <div
+            className="w-[22rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Export to CSV</div>
+            <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">
+              Export <strong className="text-citrus-dark dark:text-citrus-night-text">{total.toLocaleString()}</strong>
+              {counting ? '+' : ''} {total === 1 ? 'event' : 'events'} to a CSV file.
+              {hasPredicate ? ' (the current filtered view)' : ''}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="px-3 py-1 rounded-md text-[11px] font-bold border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:border-citrus-pink/40 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted"
+                onClick={() => setExportOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors"
+                onClick={() => void exportCsv()}
+              >
+                <Download className="w-3 h-3" /> Export
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Brief confirmation that the file was written (auto-dismissed by the user). */}
+      {exportDone && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-lg border border-citrus-border bg-citrus-card px-3 py-2 text-xs shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
+          <Download className="w-3.5 h-3.5 text-citrus-pink shrink-0" />
+          <span className="text-citrus-dark dark:text-citrus-night-text">
+            Exported {exportDone.rows.toLocaleString()} {exportDone.rows === 1 ? 'row' : 'rows'} →{' '}
+            <span className="font-mono text-citrus-muted dark:text-citrus-night-muted">{exportDone.path}</span>
+          </span>
+          <button
+            onClick={() => setExportDone(null)}
+            className="ml-1 text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          >
+            ✕
+          </button>
+        </div>
       )}
     </div>
   )

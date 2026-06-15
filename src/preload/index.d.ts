@@ -141,6 +141,12 @@ export interface CsvApi {
     filters?: CsvFilter[]
   ) => Promise<{ values: string[]; truncated: boolean }>
   stats: (tabId: string, col: string) => Promise<CsvColumnStats>
+  /** Stream every row of the current view (filters+search+sort) to a CSV file via a save dialog. */
+  export: (
+    tabId: string,
+    defaultName: string | undefined,
+    opts: { filters?: CsvFilter[]; search?: string; sort?: CsvSort }
+  ) => Promise<{ canceled: true } | { path: string; rows: number }>
   close: (tabId: string) => Promise<null>
   onProgress: (cb: (p: CsvProgress) => void) => () => void
   onCountProgress: (cb: (p: CsvCountProgress) => void) => () => void

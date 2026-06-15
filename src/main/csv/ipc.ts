@@ -108,6 +108,40 @@ export function registerCsvIpc(): void {
     dbw.call('getColumnStats', tabId, col)
   )
 
+  // Export the whole current view (all rows under the active filters/search/sort) to a CSV file.
+  // The save dialog runs here (main); the worker streams every matching row to the chosen path so a
+  // multi-million-row export neither blocks the UI nor round-trips through the renderer.
+  ipcMain.handle(
+    'csv:export',
+    async (
+      e,
+      {
+        tabId,
+        defaultName,
+        opts
+      }: { tabId: string; defaultName?: string; opts: { filters?: Filter[]; search?: string; sort?: Sort } }
+    ): Promise<{ canceled: true } | { path: string; rows: number }> => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const name = defaultName && defaultName.toLowerCase().endsWith('.csv') ? defaultName : `${defaultName || 'export'}.csv`
+      const dialogOpts = {
+        defaultPath: name,
+        filters: [
+          { name: 'CSV', extensions: ['csv'] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      }
+      const result = win ? await dialog.showSaveDialog(win, dialogOpts) : await dialog.showSaveDialog(dialogOpts)
+      if (result.canceled || !result.filePath) return { canceled: true }
+      const o = {
+        filters: normalizeFilters(opts?.filters),
+        search: normalizeSearch(opts?.search),
+        sort: normalizeSort(opts?.sort)
+      }
+      const res = await dbw.call<{ rows: number }>('exportRows', tabId, o, result.filePath)
+      return { path: result.filePath, rows: res.rows }
+    }
+  )
+
   ipcMain.handle('csv:close', (_e, { tabId }: { tabId: string }) => dbw.call('closeTab', tabId).then(() => null))
 
   // ---- Workspaces (capstone): one db holds many sources ----

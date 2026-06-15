@@ -1,7 +1,18 @@
 import Database from 'better-sqlite3'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
-import { statSync, unlinkSync, readdirSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import {
+  statSync,
+  unlinkSync,
+  readdirSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  openSync,
+  writeSync,
+  closeSync
+} from 'fs'
 import { parseCsvStream } from './parser'
 import type { ColumnMap } from './sanitize'
 import { detectColumnTime, type TimeKind } from './coltypes'
@@ -9,6 +20,8 @@ import {
   buildCreateTable,
   buildInsertSql,
   buildQueryRowsSql,
+  buildExportSql,
+  csvRow,
   buildFilterInsertChunkSql,
   buildFiltPageSql,
   buildTagApplyByFilterSql,
@@ -23,7 +36,8 @@ import {
   buildStatsSql,
   maxRowsPerInsert,
   type Filter,
-  type QueryOpts
+  type QueryOpts,
+  type Sort
 } from './sql'
 
 // Loads the native better-sqlite3 binding for the CSV/workspace engine (enrich/cache.ts is the
@@ -672,6 +686,41 @@ export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][]; r
     rows[i] = raw[i].slice(1) as string[]
   }
   return { rows, rids }
+}
+
+/**
+ * Write every row matching the predicate (current filters + search + sort) to `outPath` as CSV,
+ * header = the original column names. Streams via `.iterate()` + a buffered fd so a multi-million-
+ * row export never materializes in memory. Runs in the DB worker, so a big export doesn't block the
+ * UI. Returns the number of data rows written.
+ */
+export function exportRows(
+  tabId: string,
+  opts: { filters?: Filter[]; search?: string; sort?: Sort },
+  outPath: string
+): { rows: number } {
+  const e = get(tabId)
+  // A big sorted export benefits from the same on-demand column index the grid uses.
+  if (opts.sort) ensureSortIndex(tabId, opts.sort.col, !!opts.sort.numeric)
+  const q = buildExportSql(e.meta.columns, opts, e.table)
+  const stmt = e.db.prepare(q.sql).raw(true)
+  const fd = openSync(outPath, 'w')
+  try {
+    let buf = csvRow(e.meta.columns.map((c) => c.original)) + '\n'
+    let n = 0
+    for (const row of stmt.iterate(...q.params) as Iterable<unknown[]>) {
+      buf += csvRow(row.map((v) => (v == null ? '' : String(v)))) + '\n'
+      n++
+      if (buf.length >= 1 << 20) {
+        writeSync(fd, buf)
+        buf = ''
+      }
+    }
+    if (buf) writeSync(fd, buf)
+    return { rows: n }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 // Below this many rows an unindexed sort is already fast enough that an index isn't worth building.

@@ -56,6 +56,8 @@ const api = {
     values: (tabId: string, col: string, filters?: unknown) =>
       ipcRenderer.invoke('csv:values', { tabId, col, filters }),
     stats: (tabId: string, col: string) => ipcRenderer.invoke('csv:stats', { tabId, col }),
+    export: (tabId: string, defaultName: string | undefined, opts: unknown) =>
+      ipcRenderer.invoke('csv:export', { tabId, defaultName, opts }),
     close: (tabId: string) => ipcRenderer.invoke('csv:close', { tabId }),
     // Subscribe to ingest progress; returns a disposer (contextBridge can't pass the listener back).
     onProgress: (cb: (p: unknown) => void) => {

@@ -225,6 +225,45 @@ export function buildQueryRowsSql(
   return { sql, params: [...where.params, limit, offset] }
 }
 
+/** RFC-4180 escape one CSV field: quote it when it holds a comma, quote, CR or LF; double inner quotes. */
+export function csvField(v: string): string {
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+}
+
+/** Join one row of values into a CSV line (no trailing newline), each field RFC-4180 escaped. */
+export function csvRow(values: readonly string[]): string {
+  return values.map(csvField).join(',')
+}
+
+/**
+ * Select EVERY row matching the predicate (no LIMIT/OFFSET) in display order — for CSV export.
+ * The caller iterates the statement and streams rows to a file, so the whole result set never
+ * lives in memory at once. Same WHERE/ORDER BY semantics as `buildQueryRowsSql` (sans paging),
+ * so an export matches exactly what the grid shows under the current filters + search + sort.
+ */
+export function buildExportSql(
+  cols: ColumnMap[],
+  o: { filters?: Filter[]; search?: string; sort?: Sort },
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
+  const cnames = cols
+    .map((c) => {
+      assertCol(c.name)
+      return c.name
+    })
+    .join(', ')
+  const where = buildWhere(o.filters, o.search ? { term: o.search, cols } : undefined, table)
+  let order = ''
+  if (o.sort) {
+    assertCol(o.sort.col)
+    const dir = o.sort.dir === 'desc' ? 'DESC' : 'ASC'
+    const expr = o.sort.numeric ? `CAST(${o.sort.col} AS REAL)` : `${o.sort.col} COLLATE NOCASE`
+    order = ` ORDER BY ${expr} ${dir}`
+  }
+  return { sql: `SELECT ${cnames} FROM ${table}${where.sql}${order}`, params: where.params }
+}
+
 export function buildCountSql(
   cols: ColumnMap[],
   filters?: Filter[],

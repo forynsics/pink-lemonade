@@ -4,6 +4,9 @@ import {
   buildCreateTable,
   buildInsertSql,
   buildQueryRowsSql,
+  buildExportSql,
+  csvField,
+  csvRow,
   buildCountSql,
   buildCountChunkSql,
   buildFilterInsertChunkSql,
@@ -233,6 +236,53 @@ describe('buildQueryRowsSql', () => {
     })
     expect(sql).toBe("SELECT c0, c1 FROM data WHERE c1 = ? AND c0 LIKE ? ESCAPE '\\' LIMIT ? OFFSET ?")
     expect(params).toEqual(['US', '%10.0\\%\\_%', 100, 0])
+  })
+})
+
+describe('buildExportSql', () => {
+  it('selects every column with no LIMIT/OFFSET for the unfiltered case', () => {
+    const { sql, params } = buildExportSql(cols, {})
+    expect(sql).toBe('SELECT c0, c1 FROM data')
+    expect(params).toEqual([])
+  })
+
+  it('applies filters + search + sort (matches what the grid shows), no paging', () => {
+    const { sql, params } = buildExportSql(
+      cols,
+      {
+        filters: [{ col: 'c0', op: 'eq', value: '8.8.8.8' }],
+        search: 'goog',
+        sort: { col: 'c1', dir: 'desc' }
+      },
+      'data_2'
+    )
+    expect(sql).toBe(
+      "SELECT c0, c1 FROM data_2 WHERE c0 = ? AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\') ORDER BY c1 COLLATE NOCASE DESC"
+    )
+    expect(params).toEqual(['8.8.8.8', '%goog%', '%goog%'])
+    expect(sql).not.toMatch(/LIMIT|OFFSET/)
+  })
+
+  it('guards the table name against injection', () => {
+    expect(() => buildExportSql(cols, {}, 'data; DROP TABLE x')).toThrow()
+  })
+})
+
+describe('csvField / csvRow (RFC-4180 export escaping)', () => {
+  it('leaves plain fields untouched', () => {
+    expect(csvField('8.8.8.8')).toBe('8.8.8.8')
+    expect(csvField('')).toBe('')
+  })
+
+  it('quotes fields with commas, quotes, CR or LF, doubling inner quotes', () => {
+    expect(csvField('a,b')).toBe('"a,b"')
+    expect(csvField('say "hi"')).toBe('"say ""hi"""')
+    expect(csvField('line1\nline2')).toBe('"line1\nline2"')
+    expect(csvField('has\rcr')).toBe('"has\rcr"')
+  })
+
+  it('joins a row, escaping only the fields that need it', () => {
+    expect(csvRow(['1.2.3.4', 'United States', 'AS15169, Google'])).toBe('1.2.3.4,United States,"AS15169, Google"')
   })
 })
 

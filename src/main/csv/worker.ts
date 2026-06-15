@@ -32,6 +32,7 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   tagByFilter: db.tagByFilter,
   locateRow: db.locateRow,
   queryRows: db.queryRows,
+  exportRows: db.exportRows,
   ensureSortIndex: db.ensureSortIndex,
   getColumnUniqueValues: db.getColumnUniqueValues,
   getColumnDistinctCount: db.getColumnDistinctCount,

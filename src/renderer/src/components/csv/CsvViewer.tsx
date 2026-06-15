@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { ChevronDown, Database, Loader2, Tags } from 'lucide-react'
+import { ChevronDown, Loader2, Tags } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -349,7 +349,7 @@ export function CsvViewer({
         {(loading || counting) && <Loader2 className="w-3.5 h-3.5 animate-spin text-citrus-pink" />}
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
         {taggable && hasPredicate && (
-          <div className="relative">
+          <div className="relative ml-auto">
             <button
               onClick={() => setBulkOpen((o) => !o)}
               className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
@@ -391,13 +391,6 @@ export function CsvViewer({
             )}
           </div>
         )}
-        <span
-          className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-citrus-muted/70 dark:text-citrus-night-muted/70 truncate max-w-[360px]"
-          title={`Loaded from ${doc.dbPath}`}
-        >
-          <Database className="w-3 h-3 shrink-0" />
-          {doc.dbPath}
-        </span>
       </div>
 
       <SearchBar

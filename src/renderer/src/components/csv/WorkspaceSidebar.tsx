@@ -1,5 +1,5 @@
 import { useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
-import { FileText, FolderOpen, Filter, Loader2, Pencil, Plus, X } from 'lucide-react'
+import { Database, FileText, FolderOpen, Filter, Loader2, Pencil, Plus, X } from 'lucide-react'
 import type { WorkspaceDoc } from '../../state/documents'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 import type { TagSummary } from './CsvViewer'
@@ -209,8 +209,9 @@ export function WorkspaceSidebar({
         </div>
       )}
 
-      <div className="mt-auto border-t border-citrus-border/60 pt-2 text-[10px] font-mono text-citrus-muted/70 dark:border-citrus-night-border/60 dark:text-citrus-night-muted/70 break-all">
-        💾 {doc.dbPath}
+      <div className="mt-auto flex items-start gap-1.5 border-t border-citrus-border/60 pt-2 text-[10px] font-mono text-citrus-muted/70 dark:border-citrus-night-border/60 dark:text-citrus-night-muted/70 break-all">
+        <Database className="w-3 h-3 mt-px shrink-0" />
+        <span>{doc.dbPath}</span>
       </div>
     </aside>
   )

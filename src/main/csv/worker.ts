@@ -44,12 +44,15 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
 // source) and the latest count reqId per tab (a newer count supersedes the running one).
 const aborters = new Map<string, AbortController>()
 const countReq = new Map<string, number>()
+const distinctReq = new Map<string, number>()
 
 type Msg =
   | { t: 'call'; id: number; fn: string; args: unknown[] }
   | { t: 'ingest'; id: number; fn: 'ingestCsv' | 'addSource'; cancelKey: string; args: Record<string, unknown> }
   | { t: 'cancel'; cancelKey: string }
   | { t: 'count'; id: number; tabId: string; reqId: number; filters?: unknown; search?: string }
+  | { t: 'distinct'; id: number; tabId: string; reqId: number; col: string; filters?: unknown; limit: number }
+  | { t: 'distinctCancel'; tabId: string }
 
 port.on('message', async (msg: Msg) => {
   try {
@@ -93,6 +96,22 @@ port.on('message', async (msg: Msg) => {
       const isCanceled = (): boolean => countReq.get(msg.tabId) !== msg.reqId
       const value = await db.buildFilterIndex(msg.tabId, msg.filters as never, msg.search ?? '', onPartial, isCanceled)
       port.postMessage({ t: 'result', id: msg.id, ok: true, value })
+      return
+    }
+    if (msg.t === 'distinctCancel') {
+      distinctReq.set(msg.tabId, -1) // no positive reqId matches → the running scan aborts
+      return
+    }
+    if (msg.t === 'distinct') {
+      distinctReq.set(msg.tabId, msg.reqId)
+      const onPartial = (count: number, scanned: number, max: number): void => {
+        if (distinctReq.get(msg.tabId) === msg.reqId) {
+          port.postMessage({ t: 'progress', id: msg.id, payload: { count, scanned, max } })
+        }
+      }
+      const shouldAbort = (): boolean => distinctReq.get(msg.tabId) !== msg.reqId
+      const value = await db.getColumnDistinctChunked(msg.tabId, msg.col, msg.filters as never, msg.limit, onPartial, shouldAbort)
+      port.postMessage({ t: 'result', id: msg.id, ok: true, value }) // value is the result or null (canceled)
       return
     }
   } catch (e) {

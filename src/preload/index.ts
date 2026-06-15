@@ -41,8 +41,14 @@ const api = {
     query: (tabId: string, opts: unknown) => ipcRenderer.invoke('csv:query', { tabId, opts }),
     count: (tabId: string, reqId: number, filters?: unknown, search?: string) =>
       ipcRenderer.invoke('csv:count', { tabId, reqId, filters, search }),
-    distinct: (tabId: string, col: string, filters?: unknown, limit?: number) =>
-      ipcRenderer.invoke('csv:distinct', { tabId, col, filters, limit }),
+    distinct: (tabId: string, col: string, filters?: unknown, limit?: number, reqId?: number) =>
+      ipcRenderer.invoke('csv:distinct', { tabId, col, filters, limit, reqId }),
+    distinctCancel: (tabId: string) => ipcRenderer.invoke('csv:distinctCancel', { tabId }),
+    onDistinctProgress: (cb: (p: unknown) => void) => {
+      const h = (_e: unknown, p: unknown): void => cb(p)
+      ipcRenderer.on('csv:distinct-progress', h)
+      return () => ipcRenderer.removeListener('csv:distinct-progress', h)
+    },
     longest: (tabId: string, col: string) => ipcRenderer.invoke('csv:longest', { tabId, col }),
     locate: (tabId: string, rid: number, filters: unknown, search: string | undefined) =>
       ipcRenderer.invoke('csv:locate', { tabId, rid, filters, search }),

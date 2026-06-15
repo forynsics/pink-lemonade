@@ -63,15 +63,27 @@ export function registerCsvIpc(): void {
     }
   )
 
+  // Distinct values + count, computed in cancelable chunks in the worker; the running scan streams
+  // progress over 'csv:distinct-progress'. A newer reqId on the same tab supersedes the prior scan.
   ipcMain.handle(
     'csv:distinct',
-    async (_e, { tabId, col, filters, limit }: { tabId: string; col: string; filters?: Filter[]; limit?: number }) => {
+    async (
+      e,
+      { tabId, col, filters, limit, reqId }: { tabId: string; col: string; filters?: Filter[]; limit?: number; reqId?: number }
+    ) => {
       const f = normalizeFilters(filters)
-      const rows = await dbw.call<Array<{ val: string; cnt: number }>>('getColumnUniqueValues', tabId, col, f, limit)
-      const total = await dbw.call<number>('getColumnDistinctCount', tabId, col, f) // true count, even if capped
-      return { rows, total, truncated: total > rows.length }
+      const res = await dbw.distinct(tabId, reqId ?? 0, col, f, limit ?? 1000, (p) => {
+        if (!e.sender.isDestroyed()) {
+          e.sender.send('csv:distinct-progress', { tabId, reqId, scanned: p.scanned, count: p.count, max: p.max })
+        }
+      })
+      return res == null ? { canceled: true } : res
     }
   )
+  ipcMain.handle('csv:distinctCancel', (_e, { tabId }: { tabId: string }) => {
+    dbw.distinctCancel(tabId)
+    return null
+  })
 
   ipcMain.handle('csv:longest', (_e, { tabId, col }: { tabId: string; col: string }) =>
     dbw.call('getColumnLongest', tabId, col)

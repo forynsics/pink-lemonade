@@ -66,6 +66,14 @@ export interface CsvDistinctRow {
   val: string
   cnt: number
 }
+/** Live progress of a chunked distinct scan. */
+export interface CsvDistinctProgress {
+  tabId: string
+  reqId: number
+  scanned: number
+  count: number
+  max: number
+}
 export interface CsvColumnStats {
   count: number
   nullCount: number
@@ -117,8 +125,11 @@ export interface CsvApi {
     tabId: string,
     col: string,
     filters?: CsvFilter[],
-    limit?: number
-  ) => Promise<{ rows: CsvDistinctRow[]; total: number; truncated: boolean }>
+    limit?: number,
+    reqId?: number
+  ) => Promise<{ rows: CsvDistinctRow[]; total: number; truncated: boolean } | { canceled: true }>
+  distinctCancel: (tabId: string) => Promise<null>
+  onDistinctProgress: (cb: (p: CsvDistinctProgress) => void) => () => void
   longest: (tabId: string, col: string) => Promise<string>
   /** 0-based ordinal of a row (by rowid) in the current unsorted filtered view, or -1. */
   locate: (tabId: string, rid: number, filters: CsvFilter[] | undefined, search: string | undefined) => Promise<number>

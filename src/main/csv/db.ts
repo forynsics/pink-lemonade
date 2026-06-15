@@ -15,7 +15,9 @@ import {
   buildTagClearByFilterSql,
   FILT_TABLE,
   buildDistinctSql,
+  buildDistinctChunkSql,
   buildDistinctCountSql,
+  DISTINCT_CAP,
   buildLongestSql,
   buildColumnValuesSql,
   buildStatsSql,
@@ -711,6 +713,57 @@ export function getColumnUniqueValues(
   const e = get(tabId)
   const q = buildDistinctSql(col, filters, limit ?? 1000, e.table)
   return e.db.prepare(q.sql).all(...q.params) as Array<{ val: string; cnt: number }>
+}
+
+interface DistinctResult {
+  rows: Array<{ val: string; cnt: number }>
+  total: number
+  truncated: boolean
+}
+
+/**
+ * Distinct values + counts computed in rowid chunks (one GROUP BY per slice, merged in JS) so the
+ * scan yields between slices — responsive, cancelable, and progress-reporting — instead of one
+ * blocking GROUP BY. Returns the top-`limit` by count plus the true distinct total (capped at
+ * DISTINCT_CAP for pathological high-cardinality columns), or null if canceled mid-scan.
+ */
+export async function getColumnDistinctChunked(
+  tabId: string,
+  col: string,
+  filters: Filter[] | undefined,
+  limit: number,
+  onPartial: (count: number, scanned: number, max: number) => void,
+  shouldAbort: () => boolean
+): Promise<DistinctResult | null> {
+  const e = get(tabId)
+  const max = e.meta.rowCount
+  const counts = new Map<string, number>()
+  let capped = false
+  for (let lo = 0; lo < max; lo += FILT_CHUNK) {
+    if (shouldAbort()) return null
+    const hi = Math.min(lo + FILT_CHUNK, max)
+    const q = buildDistinctChunkSql(col, filters, lo, hi, e.table)
+    const slice = e.db.prepare(q.sql).all(...q.params) as Array<{ val: string | null; cnt: number }>
+    for (const r of slice) {
+      const v = r.val == null ? '' : String(r.val)
+      const cur = counts.get(v)
+      if (cur === undefined) {
+        if (counts.size >= DISTINCT_CAP) {
+          capped = true
+          continue
+        }
+        counts.set(v, r.cnt)
+      } else {
+        counts.set(v, cur + r.cnt)
+      }
+    }
+    onPartial(counts.size, hi, max)
+    await new Promise((resolve) => setImmediate(resolve)) // yield between chunks
+  }
+  // top-`limit` by count desc, then value asc — same order buildDistinctSql produced.
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  const rows = entries.slice(0, Math.max(0, limit)).map(([val, cnt]) => ({ val, cnt }))
+  return { rows, total: counts.size, truncated: capped || entries.length > rows.length }
 }
 
 export function getColumnDistinctCount(tabId: string, col: string, filters?: Filter[]): number {

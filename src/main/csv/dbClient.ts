@@ -96,6 +96,37 @@ export function count(
   })
 }
 
+interface DistinctResult {
+  rows: Array<{ val: string; cnt: number }>
+  total: number
+  truncated: boolean
+}
+
+/** Chunked distinct: streams partial counts via `onPartial`; resolves with the result or null (canceled). */
+export function distinct(
+  tabId: string,
+  reqId: number,
+  col: string,
+  filters: unknown,
+  limit: number,
+  onPartial: (p: { count: number; scanned: number; max: number }) => void
+): Promise<DistinctResult | null> {
+  return new Promise<DistinctResult | null>((resolve, reject) => {
+    const id = nextId++
+    pending.set(id, {
+      resolve: resolve as (v: unknown) => void,
+      reject,
+      onProgress: (p) => onPartial(p as { count: number; scanned: number; max: number })
+    })
+    w().postMessage({ t: 'distinct', id, tabId, reqId, col, filters, limit })
+  })
+}
+
+/** Abort an in-flight distinct scan for a tab (panel closed / column changed). */
+export function distinctCancel(tabId: string): void {
+  worker?.postMessage({ t: 'distinctCancel', tabId })
+}
+
 export async function terminateDbWorker(): Promise<void> {
   if (!worker) return
   try {

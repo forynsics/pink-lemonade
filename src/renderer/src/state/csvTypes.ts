@@ -58,6 +58,14 @@ export interface CsvDistinctRow {
   val: string
   cnt: number
 }
+/** Live progress of a chunked distinct scan. */
+export interface CsvDistinctProgress {
+  tabId: string
+  reqId: number
+  scanned: number
+  count: number
+  max: number
+}
 
 export interface CsvColumnStats {
   count: number

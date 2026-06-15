@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Loader2, NotebookPen, X } from 'lucide-react'
 import type { CsvViewSource } from './CsvViewer'
-import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
+import type { CsvColumn, CsvFilter } from '../../state/csvTypes'
+import { useDistinctScan } from '../../hooks/useDistinctScan'
 
 // Side panel showing a column's distinct values + counts, so an analyst can read them while
 // the CSV grid stays visible. Drag the left edge to widen it (shrinking the grid). Exports to
@@ -25,31 +26,18 @@ export function DistinctPanel({
   onClose: () => void
   onPivot: (values: string[], label: string) => void
 }): JSX.Element {
-  const [rows, setRows] = useState<CsvDistinctRow[]>([])
-  const [total, setTotal] = useState(0)
-  const [truncated, setTruncated] = useState(false)
-  const [loading, setLoading] = useState(true)
   const [busyAll, setBusyAll] = useState(false)
   const [width, setWidth] = useState(DEFAULT_W)
 
   const label = `${doc.sourceName} · ${col.original}`
-
-  useEffect(() => {
-    let live = true
-    setLoading(true)
-    window.api.csv
-      .distinct(doc.tabId, col.name, filters, DISTINCT_LIMIT)
-      .then((res) => {
-        if (!live) return
-        setRows(res.rows)
-        setTotal(res.total)
-        setTruncated(res.truncated)
-      })
-      .finally(() => live && setLoading(false))
-    return () => {
-      live = false
-    }
-  }, [doc.tabId, col.name, filters])
+  const { rows, total, truncated, loading, scanned, max, distinctSoFar, cancel } = useDistinctScan(
+    doc.tabId,
+    col.name,
+    filters,
+    DISTINCT_LIMIT,
+    true
+  )
+  const pct = max > 0 ? Math.min(100, Math.round((scanned / max) * 100)) : 0
 
   // Drag the left edge to resize (dragging left → wider).
   const startResize = useCallback((e: React.MouseEvent) => {
@@ -130,9 +118,19 @@ export function DistinctPanel({
 
       <div className="flex-1 overflow-auto scrollbar-none">
         {loading ? (
-          <div className="flex flex-col items-center justify-center gap-2 py-12 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+          <div className="flex flex-col items-center justify-center gap-2 py-12 px-4 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
             <Loader2 className="w-5 h-5 animate-spin text-citrus-pink" />
-            Computing distinct values…
+            <div>Computing distinct values…</div>
+            <div className="font-mono text-[10px]">
+              {max > 0 ? `${pct}% · ${scanned.toLocaleString()} / ${max.toLocaleString()} rows` : 'scanning…'}
+            </div>
+            <div className="font-mono text-[10px]">{distinctSoFar.toLocaleString()} distinct so far</div>
+            <button
+              onClick={() => { cancel(); onClose() }}
+              className="mt-1 rounded-md border border-citrus-border px-2 py-0.5 text-[11px] font-semibold text-citrus-muted hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted"
+            >
+              Cancel
+            </button>
           </div>
         ) : (
           <>

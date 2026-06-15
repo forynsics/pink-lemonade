@@ -12,6 +12,9 @@ import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
 const DISTINCT_LIMIT = 1000
 const MENU_W = 256
 
+// Monotonic id so a newer distinct scan on a tab supersedes (cancels) the prior one in the worker.
+let cmReqId = 1
+
 export function ColumnMenu({
   doc,
   col,
@@ -66,21 +69,26 @@ export function ColumnMenu({
     }
   }, [onClose])
 
-  // Compute the column's distinct values — a full GROUP BY scan, which is slow on a multi-GB
-  // source. Run it lazily (once) so editing an existing set doesn't pay for it up front.
+  // Compute the column's distinct values — a chunked, cancelable scan in the worker (slow on a
+  // multi-GB source). Run it lazily (once) so editing an existing set doesn't pay for it up front;
+  // abort it if the menu closes (cleanup below).
   const loadValues = useCallback(() => {
     if (loadedRef.current) return
     loadedRef.current = true
     setLoading(true)
     window.api.csv
-      .distinct(doc.tabId, col.name, filtersRef.current, DISTINCT_LIMIT)
+      .distinct(doc.tabId, col.name, filtersRef.current, DISTINCT_LIMIT, ++cmReqId)
       .then((res) => {
+        if ('canceled' in res) return
         setRows(res.rows)
         setTruncated(res.truncated || res.rows.length >= DISTINCT_LIMIT)
         setFetched(true)
       })
       .finally(() => setLoading(false))
   }, [doc.tabId, col.name])
+
+  // Abort any in-flight distinct scan when the menu unmounts.
+  useEffect(() => () => void window.api.csv.distinctCancel(doc.tabId), [doc.tabId])
 
   // Applying a NEW filter (nothing selected yet) needs the value list, so auto-load it. Editing an
   // existing set shows the current selections immediately and only scans on demand (see below).

@@ -11,6 +11,7 @@ import {
   buildTagApplyByFilterSql,
   buildTagClearByFilterSql,
   buildDistinctSql,
+  buildDistinctChunkSql,
   buildDistinctCountSql,
   buildLongestSql,
   buildColumnValuesSql,
@@ -274,6 +275,14 @@ describe('drill-down builders', () => {
     const { sql, params } = buildDistinctSql('c0', undefined, 50)
     expect(sql).toBe('SELECT c0 AS val, COUNT(*) AS cnt FROM data GROUP BY c0 ORDER BY cnt DESC, val ASC LIMIT ?')
     expect(params).toEqual([50])
+  })
+
+  it('distinct chunk: grouped slice of a column bounded by rowid, ANDing filters', () => {
+    const { sql, params } = buildDistinctChunkSql('c0', [{ col: 'c1', op: 'eq', value: 'US' }], 0, 1_000_000, 'data_2')
+    expect(sql).toBe(
+      'SELECT c0 AS val, COUNT(*) AS cnt FROM data_2 WHERE rowid > ? AND rowid <= ? AND c1 = ? GROUP BY c0'
+    )
+    expect(params).toEqual([0, 1_000_000, 'US'])
   })
 
   it('distinct count: COUNT(DISTINCT col), honouring filters', () => {

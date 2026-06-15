@@ -368,6 +368,28 @@ export function buildDistinctSql(
   return { sql, params: [...where.params, lim] }
 }
 
+/**
+ * One rowid slice of a column's distinct values + per-slice counts, ANDed with the predicate.
+ * Driving distinct in chunks (merging the per-slice counts in JS) keeps the worker responsive +
+ * cancelable and streams progress, instead of one blocking GROUP BY over the whole column.
+ */
+export function buildDistinctChunkSql(
+  col: string,
+  filters: Filter[] | undefined,
+  loExclusive: number,
+  hiInclusive: number,
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
+  assertCol(col)
+  const where = buildWhere(filters, undefined, table)
+  const extra = where.sql ? where.sql.replace(/^ WHERE /, ' AND ') : ''
+  return {
+    sql: `SELECT ${col} AS val, COUNT(*) AS cnt FROM ${table} WHERE rowid > ? AND rowid <= ?${extra} GROUP BY ${col}`,
+    params: [loExclusive, hiInclusive, ...where.params]
+  }
+}
+
 /** True number of distinct values in a column (honours filters) — not capped by the list limit. */
 export function buildDistinctCountSql(
   col: string,

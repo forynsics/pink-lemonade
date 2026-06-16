@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowUp, Clock, MapPin, MoreVertical } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
@@ -149,7 +150,20 @@ export function VirtualGrid({
   onReorderColumns?: (from: number, to: number) => void
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const rafRef = useRef(0)
+
+  // Row windowing via TanStack Virtual: only the rows in the current visual window are in the DOM.
+  // `count` is the full (possibly multi-million) row total; the data for any given index lives in
+  // the `rows` prop at `index - baseOffset` (the SQL-backed window the parent pages in). The sticky
+  // header occupies ROW_H of in-flow space above the list, so `scrollMargin: ROW_H` keeps the
+  // virtualizer's offsets aligned with it (and makes scrollToIndex land in the right place).
+  const virtualizer = useVirtualizer({
+    count: total,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_H,
+    overscan: 12,
+    scrollMargin: ROW_H
+  })
+  const virtualItems = virtualizer.getVirtualItems()
 
   // Row data always arrives in the ORIGINAL column order (the query selects c0..cN), while
   // `columns` may be reordered for display. Map each display position → its data index (the
@@ -252,19 +266,17 @@ export function VirtualGrid({
     setOverCol(null)
   }, [])
 
-  // Imperative scroll-to-match: center the row, select it, and let onScroll load its window.
+  // Imperative scroll-to-match: center the row, select it, and let the virtualizer load its window.
   useImperativeHandle(
     controllerRef,
     () => ({
       scrollToRow(index: number) {
-        const el = scrollRef.current
-        if (!el || index < 0 || index >= total) return
-        const target = index * ROW_H - el.clientHeight / 2 + ROW_H / 2
-        el.scrollTop = Math.max(0, target)
+        if (index < 0 || index >= total) return
+        virtualizer.scrollToIndex(index, { align: 'center' })
         setSel({ anchor: { r: index, c: 0 }, focus: { r: index, c: lastCol } })
       }
     }),
-    [total, lastCol]
+    [total, lastCol, virtualizer]
   )
 
   useEffect(() => {
@@ -331,13 +343,12 @@ export function VirtualGrid({
   )
 
   // Keep row `r` just inside the viewport (no centering) — used while arrow-navigating selection.
-  const scrollRowIntoView = useCallback((r: number) => {
-    const el = scrollRef.current
-    if (!el) return
-    const top = r * ROW_H
-    if (top < el.scrollTop) el.scrollTop = top
-    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight
-  }, [])
+  const scrollRowIntoView = useCallback(
+    (r: number) => {
+      virtualizer.scrollToIndex(r, { align: 'auto' })
+    },
+    [virtualizer]
+  )
 
   // ArrowUp/Down move the selected row; Shift+ArrowUp/Down extend it (full-width rows). Other keys
   // (Ctrl/Cmd+C) fall through to the copy handler.
@@ -361,21 +372,14 @@ export function VirtualGrid({
     [onCopy, total, sel, lastCol, scrollRowIntoView]
   )
 
-  const recompute = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const first = Math.floor(el.scrollTop / ROW_H)
-    const visible = Math.ceil(el.clientHeight / ROW_H)
-    ensureRange(first, Math.min(total - 1, first + visible))
-  }, [ensureRange, total])
-
-  const onScroll = useCallback(() => {
-    if (rafRef.current) return
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = 0
-      recompute()
-    })
-  }, [recompute])
+  // Page in the SQL window for whatever rows the virtualizer currently has mounted (it already
+  // includes overscan; the parent's ensureRange widens with its own overscan on top). Keyed on the
+  // window edges + `total` so it also fires for the initial window and after a resize/result change.
+  const firstVisible = virtualItems.length ? virtualItems[0].index : 0
+  const lastVisible = virtualItems.length ? virtualItems[virtualItems.length - 1].index : 0
+  useEffect(() => {
+    if (total > 0) ensureRange(firstVisible, Math.min(total - 1, lastVisible))
+  }, [ensureRange, total, firstVisible, lastVisible])
 
   // Result set changed (sort/filter/search): jump to top and clear the stale selection.
   useEffect(() => {
@@ -413,11 +417,6 @@ export function VirtualGrid({
     [columns, rows, rids, baseOffset, dataIdx, sel, onCellContext]
   )
 
-  // Ensure the initial viewport is loaded once the row count is known / on resize.
-  useEffect(() => {
-    recompute()
-  }, [recompute, total])
-
   const r0 = sel ? rect(sel) : null
   const inSel = (r: number, c: number): boolean =>
     !!r0 && r >= r0.minR && r <= r0.maxR && c >= r0.minC && c <= r0.maxC
@@ -425,7 +424,6 @@ export function VirtualGrid({
   return (
     <div
       ref={scrollRef}
-      onScroll={onScroll}
       onKeyDown={onGridKey}
       tabIndex={0}
       className="csv-grid relative flex-1 min-w-0 min-h-0 overflow-auto select-none outline-none"
@@ -499,19 +497,42 @@ export function VirtualGrid({
         })}
       </div>
 
-      {/* body: full-height spacer, windowed rows positioned absolutely */}
-      <div style={{ height: Math.max(total, 1) * ROW_H, width: totalWidth, position: 'relative' }}>
-        {rows.map((row, i) => {
-          const abs = baseOffset + i
-          const tag = tags && rids[i] != null ? tagDef(tags.get(rids[i])) : undefined
-          const isAnchor = anchorRid != null && rids[i] === anchorRid
+      {/* body: virtualizer-sized spacer; only the rows in the current visual window are mounted,
+          each translated to its true offset. A row whose SQL data hasn't paged into the loaded
+          window yet renders as a blank skeleton (just the index gutter) until ensureRange fills it. */}
+      <div style={{ height: Math.max(virtualizer.getTotalSize(), 1), width: totalWidth, position: 'relative' }}>
+        {virtualItems.map((vi) => {
+          const abs = vi.index
+          const wi = abs - baseOffset
+          const row = wi >= 0 && wi < rows.length ? rows[wi] : undefined
+          const rid = row ? rids[wi] : undefined
+          const tag = tags && rid != null ? tagDef(tags.get(rid)) : undefined
+          const isAnchor = anchorRid != null && rid != null && rid === anchorRid
+          const top = vi.start - virtualizer.options.scrollMargin
+          if (!row) {
+            // Skeleton row: data for this index isn't in the loaded window yet.
+            return (
+              <div
+                key={abs}
+                className="flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30"
+                style={{ position: 'absolute', top, height: ROW_H, width: totalWidth }}
+              >
+                <div
+                  className="shrink-0 flex items-center justify-end pr-2 text-[10px] text-citrus-muted/40 select-none dark:text-citrus-night-muted/40"
+                  style={{ width: IDX_W }}
+                >
+                  {abs + 1}
+                </div>
+              </div>
+            )
+          }
           return (
             <div
               key={abs}
               className={`flex items-stretch text-xs font-mono border-b border-citrus-border/30 dark:border-citrus-night-border/30 ${tag?.row ?? ''} ${
                 isAnchor ? 'ring-2 ring-inset ring-citrus-pink bg-citrus-pink/10 z-[1] dark:bg-citrus-pink/15' : ''
               }`}
-              style={{ position: 'absolute', top: abs * ROW_H, height: ROW_H, width: totalWidth }}
+              style={{ position: 'absolute', top, height: ROW_H, width: totalWidth }}
             >
               {tag && (
                 <div

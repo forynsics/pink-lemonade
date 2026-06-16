@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, Clock, MapPin, MoreVertical } from 'lucide-react'
+import { ArrowDown, ArrowUp, Clock, Crosshair, MapPin, MoreVertical } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
 import { tagDef } from '../../state/tags'
@@ -102,6 +102,7 @@ export function VirtualGrid({
   rows,
   rids,
   tags,
+  sightings,
   anchorRid,
   baseOffset,
   total,
@@ -123,6 +124,8 @@ export function VirtualGrid({
   rids: number[]
   /** Map of rowid → tag id; drives the colored left marker. Undefined when the source is untagged. */
   tags?: Map<number, string>
+  /** Map of rowid → sighting tooltip (the matched indicators); drives the gutter sighting marker. */
+  sightings?: Map<number, string>
   /** The pivot anchor's rowid — that row gets a persistent pink ring + pin so you don't lose your spot. */
   anchorRid?: number
   baseOffset: number
@@ -507,6 +510,7 @@ export function VirtualGrid({
           const row = wi >= 0 && wi < rows.length ? rows[wi] : undefined
           const rid = row ? rids[wi] : undefined
           const tag = tags && rid != null ? tagDef(tags.get(rid)) : undefined
+          const sighting = sightings && rid != null ? sightings.get(rid) : undefined
           const isAnchor = anchorRid != null && rid != null && rid === anchorRid
           const top = vi.start - virtualizer.options.scrollMargin
           if (!row) {
@@ -549,6 +553,11 @@ export function VirtualGrid({
                 onMouseEnter={() => enterRow(abs)}
                 title={isAnchor ? 'Pivot anchor — the row you pivoted from' : 'Select row'}
               >
+                {sighting != null && (
+                  <span className="shrink-0 flex" title={`Sighting — ${sighting}`}>
+                    <Crosshair className="w-3 h-3 text-red-500 dark:text-red-400" />
+                  </span>
+                )}
                 {isAnchor && <MapPin className="w-3 h-3 shrink-0" />}
                 {abs + 1}
               </div>

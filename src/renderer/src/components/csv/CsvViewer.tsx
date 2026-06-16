@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { ChevronDown, Download, Loader2, Tags } from 'lucide-react'
+import { ChevronDown, Crosshair, Download, Loader2, Tags } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -31,6 +31,7 @@ import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
 import { DistinctPanel } from './DistinctPanel'
+import { SweepDialog } from './SweepDialog'
 import { classifyIndicator } from '../../tools/ioc/classify'
 import { CellPopout } from './CellPopout'
 
@@ -107,6 +108,32 @@ export function CsvViewer({
       live = false
     }
   }, [doc.tabId, taggable, wsId, sourceId])
+
+  // Intel-sweep sightings for this source: rowid → matched-indicator tooltip. Drives the grid's
+  // crosshair marker + the "show only sightings" toggle. `sightingRev` bumps to reload after a sweep.
+  const [sightings, setSightings] = useState<Map<number, string>>(new Map())
+  const [sightingRev, setSightingRev] = useState(0)
+  const [sweepOpen, setSweepOpen] = useState(false)
+  useEffect(() => {
+    if (!taggable) {
+      setSightings(new Map())
+      return
+    }
+    let live = true
+    void window.api.csv.sightingList(wsId, sourceId).then((rows) => {
+      if (!live) return
+      const m = new Map<number, string>()
+      for (const r of rows) {
+        const label = `${r.indicator} (${r.kind})`
+        const prev = m.get(r.rid)
+        m.set(r.rid, prev ? `${prev}, ${label}` : label)
+      }
+      setSightings(m)
+    })
+    return () => {
+      live = false
+    }
+  }, [doc.tabId, taggable, wsId, sourceId, sightingRev])
 
   // When tags change while a "show only tagged X" filter is active, the cached filtered view goes
   // stale; bump this to force a re-query/re-count. Tracked via a ref so applyTag stays stable.
@@ -324,6 +351,11 @@ export function CsvViewer({
   const clearTagFilter = useCallback((): void => {
     setFilters((fs) => fs.filter((f) => f.op !== 'tag'))
   }, [])
+  // "Show only sightings" — toggle the single sighting filter on/off.
+  const hasSightingFilter = filters.some((f) => f.op === 'sighting')
+  const toggleSightingFilter = useCallback((): void => {
+    setFilters((fs) => (fs.some((f) => f.op === 'sighting') ? fs.filter((f) => f.op !== 'sighting') : [...fs, { op: 'sighting' }]))
+  }, [])
   const activeTagFilter = filters.find((f) => f.op === 'tag')
   const activeTags = (activeTagFilter?.op === 'tag' ? activeTagFilter.tags : []) as TagId[]
   hasTagFilterRef.current = activeTags.length > 0
@@ -398,6 +430,30 @@ export function CsvViewer({
         {error && <span className="text-citrus-pink-hover truncate">{error}</span>}
 
         <div className="ml-auto flex items-center gap-2">
+          {taggable && (
+            <button
+              onClick={() => setSweepOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text"
+              title="Sweep this source for known indicators (intel set)"
+            >
+              <Crosshair className="w-3.5 h-3.5" />
+              Intel Sweep
+            </button>
+          )}
+          {taggable && sightings.size > 0 && (
+            <button
+              onClick={toggleSightingFilter}
+              className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-semibold transition-colors ${
+                hasSightingFilter
+                  ? 'border-red-500/50 bg-red-500/10 text-red-600 dark:border-red-400/50 dark:text-red-400'
+                  : 'border-citrus-border text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text'
+              }`}
+              title={hasSightingFilter ? 'Showing only sightings — click to show all rows' : 'Show only rows with an intel sighting'}
+            >
+              <Crosshair className="w-3.5 h-3.5" />
+              {sightings.size.toLocaleString()} {sightings.size === 1 ? 'sighting' : 'sightings'}
+            </button>
+          )}
           <button
             onClick={() => setExportOpen(true)}
             disabled={exporting}
@@ -488,6 +544,7 @@ export function CsvViewer({
           rows={rows}
           rids={rids}
           tags={taggable ? tags : undefined}
+          sightings={taggable ? sightings : undefined}
           anchorRid={anchorRid ?? undefined}
           baseOffset={baseOffset}
           total={total}
@@ -550,6 +607,16 @@ export function CsvViewer({
           }
           sendLabel={sendIntelLabel}
           onClose={() => setCellMenu(null)}
+        />
+      )}
+
+      {sweepOpen && (
+        <SweepDialog
+          tabId={doc.tabId}
+          columns={doc.columns}
+          sourceName={doc.sourceName}
+          onClose={() => setSweepOpen(false)}
+          onSwept={() => setSightingRev((r) => r + 1)}
         />
       )}
 

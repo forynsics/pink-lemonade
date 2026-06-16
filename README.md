@@ -96,15 +96,6 @@ npm run build        # production bundle to out/
 npm run dist         # build + package the portable Windows .exe into dist/
 ```
 
-### Releasing
-
-Pushing a `v*` tag (e.g. `v0.1.0`, matching `package.json` `version`) triggers
-[`.github/workflows/release.yml`](.github/workflows/release.yml): a Windows runner type-checks,
-tests, builds, and **publishes the portable `.exe` to a GitHub Release**. You can also run the
-workflow manually to build it and download it from the run's artifacts.
-
-> The portable build is **not** committed; distribute it via a Release.
-
 ---
 
 ## Project layout

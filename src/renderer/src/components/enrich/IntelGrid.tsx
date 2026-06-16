@@ -1178,7 +1178,7 @@ export function IntelGrid({
       )}
 
       {exportOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={() => setExportOpen(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setExportOpen(false)}>
           <div className="w-[22rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Export to CSV</div>
             <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">

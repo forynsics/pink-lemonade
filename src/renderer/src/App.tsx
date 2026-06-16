@@ -841,7 +841,7 @@ export default function App(): JSX.Element {
       )}
 
       {csvImport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25">
           <div className="flex flex-col items-center gap-3 rounded-xl border border-citrus-border bg-citrus-card px-8 py-6 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
             <Loader2 className="w-6 h-6 animate-spin text-citrus-pink" />
             <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">

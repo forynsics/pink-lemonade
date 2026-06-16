@@ -586,6 +586,9 @@ export function getTagCounts(
  * a background op like distinct/count. Returns the sighting (distinct hit-row) + total-hit counts,
  * or null if canceled mid-scan.
  */
+// Rows per sweep scan slice — smaller than FILT_CHUNK so progress + cancel are fine-grained.
+const SWEEP_SCAN_CHUNK = 50_000
+
 export async function intelSweep(
   tabId: string,
   entries: IntelEntry[],
@@ -609,9 +612,12 @@ export async function intelSweep(
   const max = e.meta.rowCount
   const sightingRids = new Set<number>()
   let hits = 0
-  for (let lo = 0; lo < max; lo += FILT_CHUNK) {
+  // Smaller than the filter-index chunk: the sweep reports progress + checks for cancel between
+  // chunks, so a finer slice gives a smooth percent (not one jump per million rows) and a snappier
+  // Cancel, at the cost of a few more bounded range scans. Also caps the per-slice memory.
+  for (let lo = 0; lo < max; lo += SWEEP_SCAN_CHUNK) {
     if (shouldAbort()) return null
-    const hi = Math.min(lo + FILT_CHUNK, max)
+    const hi = Math.min(lo + SWEEP_SCAN_CHUNK, max)
     const q = buildSweepScanSql(scanCols, lo, hi, e.table)
     const slice = e.db.prepare(q.sql).raw(true).all(...q.params) as unknown[][]
     const writeChunk = e.db.transaction((rows: unknown[][]) => {

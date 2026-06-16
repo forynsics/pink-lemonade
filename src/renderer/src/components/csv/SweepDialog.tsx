@@ -141,7 +141,10 @@ export function SweepDialog({
   const pct = progress && progress.max > 0 ? Math.min(100, Math.round((progress.scanned / progress.max) * 100)) : 0
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={running ? undefined : onClose}
+    >
       <div
         className="flex max-h-[85vh] w-[34rem] max-w-[92vw] flex-col rounded-xl border border-citrus-border bg-citrus-card shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card"
         onClick={(e) => e.stopPropagation()}
@@ -150,9 +153,11 @@ export function SweepDialog({
           <Crosshair className="h-4 w-4 text-red-500 dark:text-red-400" />
           <span className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Intel Sweep</span>
           <span className="truncate text-xs text-citrus-muted dark:text-citrus-night-muted">· {sourceName}</span>
-          <button onClick={onClose} className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted">
-            <X className="h-4 w-4" />
-          </button>
+          {!running && (
+            <button onClick={onClose} className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted">
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         <div className="flex-1 overflow-auto px-5 py-3">
@@ -308,12 +313,20 @@ export function SweepDialog({
             <div className="mt-3">
               <div className="mb-1 flex items-center justify-between text-[11px] text-citrus-muted dark:text-citrus-night-muted">
                 <span>
-                  Scanning… {progress ? `${progress.scanned.toLocaleString()}${progress.max ? ` / ${progress.max.toLocaleString()}` : ''}` : ''}
+                  Scanning… <strong className="text-citrus-dark dark:text-citrus-night-text">{pct}%</strong>
+                  {progress && progress.max > 0 && (
+                    <span className="ml-1 font-mono">
+                      ({progress.scanned.toLocaleString()} / {progress.max.toLocaleString()} rows)
+                    </span>
+                  )}
                 </span>
                 <span className="text-red-600 dark:text-red-400">{progress?.sightings.toLocaleString() ?? 0} sightings</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded bg-citrus-sand dark:bg-citrus-night-elev">
                 <div className="h-full bg-red-500 transition-all dark:bg-red-400" style={{ width: `${pct}%` }} />
+              </div>
+              <div className="mt-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+                Keep this open until it finishes — use Cancel to stop.
               </div>
             </div>
           )}

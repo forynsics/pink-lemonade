@@ -279,7 +279,7 @@ export function Workbench({
           {metaText(inputMeta)}
         </div>
         {loading && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-citrus-cream/70 backdrop-blur-sm dark:bg-citrus-night/70">
+          <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-citrus-cream/85 dark:bg-citrus-night/85">
             <div className="flex items-center gap-2 text-sm font-semibold text-citrus-dark dark:text-citrus-night-text">
               <Loader2 className="w-4 h-4 animate-spin text-citrus-pink" /> {loading}
             </div>

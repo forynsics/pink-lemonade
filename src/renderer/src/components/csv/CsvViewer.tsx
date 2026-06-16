@@ -841,7 +841,7 @@ export function CsvViewer({
       {/* Export-to-CSV confirmation — shows how many events (the live filtered count) will be written. */}
       {exportOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
           onClick={() => setExportOpen(false)}
         >
           <div

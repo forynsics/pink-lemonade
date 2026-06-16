@@ -18,3 +18,8 @@ win:
 portable:
   artifactName: pink-lemonade-${version}-portable.${ext}
   requestExecutionLevel: user
+# Where `electron-builder --publish always` (the release workflow, on a v* tag) uploads the .exe.
+publish:
+  provider: github
+  owner: forynsics
+  repo: pink-lemonade

@@ -2,66 +2,11 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { writeFile, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { CsvRecordParser, parseCsvStream } from './parser'
+import { parseCsvStream } from './parser'
 
-/** Run a string through the parser in fixed-size chunks (to exercise chunk boundaries). */
-function parseInChunks(text: string, delim: string, chunkSize: number): string[][] {
-  const p = new CsvRecordParser(delim)
-  const out: string[][] = []
-  for (let i = 0; i < text.length; i += chunkSize) {
-    out.push(...p.push(text.slice(i, i + chunkSize)))
-  }
-  out.push(...p.end())
-  return out
-}
-
-describe('CsvRecordParser', () => {
-  it('parses simple rows (LF and CRLF), no trailing newline', () => {
-    expect(parseInChunks('a,b\r\n1,2\n3,4', ',', 1024)).toEqual([
-      ['a', 'b'],
-      ['1', '2'],
-      ['3', '4']
-    ])
-  })
-
-  it('handles quoted fields with embedded delimiter and newline', () => {
-    const text = 'name,note\n"Doe, John","line1\nline2"\n'
-    expect(parseInChunks(text, ',', 1024)).toEqual([
-      ['name', 'note'],
-      ['Doe, John', 'line1\nline2']
-    ])
-  })
-
-  it('handles escaped quotes ("")', () => {
-    expect(parseInChunks('a\n"she said ""hi"""\n', ',', 1024)).toEqual([
-      ['a'],
-      ['she said "hi"']
-    ])
-  })
-
-  it('is invariant to chunk size (quote/field spanning boundaries)', () => {
-    const text = 'h1,h2\n"Doe, ""J""",  "x\ny"\n42,end\n'
-    const ref = parseInChunks(text, ',', 4096)
-    for (const cs of [1, 2, 3, 5, 7]) {
-      expect(parseInChunks(text, ',', cs)).toEqual(ref)
-    }
-  })
-
-  it('skips fully-blank lines but keeps empty fields', () => {
-    expect(parseInChunks('a,b\n\n1,\n', ',', 1024)).toEqual([
-      ['a', 'b'],
-      ['1', '']
-    ])
-  })
-
-  it('parses tab-delimited', () => {
-    expect(parseInChunks('a\tb\n1\t2\n', '\t', 1024)).toEqual([
-      ['a', 'b'],
-      ['1', '2']
-    ])
-  })
-})
-
+// The low-level RFC-4180 tokenizing is csv-parse's job (and its own test suite). These cover the
+// app-specific behavior parseCsvStream adds on top: delimiter detection, header sanitization,
+// batching/cancel, BOM stripping, and that the common quoting/line-ending cases parse end-to-end.
 describe('parseCsvStream', () => {
   let dir: string | null = null
   afterEach(async () => {
@@ -76,14 +21,20 @@ describe('parseCsvStream', () => {
     return p
   }
 
-  it('emits a sanitized header then batched rows', async () => {
-    const path = await writeTmp('t.csv', 'source.ip,country\n8.8.8.8,US\n1.1.1.1,AU\n')
+  /** Parse a whole file in memory; returns the (sanitized) header originals, all rows, and result. */
+  async function parseAll(content: string, name = 't.csv') {
+    const path = await writeTmp(name, content)
     let header: string[] = []
     const rows: string[][] = []
     const res = await parseCsvStream(path, {
       onHeader: (h) => (header = h.columns.map((c) => c.original)),
       onRows: (b) => void rows.push(...b)
     })
+    return { header, rows, res }
+  }
+
+  it('emits a sanitized header then batched rows', async () => {
+    const { header, rows, res } = await parseAll('source.ip,country\n8.8.8.8,US\n1.1.1.1,AU\n')
     expect(header).toEqual(['source.ip', 'country'])
     expect(rows).toEqual([
       ['8.8.8.8', 'US'],
@@ -94,11 +45,50 @@ describe('parseCsvStream', () => {
     expect(res.canceled).toBe(false)
   })
 
+  it('handles quoted fields with embedded delimiter and newline', async () => {
+    const { rows } = await parseAll('name,note\n"Doe, John","line1\nline2"\n')
+    expect(rows).toEqual([['Doe, John', 'line1\nline2']])
+  })
+
+  it('handles escaped quotes ("")', async () => {
+    const { rows } = await parseAll('a\n"she said ""hi"""\n')
+    expect(rows).toEqual([['she said "hi"']])
+  })
+
+  it('parses tricky quoting that spans lines (escaped + embedded newline)', async () => {
+    const { rows } = await parseAll('h1,h2\n"Doe, ""J""","x\ny"\n42,end\n')
+    expect(rows).toEqual([
+      ['Doe, "J"', 'x\ny'],
+      ['42', 'end']
+    ])
+  })
+
+  it('parses CRLF line endings', async () => {
+    const { header, rows } = await parseAll('a,b\r\n1,2\r\n3,4\r\n')
+    expect(header).toEqual(['a', 'b'])
+    expect(rows).toEqual([
+      ['1', '2'],
+      ['3', '4']
+    ])
+  })
+
+  it('skips blank lines but keeps empty fields', async () => {
+    const { rows } = await parseAll('a,b\n\n1,\n')
+    expect(rows).toEqual([['1', '']])
+  })
+
   it('auto-detects a TSV delimiter', async () => {
     const path = await writeTmp('t.tsv', 'a\tb\n1\t2\n')
     let delim = ''
     await parseCsvStream(path, { onHeader: (h) => (delim = h.delimiter), onRows: () => {} })
     expect(delim).toBe('\t')
+  })
+
+  it('strips a leading UTF-8 BOM from the first header (Excel/Windows export)', async () => {
+    const { header, rows } = await parseAll('\uFEFFsource.ip,country\n8.8.8.8,US\n', 'bom.csv')
+    // Without BOM stripping the first column reads "source.ip" and never matches.
+    expect(header).toEqual(['source.ip', 'country'])
+    expect(rows).toEqual([['8.8.8.8', 'US']])
   })
 
   it('handles a header-only file (no data rows)', async () => {

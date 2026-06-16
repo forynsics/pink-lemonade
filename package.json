@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
+    "csv-parse": "^7.0.0",
     "maxmind": "^5.0.6",
     "tar": "^7.5.16"
   }

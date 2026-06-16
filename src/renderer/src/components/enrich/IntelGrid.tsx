@@ -10,19 +10,21 @@ import {
   type FilterFn,
   type SortingState,
   type ColumnFiltersState,
-  type RowSelectionState
+  type RowSelectionState,
+  type VisibilityState,
+  type ColumnSizingState
 } from '@tanstack/react-table'
-import { Check, Copy, Download, Eraser, Filter, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
+import { Check, Columns3, Copy, Download, Eraser, Filter, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
 import type { EnrichItem, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
 
 // The Intel results grid, built on TanStack Table (headless): TanStack owns the STATE + models —
-// sorting, the per-column multi-select filters, the global (whole-row) search, faceted distinct
-// values for the column menu, and row selection — while we render the header/body ourselves so the
-// provider-bucket layout, dividers, badges, and chips stay exactly as designed. The dataset is the
-// indicators the user added (small, in-memory), so there's no virtualization or SQL here.
+// sorting (multi-column), per-column multi-select filters, the global (whole-row) search, faceted
+// distinct values, row selection, column sizing + visibility — while we render the header/body
+// ourselves so the provider-bucket layout, dividers, badges, and chips stay as designed. The dataset
+// is the indicators the user added (small, in-memory) — no virtualization or SQL here.
 //
-// This is also the reusable template for a possible future TanStack migration of the CSV/workspace
-// grid (which would run in manual* mode against the SQLite worker + TanStack Virtual).
+// Columns are fixed-width (TanStack columnSizing) so they're drag-resizable; widths/visibility are
+// session-local (reset on reload, like sort/filter). Reorder stays persisted via doc order.
 
 type ResultMap = Record<string, Record<string, EnrichResultRow>>
 
@@ -34,7 +36,24 @@ const STATUS_STYLE: Record<string, string> = {
   private: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
 }
 
-// Preferred field order for known MaxMind-ish fields (others append, first-seen).
+const SELECT_W = 34
+const NUM_W = 44
+const MIN_W = 56
+function defaultSize(ckind: Leaf['ckind']): number {
+  switch (ckind) {
+    case 'indicator':
+      return 190
+    case 'kind':
+      return 70
+    case 'status':
+      return 104
+    case 'source':
+      return 74
+    default:
+      return 150
+  }
+}
+
 const FIELD_ORDER = ['Country', 'Region', 'City', 'Continent', 'Lat/Lon', 'ASN', 'Org']
 function orderFields(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
@@ -46,14 +65,12 @@ function orderFields(keys: string[]): string[] {
     return ia - ib
   })
 }
-/** Order `keys` by a saved user list (known first, in order); the rest keep their order, appended. */
 function orderByList(keys: string[], order: string[]): string[] {
   const known = order.filter((k) => keys.includes(k))
   const rest = keys.filter((k) => !order.includes(k))
   return [...known, ...rest]
 }
 
-/** One leaf column descriptor — drives both the TanStack column (state) and our manual render. */
 interface Leaf {
   colId: string
   label: string
@@ -62,7 +79,6 @@ interface Leaf {
   field?: string
   firstInBucket?: boolean
 }
-/** A flattened row: pure cell values for TanStack accessors + the raw results for rich rendering. */
 interface IntelRow {
   value: string
   kind: string
@@ -71,14 +87,21 @@ interface IntelRow {
   hay: string
 }
 
-/** A value cell with a hover "copy" button and a wrap/truncate mode. */
-function ValueCell({ text, wrap, mono }: { text: string; wrap: boolean; mono?: boolean }): JSX.Element {
+/** A value cell with a hover "copy" button. Fixed-width: truncates (ellipsis) unless `wrap`. */
+function ValueCell({ text, wrap, mono, style, className }: {
+  text: string
+  wrap: boolean
+  mono?: boolean
+  style?: React.CSSProperties
+  className?: string
+}): JSX.Element {
   const [done, setDone] = useState(false)
   return (
     <td
-      className={`relative group px-2 py-1 ${wrap ? 'whitespace-normal break-words max-w-[16rem]' : 'whitespace-nowrap'} ${
+      style={style}
+      className={`relative group px-2 py-1 overflow-hidden ${wrap ? 'whitespace-normal break-words' : 'whitespace-nowrap text-ellipsis'} ${
         mono ? 'font-mono' : ''
-      } text-citrus-dark dark:text-citrus-night-text`}
+      } text-citrus-dark dark:text-citrus-night-text ${className ?? ''}`}
     >
       {text}
       {text !== '' && (
@@ -101,7 +124,6 @@ function ValueCell({ text, wrap, mono }: { text: string; wrap: boolean; mono?: b
 }
 
 // A column's 3-dots dropdown: distinct values (faceted, with counts) as a multi-select checklist.
-// "All" checked = no filter. The distinct values are passed in from TanStack's faceted model.
 function ColMenu({ label, distinct, current, x, y, onApply, onClose }: {
   label: string
   distinct: Array<{ value: string; count: number }>
@@ -230,7 +252,6 @@ export function IntelGrid({
 }): JSX.Element {
   const providerName = (pid: string): string => providers.find((p) => p.id === pid)?.name ?? pid
 
-  // Which provider buckets appear (have any result), ordered by the saved doc order.
   const providerIds = useMemo(() => {
     const seen: string[] = []
     for (const ind of indicators) {
@@ -257,7 +278,6 @@ export function IntelGrid({
     return m
   }, [indicators, results, fieldOrder])
 
-  // Ordered leaf descriptors (the visible columns) + the bucket grouping for the header.
   const leaves = useMemo<Leaf[]>(() => {
     const out: Leaf[] = [
       { colId: 'value', label: 'Indicator', ckind: 'indicator' },
@@ -273,7 +293,6 @@ export function IntelGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerIds, fieldsByProvider, providers])
 
-  // Flattened rows: pure cell strings (for TanStack accessors/facets) + the raw provider results.
   const data = useMemo<IntelRow[]>(() => {
     return indicators.map((ind) => {
       const byP = results[ind.value] ?? {}
@@ -293,7 +312,6 @@ export function IntelGrid({
     })
   }, [indicators, results])
 
-  // Custom filter: keep rows whose cell value is one of the checked distinct values (empty = no-op).
   const inSet: FilterFn<IntelRow> = (row, colId, value) => {
     const vals = value as string[] | undefined
     return !vals?.length || vals.includes(String(row.getValue(colId) ?? ''))
@@ -305,9 +323,10 @@ export function IntelGrid({
       accessorFn: (r) => r.cells[l.colId] ?? '',
       filterFn: inSet,
       sortingFn: 'alphanumeric',
-      enableGlobalFilter: false
+      enableGlobalFilter: false,
+      size: defaultSize(l.ckind),
+      minSize: MIN_W
     }))
-    // Hidden whole-row haystack column — the global search box matches this (incl. status messages).
     cols.push({ id: '__search', accessorFn: (r) => r.hay, enableGlobalFilter: true, enableSorting: false })
     return cols
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -317,18 +336,23 @@ export function IntelGrid({
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
 
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, columnFilters, globalFilter, rowSelection },
+    state: { sorting, columnFilters, globalFilter, rowSelection, columnVisibility, columnSizing },
     getRowId: (r) => r.value,
     filterFns: { inSet },
     globalFilterFn: 'includesString',
+    enableMultiSort: true,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onRowSelectionChange: setRowSelection,
+    onColumnVisibilityChange: setColumnVisibility,
+    onColumnSizingChange: setColumnSizing,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -339,6 +363,35 @@ export function IntelGrid({
   const rows = table.getRowModel().rows
   const visibleValues = useMemo(() => rows.map((r) => r.original.value), [rows])
   const labelFor = (colId: string): string => leaves.find((l) => l.colId === colId)?.label ?? colId
+  const widthOf = (colId: string): number => table.getColumn(colId)?.getSize() ?? 150
+  const isVis = (colId: string): boolean => table.getColumn(colId)?.getIsVisible() ?? true
+
+  // Visible bucket structure (honors column visibility): which buckets + leaves to render.
+  const visBuckets = useMemo(() => {
+    return providerIds
+      .map((pid) => {
+        const showStatus = isVis(`p:${pid}:status`)
+        const showSource = isVis(`p:${pid}:source`)
+        const fields = fieldsByProvider[pid].filter((f) => isVis(`p:${pid}:f:${f}`))
+        const count = (showStatus ? 1 : 0) + fields.length + (showSource ? 1 : 0)
+        return { pid, name: providerName(pid), showStatus, showSource, fields, count }
+      })
+      .filter((b) => b.count > 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerIds, fieldsByProvider, columnVisibility, providers])
+
+  const totalWidth = useMemo(() => {
+    let w = SELECT_W + NUM_W
+    if (isVis('value')) w += widthOf('value')
+    if (isVis('kind')) w += widthOf('kind')
+    for (const b of visBuckets) {
+      if (b.showStatus) w += widthOf(`p:${b.pid}:status`)
+      for (const f of b.fields) w += widthOf(`p:${b.pid}:f:${f}`)
+      if (b.showSource) w += widthOf(`p:${b.pid}:source`)
+    }
+    return w
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visBuckets, columnSizing, columnVisibility])
 
   // --- column menu (distinct/filter) ---
   const [colMenu, setColMenu] = useState<{ colId: string; x: number; y: number } | null>(null)
@@ -350,12 +403,40 @@ export function IntelGrid({
       .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, undefined, { numeric: true }))
   }
 
-  // --- Excel-style row highlight (active rows) — independent of the tick boxes. ---
-  const [highlighted, setHighlighted] = useState<Set<string>>(new Set())
+  // --- column resize (drag a header's right edge) ---
+  function startResize(e: React.MouseEvent, colId: string): void {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startW = widthOf(colId)
+    const onMove = (ev: MouseEvent): void => setColumnSizing((s) => ({ ...s, [colId]: Math.max(MIN_W, startW + (ev.clientX - startX)) }))
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+  function resizeHandle(colId: string): JSX.Element {
+    return (
+      <span
+        onMouseDown={(e) => startResize(e, colId)}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-citrus-pink/40"
+        title="Drag to resize"
+      />
+    )
+  }
+
+  // --- selection (single model, via TanStack rowSelection): click=select, shift=range, ctrl=toggle ---
+  const selectedValues = useMemo(() => Object.keys(rowSelection).filter((k) => rowSelection[k]), [rowSelection])
   const anchorRef = useRef(-1)
-  const focusRef = useRef(-1)
   const dragRef = useRef(false)
   const gridRef = useRef<HTMLDivElement>(null)
+  const headerBoxRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (headerBoxRef.current) headerBoxRef.current.indeterminate = table.getIsSomeRowsSelected() && !table.getIsAllRowsSelected()
+  }, [rowSelection, table])
   useEffect(() => {
     const onUp = (): void => {
       dragRef.current = false
@@ -363,47 +444,47 @@ export function IntelGrid({
     window.addEventListener('mouseup', onUp)
     return () => window.removeEventListener('mouseup', onUp)
   }, [])
-  function highlightRange(a: number, b: number): void {
+  function selectRange(a: number, b: number): void {
     const lo = Math.min(a, b)
     const hi = Math.max(a, b)
-    setHighlighted(new Set(visibleValues.slice(lo, hi + 1)))
+    const next: RowSelectionState = {}
+    for (let i = lo; i <= hi; i++) if (visibleValues[i] != null) next[visibleValues[i]] = true
+    setRowSelection(next)
   }
-  function beginRow(index: number, value: string): void {
-    setHighlighted(new Set([value]))
-    anchorRef.current = index
-    focusRef.current = index
-    dragRef.current = true
+  function rowMouseDown(e: React.MouseEvent, index: number, value: string): void {
+    if (e.button !== 0) return
     gridRef.current?.focus()
+    if (e.shiftKey && anchorRef.current >= 0) {
+      selectRange(anchorRef.current, index)
+      return
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setRowSelection((prev) => ({ ...prev, [value]: !prev[value] }))
+      anchorRef.current = index
+      return
+    }
+    setRowSelection({ [value]: true })
+    anchorRef.current = index
+    dragRef.current = true
   }
-  function enterRow(index: number): void {
-    if (!dragRef.current) return
-    focusRef.current = index
-    highlightRange(anchorRef.current, index)
+  function rowMouseEnter(index: number): void {
+    if (!dragRef.current || anchorRef.current < 0) return
+    selectRange(anchorRef.current, index)
   }
   function onGridKeyDown(e: React.KeyboardEvent): void {
     if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || visibleValues.length === 0) return
     e.preventDefault()
-    if (focusRef.current < 0) {
-      anchorRef.current = 0
-      focusRef.current = 0
-      setHighlighted(new Set([visibleValues[0]]))
-      return
-    }
-    const next = Math.min(visibleValues.length - 1, Math.max(0, focusRef.current + (e.key === 'ArrowDown' ? 1 : -1)))
-    focusRef.current = next
-    if (e.shiftKey) highlightRange(anchorRef.current, next)
-    else {
+    const cur = anchorRef.current < 0 ? -1 : anchorRef.current
+    const next = cur < 0 ? 0 : Math.min(visibleValues.length - 1, Math.max(0, cur + (e.key === 'ArrowDown' ? 1 : -1)))
+    if (e.shiftKey && cur >= 0) {
+      selectRange(cur, next)
+      // keep anchor; extend focus is `next` but we re-derive from selection extremes next press
+      anchorRef.current = cur
+    } else {
+      setRowSelection({ [visibleValues[next]]: true })
       anchorRef.current = next
-      setHighlighted(new Set([visibleValues[next]]))
     }
   }
-
-  // --- selection (tick boxes, via TanStack rowSelection) ---
-  const selectedValues = useMemo(() => Object.keys(rowSelection).filter((k) => rowSelection[k]), [rowSelection])
-  const headerBoxRef = useRef<HTMLInputElement>(null)
-  useEffect(() => {
-    if (headerBoxRef.current) headerBoxRef.current.indeterminate = table.getIsSomeRowsSelected() && !table.getIsAllRowsSelected()
-  }, [rowSelection, table])
 
   // --- right-click context menu ---
   const [menu, setMenu] = useState<{ x: number; y: number; targets: string[] } | null>(null)
@@ -411,10 +492,9 @@ export function IntelGrid({
     e.preventDefault()
     let targets: string[]
     if (rowSelection[value] && selectedValues.length > 0) targets = selectedValues
-    else if (highlighted.has(value) && highlighted.size > 0) targets = [...highlighted]
     else {
       targets = [value]
-      setHighlighted(new Set([value]))
+      setRowSelection({ [value]: true })
     }
     setMenu({ x: e.clientX, y: e.clientY, targets })
   }
@@ -435,10 +515,11 @@ export function IntelGrid({
   // --- CSV build (copy + export), in current display order over a set of values ---
   function buildCsv(values: string[]): string {
     const set = new Set(values)
-    const lines = [leaves.map((l) => csvEsc(l.label)).join(',')]
+    const cols = leaves.filter((l) => isVis(l.colId))
+    const lines = [cols.map((l) => csvEsc(l.label)).join(',')]
     for (const r of rows) {
       if (!set.has(r.original.value)) continue
-      lines.push(leaves.map((l) => csvEsc(r.original.cells[l.colId] ?? '')).join(','))
+      lines.push(cols.map((l) => csvEsc(r.original.cells[l.colId] ?? '')).join(','))
     }
     return lines.join('\n')
   }
@@ -467,6 +548,7 @@ export function IntelGrid({
   }
 
   const [wrap, setWrap] = useState(false)
+  const [colsOpen, setColsOpen] = useState(false)
 
   function colDots(colId: string): JSX.Element {
     const active = !!table.getColumn(colId)?.getFilterValue()
@@ -485,36 +567,56 @@ export function IntelGrid({
       </button>
     )
   }
-  function sortArrow(colId: string): string {
-    const d = table.getColumn(colId)?.getIsSorted()
-    return d === 'asc' ? ' ▲' : d === 'desc' ? ' ▼' : ''
+  function sortBadge(colId: string): JSX.Element | null {
+    const col = table.getColumn(colId)
+    const d = col?.getIsSorted()
+    if (!d) return null
+    const idx = col!.getSortIndex()
+    return (
+      <span className="ml-0.5 text-citrus-pink">
+        {d === 'asc' ? '▲' : '▼'}
+        {sorting.length > 1 && idx >= 0 && <sup className="text-[8px]">{idx + 1}</sup>}
+      </span>
+    )
   }
-  // A leaf header cell: click to sort, 3-dots to filter, draggable (field columns) to reorder.
+  const headTh = 'relative px-2 py-1 font-semibold select-none align-bottom'
+  // A leaf header cell: click to sort (shift = multi), 3-dots to filter, draggable (fields) to reorder.
   function leafHeader(l: Leaf): JSX.Element {
     const div = l.firstInBucket ? 'border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40' : ''
     const drag = l.ckind === 'field' && l.pid
+    const w = widthOf(l.colId)
     return (
       <th
         key={l.colId}
+        style={{ width: w, minWidth: w, maxWidth: w }}
         draggable={!!drag}
         onDragStart={drag ? () => setDragF({ pid: l.pid!, f: l.field! }) : undefined}
         onDragOver={drag ? (e) => e.preventDefault() : undefined}
         onDrop={drag ? () => { if (dragF && dragF.pid === l.pid) reorderFields(l.pid!, dragF.f, l.field!); setDragF(null) } : undefined}
         onDragEnd={drag ? () => setDragF(null) : undefined}
-        title={drag ? 'Drag to reorder · click to sort' : 'Click to sort'}
-        className={`px-2 py-1 font-semibold whitespace-nowrap select-none hover:text-citrus-pink ${drag ? 'cursor-move' : 'cursor-pointer'} ${div} ${
+        title={drag ? 'Drag to reorder · click to sort (Shift = add)' : 'Click to sort (Shift = add)'}
+        className={`${headTh} whitespace-nowrap overflow-hidden hover:text-citrus-pink ${drag ? 'cursor-move' : 'cursor-pointer'} ${div} ${
           dragF?.pid === l.pid && dragF?.f === l.field ? 'opacity-40' : ''
         }`}
-        onClick={() => table.getColumn(l.colId)?.toggleSorting()}
+        onClick={(e) => table.getColumn(l.colId)?.toggleSorting(undefined, e.shiftKey)}
       >
-        {l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Source' : l.ckind === 'field' ? l.field : l.label}
-        {sortArrow(l.colId)}
+        <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Source' : l.field}</span>
+        {sortBadge(l.colId)}
         {colDots(l.colId)}
+        {resizeHandle(l.colId)}
       </th>
     )
   }
 
   const hasFilter = globalFilter.trim() !== '' || columnFilters.length > 0
+  const indW = isVis('value') ? widthOf('value') : 0
+  // Pinning: freeze the identity block (select · # · Indicator · Kind) on the left so it stays
+  // visible while scrolling wide provider buckets. Offsets are cumulative from current widths.
+  const PIN_VALUE_L = SELECT_W + NUM_W
+  const PIN_KIND_L = SELECT_W + NUM_W + indW
+  const headPin = 'bg-citrus-cream dark:bg-citrus-night'
+  const pinBg = (sel: boolean): string => (sel ? 'bg-citrus-pink-light dark:bg-citrus-night-elev' : 'bg-citrus-cream dark:bg-citrus-night')
+  const sticky = (left: number, w: number, z: number): React.CSSProperties => ({ position: 'sticky', left, width: w, minWidth: w, maxWidth: w, zIndex: z })
 
   return (
     <>
@@ -551,10 +653,7 @@ export function IntelGrid({
           </button>
         ))}
         {hasFilter && (
-          <button
-            onClick={() => { setGlobalFilter(''); setColumnFilters([]) }}
-            className="text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
-          >
+          <button onClick={() => { setGlobalFilter(''); setColumnFilters([]) }} className="text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted">
             Clear all
           </button>
         )}
@@ -564,11 +663,49 @@ export function IntelGrid({
               {rows.length} of {indicators.length}
             </span>
           )}
+          {/* Columns picker */}
+          <div className="relative">
+            <button
+              onClick={() => setColsOpen((o) => !o)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+              title="Show / hide columns"
+            >
+              <Columns3 className="w-3 h-3" /> Columns
+            </button>
+            {colsOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setColsOpen(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1 max-h-80 w-56 overflow-auto rounded-lg border border-citrus-border bg-citrus-card py-1 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
+                  {leaves.map((l) => (
+                    <Fragment key={l.colId}>
+                      {l.firstInBucket && (
+                        <div className="mt-1 flex items-center justify-between px-3 py-0.5 text-[10px] font-bold uppercase tracking-wide text-citrus-pink">
+                          {providerName(l.pid!)}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => table.getColumn(l.colId)?.toggleVisibility()}
+                        className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-citrus-dark hover:bg-citrus-pink-light/50 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+                      >
+                        <span className={`shrink-0 w-3.5 h-3.5 rounded-sm border flex items-center justify-center ${isVis(l.colId) ? 'bg-citrus-pink border-citrus-pink text-white' : 'border-citrus-border dark:border-citrus-night-border'}`}>
+                          {isVis(l.colId) && <Check className="w-2.5 h-2.5" />}
+                        </span>
+                        <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Source' : l.ckind === 'field' ? l.field : l.label}</span>
+                      </button>
+                    </Fragment>
+                  ))}
+                  <button onClick={() => table.resetColumnVisibility()} className="mt-1 w-full border-t border-citrus-border/60 px-3 py-1.5 text-left text-[11px] font-semibold text-citrus-muted hover:text-citrus-pink dark:border-citrus-night-border/60 dark:text-citrus-night-muted">
+                    Show all
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <button
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
             onClick={() => setExportOpen(true)}
             disabled={selectedValues.length === 0}
-            title={selectedValues.length === 0 ? 'Tick rows to export' : `Export ${selectedValues.length} ticked row(s) to CSV`}
+            title={selectedValues.length === 0 ? 'Select rows to export' : `Export ${selectedValues.length} selected row(s) to CSV`}
           >
             <Download className="w-3 h-3" /> Export CSV
           </button>
@@ -595,101 +732,111 @@ export function IntelGrid({
         ) : rows.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-citrus-muted dark:text-citrus-night-muted">
             No results match the filter.
-            <button
-              onClick={() => { setGlobalFilter(''); setColumnFilters([]) }}
-              className="rounded-md border border-citrus-border px-2 py-0.5 text-xs font-semibold hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border"
-            >
+            <button onClick={() => { setGlobalFilter(''); setColumnFilters([]) }} className="rounded-md border border-citrus-border px-2 py-0.5 text-xs font-semibold hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border">
               Clear filters
             </button>
           </div>
         ) : (
-          <table className="text-xs border-collapse">
-            <thead className="sticky top-0 z-10 bg-citrus-cream/90 backdrop-blur dark:bg-citrus-night/90">
+          <table className="text-xs" style={{ width: totalWidth, tableLayout: 'fixed' }}>
+            <thead className="sticky top-0 z-10 bg-citrus-cream/95 backdrop-blur dark:bg-citrus-night/95">
               {/* Group row: provider buckets (draggable to reorder), empty over the leading cols. */}
               <tr className="text-left text-citrus-muted dark:text-citrus-night-muted">
-                <th />
-                <th />
-                <th rowSpan={2} className="px-2 py-1 font-semibold align-bottom cursor-pointer select-none hover:text-citrus-pink" onClick={() => table.getColumn('value')?.toggleSorting()}>
-                  Indicator{sortArrow('value')}
-                  {colDots('value')}
-                </th>
-                <th rowSpan={2} className="px-2 py-1 font-semibold align-bottom cursor-pointer select-none hover:text-citrus-pink" onClick={() => table.getColumn('kind')?.toggleSorting()}>
-                  Kind{sortArrow('kind')}
-                  {colDots('kind')}
-                </th>
-                {providerIds.map((pid) => (
+                <th style={sticky(0, SELECT_W, 30)} className={headPin} />
+                <th style={sticky(SELECT_W, NUM_W, 30)} className={headPin} />
+                {isVis('value') && (
+                  <th rowSpan={2} style={sticky(PIN_VALUE_L, indW, 30)} className={`${headTh} ${headPin} cursor-pointer hover:text-citrus-pink`} onClick={(e) => table.getColumn('value')?.toggleSorting(undefined, e.shiftKey)}>
+                    Indicator{sortBadge('value')}
+                    {colDots('value')}
+                    {resizeHandle('value')}
+                  </th>
+                )}
+                {isVis('kind') && (
+                  <th rowSpan={2} style={sticky(PIN_KIND_L, widthOf('kind'), 30)} className={`${headTh} ${headPin} cursor-pointer hover:text-citrus-pink`} onClick={(e) => table.getColumn('kind')?.toggleSorting(undefined, e.shiftKey)}>
+                    Kind{sortBadge('kind')}
+                    {colDots('kind')}
+                    {resizeHandle('kind')}
+                  </th>
+                )}
+                {visBuckets.map((b) => (
                   <th
-                    key={pid}
-                    colSpan={2 + fieldsByProvider[pid].length}
+                    key={b.pid}
+                    colSpan={b.count}
                     draggable
-                    onDragStart={() => setDragP(pid)}
+                    onDragStart={() => setDragP(b.pid)}
                     onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => { if (dragP) reorderProviders(dragP, pid); setDragP(null) }}
+                    onDrop={() => { if (dragP) reorderProviders(dragP, b.pid); setDragP(null) }}
                     onDragEnd={() => setDragP(null)}
                     title="Drag to reorder this bucket"
-                    className={`px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${dragP === pid ? 'opacity-40' : ''}`}
+                    className={`px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${dragP === b.pid ? 'opacity-40' : ''}`}
                   >
-                    {providerName(pid)}
+                    {b.name}
                   </th>
                 ))}
               </tr>
-              {/* Leaf row: select-all, #, then each provider's Status / fields / Source. */}
+              {/* Leaf row: select-all, #, then each visible provider leaf. */}
               <tr className="text-left text-citrus-muted dark:text-citrus-night-muted">
-                <th className="px-2 py-1">
+                <th style={sticky(0, SELECT_W, 30)} className={`px-2 py-1 ${headPin}`}>
                   <input ref={headerBoxRef} type="checkbox" checked={table.getIsAllRowsSelected()} onChange={table.getToggleAllRowsSelectedHandler()} />
                 </th>
-                <th className="px-2 py-1 text-right font-semibold">#</th>
-                {leaves.filter((l) => l.ckind !== 'indicator' && l.ckind !== 'kind').map(leafHeader)}
+                <th style={sticky(SELECT_W, NUM_W, 30)} className={`px-2 py-1 text-right font-semibold ${headPin}`}>#</th>
+                {visBuckets.flatMap((b) => {
+                  const ls: Leaf[] = []
+                  if (b.showStatus) ls.push({ colId: `p:${b.pid}:status`, label: `${b.name} Status`, pid: b.pid, ckind: 'status', firstInBucket: true })
+                  for (const f of b.fields) ls.push({ colId: `p:${b.pid}:f:${f}`, label: `${b.name} ${f}`, pid: b.pid, ckind: 'field', field: f })
+                  if (b.showSource) ls.push({ colId: `p:${b.pid}:source`, label: `${b.name} Source`, pid: b.pid, ckind: 'source' })
+                  // The first leaf of the bucket carries the divider.
+                  if (ls[0]) ls[0] = { ...ls[0], firstInBucket: true }
+                  return ls.map(leafHeader)
+                })}
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => {
                 const rr = row.original
                 const isSel = row.getIsSelected()
-                const isHi = highlighted.has(rr.value)
                 return (
                   <tr
                     key={rr.value}
                     className={`cursor-pointer select-none border-t border-citrus-border/60 dark:border-citrus-night-border/60 hover:bg-citrus-sand/30 dark:hover:bg-citrus-night-elev/40 ${
-                      isHi
-                        ? 'bg-citrus-pink-light/60 dark:bg-citrus-night-elev/80'
-                        : isSel
-                          ? 'bg-citrus-pink-light/20 dark:bg-citrus-night-elev/40'
-                          : i % 2 === 1
-                            ? 'bg-citrus-sand/15 dark:bg-citrus-night-card/30'
-                            : ''
+                      isSel ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/70' : i % 2 === 1 ? 'bg-citrus-sand/15 dark:bg-citrus-night-card/30' : ''
                     }`}
-                    onMouseDown={(e) => { if (e.button === 0) beginRow(i, rr.value) }}
-                    onMouseEnter={() => enterRow(i)}
+                    onMouseDown={(e) => rowMouseDown(e, i, rr.value)}
+                    onMouseEnter={() => rowMouseEnter(i)}
                     onContextMenu={(e) => openMenu(e, rr.value)}
                   >
-                    <td className="px-2 py-1">
+                    <td style={sticky(0, SELECT_W, 20)} className={`px-2 py-1 ${pinBg(isSel)}`}>
                       <input type="checkbox" checked={isSel} onMouseDown={(e) => e.stopPropagation()} onChange={row.getToggleSelectedHandler()} />
                     </td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums text-citrus-muted/70 dark:text-citrus-night-muted/70">{i + 1}</td>
-                    <ValueCell text={rr.value} wrap={wrap} mono />
-                    <td className="px-2 py-1 font-mono text-citrus-muted dark:text-citrus-night-muted">{rr.kind}</td>
-                    {providerIds.map((pid) => {
-                      const r = rr.byP[pid]
+                    <td style={sticky(SELECT_W, NUM_W, 20)} className={`px-2 py-1 text-right font-mono tabular-nums text-citrus-muted/70 dark:text-citrus-night-muted/70 ${pinBg(isSel)}`}>{i + 1}</td>
+                    {isVis('value') && <ValueCell text={rr.value} wrap={wrap} mono style={sticky(PIN_VALUE_L, indW, 20)} className={pinBg(isSel)} />}
+                    {isVis('kind') && (
+                      <td style={sticky(PIN_KIND_L, widthOf('kind'), 20)} className={`px-2 py-1 font-mono text-citrus-muted dark:text-citrus-night-muted overflow-hidden text-ellipsis whitespace-nowrap ${pinBg(isSel)}`}>
+                        {rr.kind}
+                      </td>
+                    )}
+                    {visBuckets.map((b) => {
+                      const r = rr.byP[b.pid]
+                      const sw = widthOf(`p:${b.pid}:status`)
                       return (
-                        <Fragment key={pid}>
-                          <td className="px-2 py-1 border-l-[3px] border-citrus-pink/40 dark:border-citrus-pink/30 whitespace-nowrap">
-                            {r ? (
-                              <span className="inline-flex items-center gap-1.5">
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${STATUS_STYLE[r.status] ?? ''}`} title={r.message}>
-                                  {r.status}
+                        <Fragment key={b.pid}>
+                          {b.showStatus && (
+                            <td style={{ width: sw, minWidth: sw, maxWidth: sw }} className="px-2 py-1 border-l-[3px] border-citrus-pink/40 dark:border-citrus-pink/30 overflow-hidden whitespace-nowrap">
+                              {r ? (
+                                <span className="inline-flex items-center gap-1.5">
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${STATUS_STYLE[r.status] ?? ''}`} title={r.message}>
+                                    {r.status}
+                                  </span>
+                                  {r.status !== 'ok' && r.message && <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">{r.message}</span>}
                                 </span>
-                                {r.status !== 'ok' && r.message && (
-                                  <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">{r.message}</span>
-                                )}
-                              </span>
-                            ) : (
-                              <span className="text-citrus-muted/50 dark:text-citrus-night-muted/50">—</span>
-                            )}
-                          </td>
-                          {fieldsByProvider[pid].map((f) =>
-                            pid === 'watchlist' && f === 'Lists' ? (
-                              <td key={f} className="px-2 py-1 align-top">
+                              ) : (
+                                <span className="text-citrus-muted/50 dark:text-citrus-night-muted/50">—</span>
+                              )}
+                            </td>
+                          )}
+                          {b.fields.map((f) => {
+                            const fw = widthOf(`p:${b.pid}:f:${f}`)
+                            return b.pid === 'watchlist' && f === 'Lists' ? (
+                              <td key={f} style={{ width: fw, minWidth: fw, maxWidth: fw }} className="px-2 py-1 align-top overflow-hidden">
                                 {r?.fields[f] ? (
                                   <span className="flex flex-wrap gap-1">
                                     {r.fields[f].split(', ').map((name) => (
@@ -708,15 +855,18 @@ export function IntelGrid({
                                 )}
                               </td>
                             ) : (
-                              <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} />
+                              <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} style={{ width: fw, minWidth: fw, maxWidth: fw }} />
                             )
+                          })}
+                          {b.showSource && (
+                            <td
+                              style={{ width: widthOf(`p:${b.pid}:source`) }}
+                              className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted overflow-hidden whitespace-nowrap"
+                              title={r?.fetchedAt ? `fetched ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
+                            >
+                              {r ? (r.fromCache ? 'cached ✓' : 'fresh') : ''}
+                            </td>
                           )}
-                          <td
-                            className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted whitespace-nowrap"
-                            title={r?.fetchedAt ? `fetched ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
-                          >
-                            {r ? (r.fromCache ? 'cached ✓' : 'fresh') : ''}
-                          </td>
                         </Fragment>
                       )
                     })}
@@ -788,10 +938,7 @@ export function IntelGrid({
 
       {exportOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={() => setExportOpen(false)}>
-          <div
-            className="w-[22rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="w-[22rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Export to CSV</div>
             <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">
               Export <strong className="text-citrus-dark dark:text-citrus-night-text">{selectedValues.length}</strong>{' '}

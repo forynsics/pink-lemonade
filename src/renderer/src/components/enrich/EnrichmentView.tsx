@@ -482,7 +482,11 @@ export function EnrichmentView({
         providers={providers}
         providerOrder={doc.providerOrder}
         fieldOrder={doc.fieldOrder}
+        savedSizing={doc.colSizing}
+        savedVisibility={doc.colVisibility}
+        savedSorting={doc.sorting}
         onReorder={(patch) => onPatch(patch)}
+        onViewState={(patch) => onPatch(patch)}
         onRun={handleRun}
         onClearCache={clearCacheTargets}
         onRemove={removeTargets}

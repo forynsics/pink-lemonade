@@ -26,10 +26,11 @@ import type { EnrichItem, EnrichProviderInfo, EnrichResultRow } from '../../stat
 // sorting (multi-column), per-column multi-select filters, the global (whole-row) search, faceted
 // distinct values, row selection, column sizing + visibility — while we render the header/body
 // ourselves so the provider-bucket layout, dividers, badges, and chips stay as designed. The dataset
-// is the indicators the user added (small, in-memory) — no virtualization or SQL here.
+// is the indicators the user added (small, in-memory) — no SQL; rows are virtualized (TanStack
+// Virtual) only to keep the DOM light, not because the data is paged.
 //
-// Columns are fixed-width (TanStack columnSizing) so they're drag-resizable; widths/visibility are
-// session-local (reset on reload, like sort/filter). Reorder stays persisted via doc order.
+// Columns are fixed-width (TanStack columnSizing) so they're drag-resizable (double-click a handle
+// to auto-fit). Widths, hidden columns, and sort persist to the doc (debounced), as does reorder.
 
 type ResultMap = Record<string, Record<string, EnrichResultRow>>
 
@@ -44,6 +45,20 @@ const STATUS_STYLE: Record<string, string> = {
 const SELECT_W = 34
 const NUM_W = 44
 const MIN_W = 56
+const MAX_AUTOFIT_W = 600
+
+/** Pixel width of `text` rendered at the grid's cell font (mono for the identity columns). Used by
+ *  double-click auto-fit; the dataset is in memory, so no SQL round-trip is needed. */
+function measureWidth(text: string, mono: boolean): number {
+  const el = document.createElement('span')
+  el.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;pointer-events:none'
+  el.className = `text-xs ${mono ? 'font-mono' : ''}`
+  el.textContent = text
+  document.body.appendChild(el)
+  const w = el.offsetWidth
+  document.body.removeChild(el)
+  return w
+}
 function defaultSize(ckind: Leaf['ckind']): number {
   switch (ckind) {
     case 'indicator':
@@ -249,7 +264,11 @@ export function IntelGrid({
   providers,
   providerOrder,
   fieldOrder,
+  savedSizing,
+  savedVisibility,
+  savedSorting,
   onReorder,
+  onViewState,
   onRun,
   onClearCache,
   onRemove
@@ -259,7 +278,13 @@ export function IntelGrid({
   providers: EnrichProviderInfo[]
   providerOrder?: string[]
   fieldOrder?: Record<string, string[]>
+  /** Persisted view state to restore on mount (widths / hidden columns / sort). */
+  savedSizing?: ColumnSizingState
+  savedVisibility?: VisibilityState
+  savedSorting?: SortingState
   onReorder: (patch: { providerOrder?: string[]; fieldOrder?: Record<string, string[]> }) => void
+  /** Persist view state back to the doc (debounced; widths survive a reload now). */
+  onViewState: (patch: { colSizing?: ColumnSizingState; colVisibility?: VisibilityState; sorting?: SortingState }) => void
   onRun: (providerId: string, values: string[]) => void
   onClearCache: (values: string[]) => void
   onRemove: (values: string[]) => void
@@ -346,14 +371,34 @@ export function IntelGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leaves])
 
-  const [sorting, setSorting] = useState<SortingState>([])
+  // Widths / hidden columns / sort restore from the doc on mount, then live in local state (so a
+  // resize drag stays smooth); the effect below mirrors changes back to the doc, debounced.
+  const [sorting, setSorting] = useState<SortingState>(() => savedSorting ?? [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
-  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => savedVisibility ?? {})
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => savedSizing ?? {})
   const [grouping, setGrouping] = useState<GroupingState>([])
   const [expanded, setExpanded] = useState<ExpandedState>({})
+
+  // Persist view state to the doc whenever it changes, debounced so a resize drag writes once on
+  // settle (not per mousemove). The ref keeps the callback fresh without retriggering the effect,
+  // and the mount guard avoids echoing the just-loaded state straight back.
+  const onViewStateRef = useRef(onViewState)
+  onViewStateRef.current = onViewState
+  const persistedOnce = useRef(false)
+  useEffect(() => {
+    if (!persistedOnce.current) {
+      persistedOnce.current = true
+      return
+    }
+    const t = window.setTimeout(
+      () => onViewStateRef.current({ colSizing: columnSizing, colVisibility: columnVisibility, sorting }),
+      250
+    )
+    return () => window.clearTimeout(t)
+  }, [columnSizing, columnVisibility, sorting])
 
   const table = useReactTable({
     data,
@@ -437,13 +482,41 @@ export function IntelGrid({
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }
+  // Double-click the handle → fit the column to its widest value (whole in-memory dataset) + header.
+  // Scanning by string length first keeps this to two DOM measures regardless of row count.
+  function autoFit(colId: string): void {
+    const leaf = leaves.find((l) => l.colId === colId)
+    const header = !leaf
+      ? colId
+      : leaf.ckind === 'status'
+        ? 'Status'
+        : leaf.ckind === 'source'
+          ? 'Source'
+          : leaf.ckind === 'field'
+            ? leaf.field ?? ''
+            : leaf.label
+    const mono = colId === 'value' || colId === 'kind'
+    let longest = ''
+    for (const r of data) {
+      const v = r.cells[colId]
+      if (v && v.length > longest.length) longest = v
+    }
+    const cellW = longest ? measureWidth(longest, mono) + 20 : 0 // px-2 padding + buffer
+    const headerW = measureWidth(header, false) + 44 // padding + sort badge + 3-dots
+    const w = Math.min(MAX_AUTOFIT_W, Math.max(MIN_W, Math.ceil(Math.max(cellW, headerW))))
+    setColumnSizing((s) => ({ ...s, [colId]: w }))
+  }
   function resizeHandle(colId: string): JSX.Element {
     return (
       <span
         onMouseDown={(e) => startResize(e, colId)}
         onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => {
+          e.stopPropagation()
+          autoFit(colId)
+        }}
         className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-citrus-pink/40"
-        title="Drag to resize"
+        title="Drag to resize · double-click to fit"
       />
     )
   }

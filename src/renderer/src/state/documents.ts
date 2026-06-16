@@ -55,6 +55,11 @@ export interface EnrichmentDoc extends DocBase {
   providerOrder?: string[]
   /** User's preferred field-column order per provider. Fields not listed render after. */
   fieldOrder?: Record<string, string[]>
+  /** Persisted Intel grid view state, keyed by TanStack column id (stable across sessions while
+   *  providers/fields are unchanged): column widths, hidden columns, and the (multi-)sort list. */
+  colSizing?: Record<string, number>
+  colVisibility?: Record<string, boolean>
+  sorting?: Array<{ id: string; desc: boolean }>
 }
 
 export type PinkDoc = ScratchDoc | WorkspaceDoc | EnrichmentDoc
@@ -136,7 +141,11 @@ function migrate(raw: unknown): PinkDoc | null {
       dbPath: typeof d.dbPath === 'string' ? d.dbPath : '',
       providerOrder: Array.isArray(d.providerOrder) ? (d.providerOrder as string[]) : undefined,
       fieldOrder:
-        d.fieldOrder && typeof d.fieldOrder === 'object' ? (d.fieldOrder as Record<string, string[]>) : undefined
+        d.fieldOrder && typeof d.fieldOrder === 'object' ? (d.fieldOrder as Record<string, string[]>) : undefined,
+      colSizing: d.colSizing && typeof d.colSizing === 'object' ? (d.colSizing as Record<string, number>) : undefined,
+      colVisibility:
+        d.colVisibility && typeof d.colVisibility === 'object' ? (d.colVisibility as Record<string, boolean>) : undefined,
+      sorting: Array.isArray(d.sorting) ? (d.sorting as Array<{ id: string; desc: boolean }>) : undefined
     }
   }
   if (d?.kind === 'workspace') {

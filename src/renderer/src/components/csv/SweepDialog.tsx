@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Crosshair, Loader2, X } from 'lucide-react'
+import { Crosshair, X } from 'lucide-react'
 import type { CsvColumn } from '../../state/csvTypes'
 import { parseIntelText, type SweepKind } from '../../state/sweepIntel'
 
@@ -19,15 +19,21 @@ export function SweepDialog({
   columns,
   sourceName,
   onClose,
-  onSwept
+  onSwept,
+  onSeeSightings
 }: {
   tabId: string
   columns: CsvColumn[]
   sourceName: string
   onClose: () => void
   onSwept: () => void
+  /** Open the Sightings panel (offered after a run, while the indicator list is unchanged). */
+  onSeeSightings: () => void
 }): JSX.Element {
   const [text, setText] = useState('')
+  // The exact paste text of the last successful run. While it still matches, re-running would be
+  // a no-op, so the primary action becomes "See sightings"; editing the list flips it back.
+  const [lastRunText, setLastRunText] = useState<string | null>(null)
   const [allColumns, setAllColumns] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(() => new Set(columns.map((c) => c.name)))
   const [running, setRunning] = useState(false)
@@ -67,7 +73,10 @@ export function SweepDialog({
     const res = await window.api.csv.sweep(tabId, reqId, parsed.entries, cols)
     setRunning(false)
     setResult(res)
-    if (!('canceled' in res)) onSwept() // refresh the grid's sighting markers + count
+    if (!('canceled' in res)) {
+      onSwept() // refresh the grid's sighting markers + count
+      setLastRunText(text) // re-running the same list is now redundant → offer "See sightings"
+    }
   }
 
   function cancel(): void {
@@ -98,7 +107,10 @@ export function SweepDialog({
           </label>
           <textarea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value)
+              setResult(null) // a changed list invalidates the last run's result
+            }}
             placeholder={'Paste IPs, domains, or hashes — one per line.\nURLs are reduced to their domain; defanged values (1[.]2[.]3[.]4) are fine.'}
             className="h-28 w-full resize-y rounded-md border border-citrus-border bg-citrus-cream px-2 py-1.5 font-mono text-xs text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
           />
@@ -203,15 +215,26 @@ export function SweepDialog({
               >
                 Close
               </button>
-              <button
-                onClick={() => void run()}
-                disabled={!canRun}
-                className="inline-flex items-center gap-1 rounded-md bg-red-500 px-3 py-1 text-[11px] font-bold text-white hover:bg-red-600 disabled:opacity-40 dark:bg-red-500 dark:hover:bg-red-600"
-                title={parsed.entries.length === 0 ? 'Add some indicators first' : colCount === 0 ? 'Pick at least one column' : `Sweep ${parsed.entries.length} indicator(s) across ${colCount} column(s)`}
-              >
-                {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Crosshair className="h-3.5 w-3.5" />}
-                Run sweep
-              </button>
+              {lastRunText !== null && lastRunText === text ? (
+                <button
+                  onClick={onSeeSightings}
+                  className="inline-flex items-center gap-1 rounded-md bg-red-500 px-3 py-1 text-[11px] font-bold text-white hover:bg-red-600"
+                  title="Open the Sightings panel (the list is unchanged — no need to re-sweep)"
+                >
+                  <Crosshair className="h-3.5 w-3.5" />
+                  See sightings
+                </button>
+              ) : (
+                <button
+                  onClick={() => void run()}
+                  disabled={!canRun}
+                  className="inline-flex items-center gap-1 rounded-md bg-red-500 px-3 py-1 text-[11px] font-bold text-white hover:bg-red-600 disabled:opacity-40 dark:bg-red-500 dark:hover:bg-red-600"
+                  title={parsed.entries.length === 0 ? 'Add some indicators first' : colCount === 0 ? 'Pick at least one column' : `Sweep ${parsed.entries.length} indicator(s) across ${colCount} column(s)`}
+                >
+                  <Crosshair className="h-3.5 w-3.5" />
+                  Run sweep
+                </button>
+              )}
             </>
           )}
         </div>

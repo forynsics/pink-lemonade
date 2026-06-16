@@ -696,6 +696,11 @@ export function CsvViewer({
           sourceName={doc.sourceName}
           onClose={() => setSweepOpen(false)}
           onSwept={() => setSightingRev((r) => r + 1)}
+          onSeeSightings={() => {
+            setSweepOpen(false)
+            setDistinctCol(null)
+            setSightingsPanelOpen(true)
+          }}
         />
       )}
 

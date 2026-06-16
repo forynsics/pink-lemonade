@@ -367,6 +367,25 @@ export function VirtualGrid({
     [virtualizer]
   )
 
+  // Clicking a row's sighting crosshair jumps to the cell holding the match: find the first column
+  // whose value contains a matched indicator, scroll it into view (both axes), and select that cell.
+  const jumpToSightingCell = useCallback(
+    (absRow: number, rowData: string[], vals: string[]) => {
+      const lc = vals.map((v) => v.toLowerCase())
+      let c = columns.findIndex((_, i) => {
+        const cell = (rowData[dataIdx[i]] ?? '').toLowerCase()
+        return lc.some((v) => v !== '' && cell.includes(v))
+      })
+      if (c < 0) c = 0
+      virtualizer.scrollToIndex(absRow, { align: 'center' })
+      const left = IDX_W + widths.slice(0, c).reduce((a, b) => a + (b ?? DEFAULT_COL_W), 0)
+      if (scrollRef.current) scrollRef.current.scrollLeft = Math.max(0, left - 48)
+      scrollRef.current?.focus()
+      setSel({ anchor: { r: absRow, c }, focus: { r: absRow, c } })
+    },
+    [columns, dataIdx, widths, virtualizer]
+  )
+
   // ArrowUp/Down move the selected row; Shift+ArrowUp/Down extend it (full-width rows). Other keys
   // (Ctrl/Cmd+C) fall through to the copy handler.
   const onGridKey = useCallback(
@@ -572,9 +591,17 @@ export function VirtualGrid({
                 title={isAnchor ? 'Pivot anchor — the row you pivoted from' : 'Select row'}
               >
                 {sightingVals != null && (
-                  <span className="shrink-0 flex" title={`Sighting — ${sightingVals.join(', ')}`}>
-                    <Crosshair className="w-3 h-3 text-red-500 dark:text-red-400" />
-                  </span>
+                  <button
+                    className="shrink-0 flex text-red-500 hover:text-red-600 dark:text-red-400"
+                    title={`Sighting — ${sightingVals.join(', ')} · click to jump to the match`}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      jumpToSightingCell(abs, row, sightingVals)
+                    }}
+                  >
+                    <Crosshair className="w-3 h-3" />
+                  </button>
                 )}
                 {isAnchor && <MapPin className="w-3 h-3 shrink-0" />}
                 {abs + 1}

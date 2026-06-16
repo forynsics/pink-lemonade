@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Crosshair, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Crosshair, FileUp, ListChecks, X } from 'lucide-react'
 import type { CsvColumn } from '../../state/csvTypes'
+import type { WatchlistInfo } from '../../state/enrichTypes'
 import { parseIntelText, type SweepKind } from '../../state/sweepIntel'
 
 const KIND_CHIP: Record<SweepKind, string> = {
@@ -8,6 +9,8 @@ const KIND_CHIP: Record<SweepKind, string> = {
   domain: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   hash: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
 }
+// Watchlist kinds map onto sweep kinds (asn has no sweep matcher, so those lists are filtered out).
+const WL_CHIP: Record<string, string> = { ip: KIND_CHIP.ipv4, domain: KIND_CHIP.domain, hash: KIND_CHIP.hash }
 
 /**
  * Intel Sweep dialog: paste an intel set (IPs / domains / hashes), pick which columns to scan, and
@@ -45,6 +48,51 @@ export function SweepDialog({
   const [progress, setProgress] = useState<{ scanned: number; max: number; sightings: number } | null>(null)
   const [result, setResult] = useState<{ sightings: number; hits: number } | { canceled: true } | null>(null)
   const reqRef = useRef(0)
+
+  // Intel sources beyond pasting: saved watchlists + a file. All three funnel into the textarea
+  // (the single source of truth), so the existing parse/preview/dedup/run path is unchanged and you
+  // can stack sources (a watchlist + a file + a few extra pasted lines) and still edit the result.
+  const [watchlists, setWatchlists] = useState<WatchlistInfo[]>([])
+  const [wlOpen, setWlOpen] = useState(false)
+  const [loadNote, setLoadNote] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.api.watchlist.list().then((ws) => {
+      // Only ip/domain/hash lists are sweepable (no ASN matcher).
+      if (live) setWatchlists(ws.filter((w) => w.kind === 'ip' || w.kind === 'domain' || w.kind === 'hash'))
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  // Append loaded indicators to whatever's in the box (newline-joined), invalidating the last result.
+  function appendIntel(more: string): void {
+    const add = more.trim()
+    if (!add) return
+    setText((t) => (t.trim() === '' ? add : `${t.replace(/\s*$/, '')}\n${add}`))
+    setResult(null)
+    setLoadNote(null)
+  }
+  async function loadWatchlist(w: WatchlistInfo): Promise<void> {
+    setWlOpen(false)
+    const entries = await window.api.watchlist.entries(w.id)
+    if (entries.length === 0) {
+      setLoadNote(`"${w.name}" is empty`)
+      return
+    }
+    appendIntel(entries.join('\n'))
+  }
+  async function loadFile(): Promise<void> {
+    const f = await window.api.openFile()
+    if (!f) return
+    if (f.tooLarge) {
+      setLoadNote(`${f.name} is too large to load as a watchlist`)
+      return
+    }
+    // Files are often CSV/space-delimited — tokenize any separator to one indicator per line.
+    appendIntel(f.content.split(/[\s,;]+/).filter(Boolean).join('\n'))
+  }
 
   const parsed = useMemo(() => parseIntelText(text), [text])
   const colCount = allColumns ? columns.length : selected.size
@@ -106,19 +154,59 @@ export function SweepDialog({
         </div>
 
         <div className="flex-1 overflow-auto px-5 py-3">
-          {/* Paste box */}
-          <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
-            Indicators to sweep for
-          </label>
+          {/* Indicator sources: paste (the box) + load from a watchlist / file */}
+          <div className="mb-1 flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
+              Indicators to sweep for
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <div className="relative">
+                <button
+                  onClick={() => setWlOpen((o) => !o)}
+                  disabled={watchlists.length === 0}
+                  className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[10px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-text"
+                  title={watchlists.length === 0 ? 'No IP / domain / hash watchlists yet' : 'Load indicators from a saved watchlist'}
+                >
+                  <ListChecks className="h-3 w-3" /> Watchlist <ChevronDown className="h-2.5 w-2.5" />
+                </button>
+                {wlOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setWlOpen(false)} />
+                    <div className="absolute right-0 top-full z-50 mt-1 flex max-h-60 w-56 flex-col overflow-auto rounded-lg border border-citrus-border bg-citrus-card py-1 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card">
+                      {watchlists.map((w) => (
+                        <button
+                          key={w.id}
+                          onClick={() => void loadWatchlist(w)}
+                          className="flex items-center gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-citrus-pink-light/60 dark:hover:bg-citrus-night-elev"
+                        >
+                          <span className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${WL_CHIP[w.kind] ?? ''}`}>{w.kind}</span>
+                          <span className="truncate text-citrus-dark dark:text-citrus-night-text">{w.name}</span>
+                          <span className="ml-auto shrink-0 text-citrus-muted dark:text-citrus-night-muted">{w.count.toLocaleString()}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => void loadFile()}
+                className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[10px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
+                title="Load indicators from a .txt or .csv file"
+              >
+                <FileUp className="h-3 w-3" /> File
+              </button>
+            </div>
+          </div>
           <textarea
             value={text}
             onChange={(e) => {
               setText(e.target.value)
               setResult(null) // a changed list invalidates the last run's result
             }}
-            placeholder={'Paste IPs, domains, or hashes — one per line.\nURLs are reduced to their domain; defanged values (1[.]2[.]3[.]4) are fine.'}
+            placeholder={'Paste IPs, domains, or hashes — one per line, or load from a watchlist / file above.\nURLs are reduced to their domain; defanged values (1[.]2[.]3[.]4) are fine.'}
             className="h-28 w-full resize-y rounded-md border border-citrus-border bg-citrus-cream px-2 py-1.5 font-mono text-xs text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
           />
+          {loadNote && <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{loadNote}</div>}
 
           {/* Live parse feedback */}
           {text.trim() !== '' && (

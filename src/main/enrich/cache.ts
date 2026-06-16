@@ -12,11 +12,8 @@ import {
   buildCacheGetAllSql,
   buildCacheDeleteSql,
   CACHE_PUT_SQL,
-  CACHE_STATS_SQL,
   CACHE_DUMP_SQL,
-  CACHE_INDICATOR_COUNT_SQL,
-  CACHE_CLEAR_ALL_SQL,
-  CACHE_CLEAR_PROVIDER_SQL
+  CACHE_INDICATOR_COUNT_SQL
 } from './sql'
 import type { EnrichmentResult } from './providers/types'
 
@@ -147,10 +144,6 @@ export function put(dbPath: string, provider: string, entries: PutEntry[], now: 
   tx(entries)
 }
 
-export function stats(dbPath: string): Array<{ provider: string; n: number }> {
-  return conn(dbPath).prepare(CACHE_STATS_SQL).all() as Array<{ provider: string; n: number }>
-}
-
 /** Delete all cached rows (every provider) for the given indicators in `dbPath`. */
 export function deleteMany(dbPath: string, indicators: string[]): void {
   if (indicators.length === 0) return
@@ -162,13 +155,6 @@ export function deleteMany(dbPath: string, indicators: string[]): void {
     }
   })
   tx(indicators)
-}
-
-/** Clear all of `dbPath`, or just one provider's rows. */
-export function clear(dbPath: string, provider?: string | null): void {
-  const c = conn(dbPath)
-  if (provider) c.prepare(CACHE_CLEAR_PROVIDER_SQL).run(provider)
-  else c.prepare(CACHE_CLEAR_ALL_SQL).run()
 }
 
 /** Close one DB's connection, or all of them (on quit). */

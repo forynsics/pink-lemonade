@@ -15,7 +15,6 @@ import {
   ShieldCheck,
   Database,
   Search,
-  Wrench,
   type LucideIcon
 } from 'lucide-react'
 import type { ToolCategory } from '../tools/types'
@@ -49,8 +48,7 @@ const BY_ID: Record<string, LucideIcon> = {
 const BY_CATEGORY: Record<ToolCategory, LucideIcon> = {
   text: FileText,
   ioc: ShieldAlert,
-  query: Database,
-  enrich: Wrench
+  query: Database
 }
 
 export function toolIcon(toolId: string, category: ToolCategory): LucideIcon {

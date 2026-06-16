@@ -34,13 +34,8 @@ function decryptKey(b64: string): string | null {
 
 export function registerEnrichIpc(): void {
   ipcMain.handle('enrich:providers', () => dbw.call('enrichProviders'))
-  ipcMain.handle('enrich:getConfig', () => dbw.call('enrichGetConfig'))
-  ipcMain.handle('enrich:setConfig', (_e, { patch }: { patch: Record<string, unknown> }) =>
-    dbw.call('enrichSetConfig', patch)
-  )
   // All cache ops are scoped to a specific intel DB file (dbPath).
   ipcMain.handle('enrich:defaultDb', () => dbw.call('enrichDefaultDb'))
-  ipcMain.handle('enrich:cacheStats', (_e, { dbPath }: { dbPath: string }) => dbw.call('enrichCacheStats', dbPath))
   ipcMain.handle('enrich:cacheCount', (_e, { dbPath }: { dbPath: string }) => dbw.call('enrichCacheCount', dbPath))
   // Cache READ only (no provider call) — load what's already known for these indicators.
   ipcMain.handle('enrich:cacheGet', (_e, { dbPath, indicators }: { dbPath: string; indicators: string[] }) =>
@@ -53,9 +48,6 @@ export function registerEnrichIpc(): void {
   // Drop all cached results (every provider) for these indicators — so the next enrich is fresh.
   ipcMain.handle('enrich:cacheDelete', (_e, { dbPath, indicators }: { dbPath: string; indicators: string[] }) =>
     dbw.call('enrichCacheDelete', dbPath, indicators ?? []).then(() => null)
-  )
-  ipcMain.handle('enrich:cacheClear', (_e, { dbPath, provider }: { dbPath: string; provider?: string | null }) =>
-    dbw.call('enrichCacheClear', dbPath, provider ?? null).then(() => null)
   )
 
   // Open an existing intel DB file, or create a new one. Both just return a path; the file + table
@@ -98,10 +90,6 @@ export function registerEnrichIpc(): void {
   ipcMain.handle('enrich:hasKey', async () => {
     const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
     return (typeof c.maxmindKeyEnc === 'string' && c.maxmindKeyEnc !== '') || typeof c.maxmindKeyPlain === 'string'
-  })
-  ipcMain.handle('enrich:clearKey', async () => {
-    await dbw.call('enrichSetConfig', { maxmindKeyEnc: '', maxmindKeyPlain: '' })
-    return null
   })
 
   // The "set it up for me" helper: download + install GeoLite2 (City + ASN) with the user's free

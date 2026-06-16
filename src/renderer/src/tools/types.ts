@@ -1,4 +1,4 @@
-export type ToolCategory = 'text' | 'ioc' | 'query' | 'enrich'
+export type ToolCategory = 'text' | 'ioc' | 'query'
 
 export interface ToolOption {
   key: string

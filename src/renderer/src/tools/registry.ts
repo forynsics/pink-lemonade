@@ -1,4 +1,4 @@
-import type { Tool, ToolCategory, ToolOptions } from './types'
+import type { Tool, ToolOptions } from './types'
 
 const tools = new Map<string, Tool>()
 
@@ -16,10 +16,6 @@ export function getAll(): Tool[] {
 
 export function getById(id: string): Tool | undefined {
   return tools.get(id)
-}
-
-export function byCategory(category: ToolCategory): Tool[] {
-  return getAll().filter((t) => t.category === category)
 }
 
 /** Build the initial option values for a tool from its declared defaults. */

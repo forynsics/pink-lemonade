@@ -77,12 +77,9 @@ const api = {
   // cache DB + providers live in the worker; results stream back over 'enrich:progress'.
   enrich: {
     providers: () => ipcRenderer.invoke('enrich:providers'),
-    getConfig: () => ipcRenderer.invoke('enrich:getConfig'),
-    setConfig: (patch: Record<string, unknown>) => ipcRenderer.invoke('enrich:setConfig', { patch }),
     pickMmdb: () => ipcRenderer.invoke('enrich:pickMmdb'),
     // MaxMind "set it up for me": download GeoLite2 with the user's free key (key stored encrypted).
     hasKey: () => ipcRenderer.invoke('enrich:hasKey'),
-    clearKey: () => ipcRenderer.invoke('enrich:clearKey'),
     maxmindSetup: (key: string | undefined, editions?: string[]) =>
       ipcRenderer.invoke('enrich:maxmindSetup', { key, editions }),
     onSetupProgress: (cb: (p: unknown) => void) => {
@@ -96,9 +93,7 @@ const api = {
     bulk: (reqId: number, dbPath: string, providerId: string, items: Array<{ value: string; kind: string }>) =>
       ipcRenderer.invoke('enrich:bulk', { reqId, dbPath, providerId, items }),
     cancel: () => ipcRenderer.invoke('enrich:cancel'),
-    cacheStats: (dbPath: string) => ipcRenderer.invoke('enrich:cacheStats', { dbPath }),
     cacheCount: (dbPath: string) => ipcRenderer.invoke('enrich:cacheCount', { dbPath }),
-    cacheClear: (dbPath: string, provider?: string | null) => ipcRenderer.invoke('enrich:cacheClear', { dbPath, provider }),
     cacheGet: (dbPath: string, indicators: string[]) => ipcRenderer.invoke('enrich:cacheGet', { dbPath, indicators }),
     cacheDump: (dbPath: string, limit?: number) => ipcRenderer.invoke('enrich:cacheDump', { dbPath, limit }),
     cacheDelete: (dbPath: string, indicators: string[]) => ipcRenderer.invoke('enrich:cacheDelete', { dbPath, indicators }),

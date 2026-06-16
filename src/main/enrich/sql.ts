@@ -38,14 +38,11 @@ export const CACHE_PUT_SQL = `INSERT INTO enrichment (provider, kind, indicator,
     fields_json = excluded.fields_json,
     fetched_at = excluded.fetched_at`
 
-export const CACHE_STATS_SQL = `SELECT provider, COUNT(*) AS n FROM enrichment GROUP BY provider`
 /** Every row in the DB (all providers, all indicators), ordered + capped — powers "Load all". Bind: limit. */
 export const CACHE_DUMP_SQL = `SELECT provider, indicator, kind, status, fields_json AS fieldsJson, fetched_at AS fetchedAt
   FROM enrichment ORDER BY indicator LIMIT ?`
 /** Count of distinct indicators stored (for the DB's entry-count label). */
 export const CACHE_INDICATOR_COUNT_SQL = `SELECT COUNT(DISTINCT indicator) AS n FROM enrichment`
-export const CACHE_CLEAR_ALL_SQL = `DELETE FROM enrichment`
-export const CACHE_CLEAR_PROVIDER_SQL = `DELETE FROM enrichment WHERE provider = ?`
 
 /** DELETE all cached rows (every provider) for `count` indicators. Bind: each indicator. */
 export function buildCacheDeleteSql(count: number): string {

@@ -50,8 +50,6 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   enrichProviders: enrichEngine.listProviders,
   enrichGetConfig: db.getEnrichConfig,
   enrichSetConfig: db.setEnrichConfig,
-  enrichCacheStats: enrichCache.stats,
-  enrichCacheClear: enrichCache.clear,
   enrichCacheGet: enrichCache.getMany,
   enrichCacheDelete: enrichCache.deleteMany,
   enrichCacheDump: enrichCache.dump,

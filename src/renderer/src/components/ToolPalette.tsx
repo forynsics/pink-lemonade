@@ -7,15 +7,13 @@ import type { Tool, ToolCategory } from '../tools/types'
 const CATEGORY_LABELS: Record<ToolCategory, string> = {
   text: 'Text',
   ioc: 'IOC',
-  query: 'Query',
-  enrich: 'Enrich'
+  query: 'Query'
 }
 
 const CATEGORY_BADGE: Record<ToolCategory, string> = {
   text: 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300',
   ioc: 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300',
-  query: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300',
-  enrich: 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300'
+  query: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300'
 }
 
 export function ToolPalette({ onPick }: { onPick: (id: string) => void }): JSX.Element {
@@ -25,7 +23,7 @@ export function ToolPalette({ onPick }: { onPick: (id: string) => void }): JSX.E
 
   const categories = useMemo(() => {
     const present = new Set<ToolCategory>(tools.map((t) => t.category))
-    return (['text', 'ioc', 'query', 'enrich'] as ToolCategory[]).filter((c) => present.has(c))
+    return (['text', 'ioc', 'query'] as ToolCategory[]).filter((c) => present.has(c))
   }, [tools])
 
   const grouped = useMemo(() => {

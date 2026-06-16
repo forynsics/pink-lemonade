@@ -202,11 +202,8 @@ export type MaxmindSetupResult =
 
 export interface EnrichApi {
   providers: () => Promise<EnrichProviderInfo[]>
-  getConfig: () => Promise<Record<string, unknown>>
-  setConfig: (patch: Record<string, unknown>) => Promise<Record<string, unknown>>
   pickMmdb: () => Promise<string | null>
   hasKey: () => Promise<boolean>
-  clearKey: () => Promise<null>
   maxmindSetup: (key: string | undefined, editions?: string[]) => Promise<MaxmindSetupResult>
   onSetupProgress: (cb: (p: EnrichSetupProgress) => void) => () => void
   defaultDb: () => Promise<string>
@@ -214,9 +211,7 @@ export interface EnrichApi {
   newDb: () => Promise<string | null>
   bulk: (reqId: number, dbPath: string, providerId: string, items: EnrichItem[]) => Promise<EnrichBulkResult>
   cancel: () => Promise<null>
-  cacheStats: (dbPath: string) => Promise<Array<{ provider: string; n: number }>>
   cacheCount: (dbPath: string) => Promise<number>
-  cacheClear: (dbPath: string, provider?: string | null) => Promise<null>
   cacheGet: (dbPath: string, indicators: string[]) => Promise<EnrichCachedRow[]>
   cacheDump: (dbPath: string, limit?: number) => Promise<EnrichCachedRow[]>
   cacheDelete: (dbPath: string, indicators: string[]) => Promise<null>

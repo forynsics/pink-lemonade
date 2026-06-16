@@ -45,7 +45,6 @@ export interface WorkspaceDoc extends DocBase {
  * indicator list + chosen provider persist. There is at most one of these at a time. */
 export interface EnrichmentDoc extends DocBase {
   kind: 'enrichment'
-  provider: string
   indicators: EnrichItem[]
   /** The paste box's text (small, persisted). "Send to Enrichment" appends here; "Add" consumes it. */
   draft: string
@@ -90,7 +89,7 @@ export function createDoc(name: string): ScratchDoc {
 }
 
 export function createEnrichmentDoc(name = 'Enrichment', dbPath = ''): EnrichmentDoc {
-  return { id: newId(), name, kind: 'enrichment', provider: 'maxmind', indicators: [], draft: '', dbPath }
+  return { id: newId(), name, kind: 'enrichment', indicators: [], draft: '', dbPath }
 }
 
 export function createWorkspaceDoc(info: WorkspaceInfo): WorkspaceDoc {
@@ -132,7 +131,6 @@ function migrate(raw: unknown): PinkDoc | null {
       id: String(d.id),
       name: String(d.name ?? 'Enrichment'),
       kind: 'enrichment',
-      provider: typeof d.provider === 'string' ? d.provider : 'maxmind',
       indicators: Array.isArray(d.indicators) ? (d.indicators as EnrichItem[]) : [],
       draft: typeof d.draft === 'string' ? d.draft : '',
       dbPath: typeof d.dbPath === 'string' ? d.dbPath : '',

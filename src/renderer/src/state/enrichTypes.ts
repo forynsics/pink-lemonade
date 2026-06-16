@@ -35,8 +35,6 @@ export interface EnrichProgress {
   fromCache: boolean
 }
 
-export type EnrichBulkResult = { rows: EnrichResultRow[]; canceled?: boolean }
-
 /** A cached result row across providers (cache READ only — no provider was run). */
 export interface EnrichCachedRow {
   provider: string

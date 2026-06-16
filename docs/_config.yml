@@ -1,0 +1,7 @@
+# Jekyll config for the GitHub Pages docs site (built from this docs/ folder).
+# GitHub Pages enables jekyll-optional-front-matter (renders .md without front matter),
+# jekyll-relative-links (rewrites [text](page.md) links to the built URLs), and
+# jekyll-readme-index (serves docs/README.md as the site index) — so the guides work as-is.
+title: pink-lemonade
+description: A desktop toolkit for cybersecurity investigation and data wrangling.
+theme: jekyll-theme-cayman

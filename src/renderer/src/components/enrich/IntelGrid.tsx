@@ -527,6 +527,9 @@ export function IntelGrid({
   // --- selection (single model, via TanStack rowSelection): click=select, shift=range, ctrl=toggle ---
   const selectedValues = useMemo(() => Object.keys(rowSelection).filter((k) => rowSelection[k]), [rowSelection])
   const anchorRef = useRef(-1)
+  // The moving end of a keyboard range-select (Shift+Arrow). Distinct from the anchor so each press
+  // extends the span by one instead of re-selecting just the anchor's neighbour.
+  const focusRef = useRef(-1)
   const dragRef = useRef(false)
   const gridRef = useRef<HTMLDivElement>(null)
   const headerBoxRef = useRef<HTMLInputElement>(null)
@@ -569,35 +572,44 @@ export function IntelGrid({
     gridRef.current?.focus()
     if (e.shiftKey && anchorRef.current >= 0) {
       selectRange(anchorRef.current, index)
+      focusRef.current = index
       return
     }
     if (e.ctrlKey || e.metaKey) {
       setRowSelection((prev) => ({ ...prev, [value]: !prev[value] }))
       anchorRef.current = index
+      focusRef.current = index
       return
     }
     setRowSelection({ [value]: true })
     anchorRef.current = index
+    focusRef.current = index
     dragRef.current = true
   }
   function rowMouseEnter(index: number): void {
     if (!dragRef.current || anchorRef.current < 0) return
     selectRange(anchorRef.current, index)
+    focusRef.current = index
   }
   function onGridKeyDown(e: React.KeyboardEvent): void {
     if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || visibleValues.length === 0) return
     e.preventDefault()
-    const cur = anchorRef.current < 0 ? -1 : anchorRef.current
-    const next = cur < 0 ? 0 : Math.min(visibleValues.length - 1, Math.max(0, cur + (e.key === 'ArrowDown' ? 1 : -1)))
-    if (e.shiftKey && cur >= 0) {
-      selectRange(cur, next)
-      // keep anchor; extend focus is `next` but we re-derive from selection extremes next press
-      anchorRef.current = cur
+    const delta = e.key === 'ArrowDown' ? 1 : -1
+    let focus: number
+    if (e.shiftKey && anchorRef.current >= 0) {
+      // Extend: advance the FOCUS end by one, keep the anchor fixed, select the whole span.
+      const from = focusRef.current >= 0 ? focusRef.current : anchorRef.current
+      focus = Math.min(visibleValues.length - 1, Math.max(0, from + delta))
+      focusRef.current = focus
+      selectRange(anchorRef.current, focus)
     } else {
-      setRowSelection({ [visibleValues[next]]: true })
-      anchorRef.current = next
+      // Move: single-select the next row; anchor + focus both jump to it.
+      focus = anchorRef.current < 0 ? 0 : Math.min(visibleValues.length - 1, Math.max(0, anchorRef.current + delta))
+      setRowSelection({ [visibleValues[focus]]: true })
+      anchorRef.current = focus
+      focusRef.current = focus
     }
-    rowVirtualizer.scrollToIndex(next) // keep the focused row on-screen when virtualized
+    rowVirtualizer.scrollToIndex(focus) // keep the moving row on-screen when virtualized
   }
 
   // --- right-click context menu ---

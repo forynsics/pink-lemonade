@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, Copy, Database, Download, Eraser, FilePlus, FolderOpen, KeyRound, ListChecks, ListTree, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, Copy, Database, Download, Eraser, FilePlus, Filter, FolderOpen, KeyRound, ListChecks, ListTree, Loader2, MoreVertical, Plus, Radar, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { classifyIndicator } from '../../tools/ioc/classify'
 import { WatchlistsPanel } from './WatchlistsPanel'
 import type { EnrichmentDoc } from '../../state/documents'
@@ -27,6 +27,13 @@ function orderFields(keys: string[]): string[] {
     if (ib === -1) return -1
     return ia - ib
   })
+}
+// Order `keys` by an explicit user list (known first, in that order); anything not listed keeps its
+// original order and is appended after. Used for the user's saved provider/field order.
+function orderByList(keys: string[], order: string[]): string[] {
+  const known = order.filter((k) => keys.includes(k))
+  const rest = keys.filter((k) => !order.includes(k))
+  return [...known, ...rest]
 }
 
 const STATUS_STYLE: Record<string, string> = {
@@ -66,6 +73,121 @@ function ValueCell({ text, wrap, mono, muted }: { text: string; wrap: boolean; m
   )
 }
 
+// A column's 3-dots dropdown (workspace-viewer style): the column's distinct values as a multi-select
+// checklist. Applying keeps only the checked values (an `in` filter); "All" checked = no filter.
+// Distinct values are computed in memory by the parent and passed in.
+function IntelColMenu({ label, distinct, current, x, y, onApply, onClose }: {
+  label: string
+  distinct: Array<{ value: string; count: number }>
+  current: string[]
+  x: number
+  y: number
+  onApply: (values: string[]) => void
+  onClose: () => void
+}): JSX.Element {
+  const allVals = useMemo(() => distinct.map((d) => d.value), [distinct])
+  const [picked, setPicked] = useState<Set<string>>(() => (current.length ? new Set(current) : new Set(allVals)))
+  const [needle, setNeedle] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onDown = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+  const shown = useMemo(() => {
+    const n = needle.trim().toLowerCase()
+    return n === '' ? distinct : distinct.filter((d) => d.value.toLowerCase().includes(n))
+  }, [distinct, needle])
+  function toggle(v: string): void {
+    setPicked((p) => {
+      const n = new Set(p)
+      if (n.has(v)) n.delete(v)
+      else n.add(v)
+      return n
+    })
+  }
+  function apply(): void {
+    onApply(picked.size === allVals.length ? [] : [...picked])
+    onClose()
+  }
+  const W = 256
+  const left = Math.min(x, window.innerWidth - W - 8)
+  return (
+    <div
+      ref={ref}
+      className="intel-colmenu fixed z-50 flex flex-col rounded-lg border border-citrus-border bg-citrus-card shadow-lg overflow-hidden dark:border-citrus-night-border dark:bg-citrus-night-card"
+      style={{ top: y + 4, left, width: W }}
+    >
+      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-citrus-border/60 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:border-citrus-night-border/60 dark:text-citrus-night-muted">
+        <span className="truncate">{label}</span>
+        <span className="ml-auto font-normal normal-case tracking-normal">{distinct.length} distinct</span>
+      </div>
+      <input
+        autoFocus
+        value={needle}
+        onChange={(e) => setNeedle(e.target.value)}
+        placeholder="find a value…"
+        className="mx-2 my-1.5 px-2 py-1 text-[11px] rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
+      />
+      <div className="max-h-56 overflow-auto scrollbar-none">
+        {shown.map((d) => {
+          const on = picked.has(d.value)
+          return (
+            <button
+              key={d.value}
+              className="w-full flex items-center gap-2 px-3 py-1 text-left text-[11px] font-mono hover:bg-citrus-pink-light/50 dark:hover:bg-citrus-night-elev"
+              onClick={() => toggle(d.value)}
+            >
+              <span
+                className={`shrink-0 w-3.5 h-3.5 rounded-sm border flex items-center justify-center ${
+                  on ? 'bg-citrus-pink border-citrus-pink text-white' : 'border-citrus-border dark:border-citrus-night-border'
+                }`}
+              >
+                {on && <Check className="w-2.5 h-2.5" />}
+              </span>
+              <span className="truncate flex-1 text-citrus-dark dark:text-citrus-night-text">{d.value === '' ? '∅ (empty)' : d.value}</span>
+              <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">{d.count.toLocaleString()}</span>
+            </button>
+          )
+        })}
+        {shown.length === 0 && <div className="px-3 py-2 text-[11px] text-citrus-muted dark:text-citrus-night-muted">no values</div>}
+      </div>
+      <div className="flex items-center gap-1.5 px-2 py-1.5 border-t border-citrus-border/60 dark:border-citrus-night-border/60">
+        <button
+          className="flex-1 px-2 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover"
+          onClick={apply}
+          title="Show only the checked value(s)"
+        >
+          Apply{picked.size > 0 && picked.size < allVals.length ? ` (${picked.size})` : ''}
+        </button>
+        <button
+          className="px-2 py-1 rounded-md text-[11px] font-bold text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          onClick={() => setPicked(new Set(allVals))}
+          title="Select all"
+        >
+          All
+        </button>
+        <button
+          className="px-2 py-1 rounded-md text-[11px] font-bold text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+          onClick={() => setPicked(new Set())}
+          title="Clear selection"
+        >
+          None
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function EnrichmentView({
   doc,
   visible,
@@ -93,6 +215,14 @@ export function EnrichmentView({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [menu, setMenu] = useState<{ x: number; y: number; targets: string[] } | null>(null)
   const [sort, setSort] = useState<{ id: string; dir: 'asc' | 'desc' } | null>(null)
+  // Client-side filtering over the in-memory result matrix (the dataset is small — no SQL needed).
+  // `query` is a free-text search across every cell; `colFilters` are per-column multi-select (`in`)
+  // filters chosen from a column's distinct values, keyed by the same id sortValue() uses
+  // ('ind' | 'kind' | 'p:pid:status' | 'p:pid:source' | 'p:pid:f:field'). `colMenu` is the open
+  // column dropdown (the workspace-viewer-style 3-dots → distinct values + filter).
+  const [query, setQuery] = useState('')
+  const [colFilters, setColFilters] = useState<Array<{ id: string; values: string[] }>>([])
+  const [colMenu, setColMenu] = useState<{ id: string; label: string; x: number; y: number } | null>(null)
   const [wrap, setWrap] = useState(false)
   const [addNote, setAddNote] = useState<string | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
@@ -443,15 +573,16 @@ export function EnrichmentView({
     }
   }
 
-  // Provider buckets to render + each bucket's field columns.
+  // Provider buckets to render + each bucket's field columns. Both honor the user's saved order
+  // (doc.providerOrder / doc.fieldOrder); anything not yet ordered appends in first-seen order.
   const providerIds = useMemo(() => {
     const seen: string[] = []
     for (const ind of doc.indicators) {
       const byP = results[ind.value]
       if (byP) for (const pid of Object.keys(byP)) if (!seen.includes(pid)) seen.push(pid)
     }
-    return seen
-  }, [results, doc.indicators])
+    return doc.providerOrder ? orderByList(seen, doc.providerOrder) : seen
+  }, [results, doc.indicators, doc.providerOrder])
   const fieldsByProvider = useMemo(() => {
     const m: Record<string, string[]> = {}
     for (const ind of doc.indicators) {
@@ -462,10 +593,32 @@ export function EnrichmentView({
         for (const k of Object.keys(byP[pid].fields)) if (!arr.includes(k)) arr.push(k)
       }
     }
-    for (const pid of Object.keys(m)) m[pid] = orderFields(m[pid])
+    for (const pid of Object.keys(m)) {
+      const custom = doc.fieldOrder?.[pid]
+      m[pid] = custom ? orderByList(m[pid], custom) : orderFields(m[pid])
+    }
     return m
-  }, [results, doc.indicators])
+  }, [results, doc.indicators, doc.fieldOrder])
   const providerName = (pid: string): string => providers.find((p) => p.id === pid)?.name ?? pid
+
+  // Drag-to-reorder buckets (providers) and columns (fields within a bucket); persisted to the doc.
+  const [dragP, setDragP] = useState<string | null>(null)
+  const [dragF, setDragF] = useState<{ pid: string; f: string } | null>(null)
+  function reorderProviders(from: string, to: string): void {
+    if (from === to) return
+    const next = providerIds.filter((p) => p !== from)
+    const idx = next.indexOf(to)
+    next.splice(idx < 0 ? next.length : idx, 0, from)
+    onPatch({ providerOrder: next })
+  }
+  function reorderFields(pid: string, from: string, to: string): void {
+    if (from === to) return
+    const next = fieldsByProvider[pid].filter((f) => f !== from)
+    const idx = next.indexOf(to)
+    next.splice(idx < 0 ? next.length : idx, 0, from)
+    onPatch({ fieldOrder: { ...(doc.fieldOrder ?? {}), [pid]: next } })
+  }
+
   const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
 
   // --- sorting (presentation only; the persisted indicator list is never reordered) ---
@@ -486,14 +639,103 @@ export function EnrichmentView({
     setSort((s) => (s && s.id === id ? { id, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { id, dir: 'asc' }))
   }
   const arrow = (id: string): string => (sort?.id === id ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '')
-  const sortedIndicators = useMemo(() => {
-    if (!sort) return doc.indicators
+
+  // Set (or clear, when empty) a column's `in` filter to the chosen distinct values.
+  function setColFilter(id: string, values: string[]): void {
+    setColFilters((fs) => (values.length > 0 ? [...fs.filter((f) => f.id !== id), { id, values }] : fs.filter((f) => f.id !== id)))
+  }
+  function removeFilter(id: string): void {
+    setColFilters((fs) => fs.filter((f) => f.id !== id))
+  }
+  const colFilterFor = (id: string): string[] => colFilters.find((f) => f.id === id)?.values ?? []
+  // Human label for a column id (mirrors the header text), for the filter chips + the column menu.
+  function filterLabel(id: string): string {
+    if (id === 'ind') return 'Indicator'
+    if (id === 'kind') return 'Kind'
+    const parts = id.split(':')
+    if (parts[0] === 'p') {
+      const name = providerName(parts[1])
+      if (parts[2] === 'status') return `${name} Status`
+      if (parts[2] === 'source') return `${name} Source`
+      if (parts[2] === 'f') return `${name} ${parts.slice(3).join(':')}`
+    }
+    return id
+  }
+
+  // The 3-dots button on a column header → opens that column's distinct-values filter dropdown.
+  function colDots(id: string, label: string): JSX.Element {
+    const active = colFilters.some((f) => f.id === id)
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+          setColMenu({ id, label, x: r.left, y: r.bottom })
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        title="Distinct values · filter"
+        className={`ml-1 align-middle ${active ? 'text-citrus-pink' : 'text-citrus-muted/40 hover:text-citrus-pink'}`}
+      >
+        <MoreVertical className="inline w-3 h-3" />
+      </button>
+    )
+  }
+
+  // Whole-row free-text match: indicator + kind + every provider's status/message + all field values.
+  // Lowercase the WHOLE haystack at the end — the field values keep their original case otherwise.
+  function matchesSearch(ind: EnrichItem, q: string): boolean {
+    if (!q) return true
+    let hay = `${ind.value} ${ind.kind}`
+    const byP = results[ind.value]
+    if (byP) {
+      for (const pid of Object.keys(byP)) {
+        const r = byP[pid]
+        hay += ` ${r.status} ${r.message ?? ''}`
+        for (const k of Object.keys(r.fields)) hay += ` ${r.fields[k]}`
+      }
+    }
+    return hay.toLowerCase().includes(q)
+  }
+  // True if the row passes every active `in` filter except (optionally) the one being edited.
+  function matchesColFilters(ind: EnrichItem, exceptId?: string): boolean {
+    for (const f of colFilters) {
+      if (f.id === exceptId) continue
+      if (f.values.length > 0 && !f.values.includes(sortValue(ind, f.id))) return false
+    }
+    return true
+  }
+
+  // Distinct values (with counts) for a column over the rows passing the search + the OTHER column
+  // filters — so a column's own options stay stable while you toggle them (mirrors the CSV viewer).
+  function distinctFor(id: string): Array<{ value: string; count: number }> {
+    const q = query.trim().toLowerCase()
+    const counts = new Map<string, number>()
+    for (const ind of doc.indicators) {
+      if (!matchesSearch(ind, q) || !matchesColFilters(ind, id)) continue
+      const v = sortValue(ind, id)
+      counts.set(v, (counts.get(v) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, undefined, { numeric: true }))
+  }
+
+  // Free-text + per-column filtering, then sort. Computed inline each render (NOT memoized) so it
+  // always reflects the current `results` — like distinctFor. The dataset is the indicators the user
+  // added (small), so filtering the whole matrix every render is instant.
+  const filteredIndicators = ((): EnrichItem[] => {
+    const q = query.trim().toLowerCase()
+    if (!q && colFilters.length === 0) return doc.indicators
+    return doc.indicators.filter((ind) => matchesSearch(ind, q) && matchesColFilters(ind))
+  })()
+
+  const sortedIndicators = ((): EnrichItem[] => {
+    if (!sort) return filteredIndicators
     const dir = sort.dir === 'asc' ? 1 : -1
-    return [...doc.indicators].sort(
+    return [...filteredIndicators].sort(
       (a, b) => sortValue(a, sort.id).localeCompare(sortValue(b, sort.id), undefined, { numeric: true, sensitivity: 'base' }) * dir
     )
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sort, doc.indicators, results])
+  })()
 
   // Build CSV (header row + one row per indicator, in current sort order) for the given rows.
   function buildCsv(targets: string[]): string {
@@ -757,6 +999,57 @@ export function EnrichmentView({
         </div>
       )}
 
+      {/* Filter bar — whole-row free-text search + active per-column (distinct-value) filter chips.
+          Per-column filtering itself is driven from each header's 3-dots menu. */}
+      {doc.indicators.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-4 py-1.5 border-b border-citrus-border dark:border-citrus-night-border">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-citrus-muted dark:text-citrus-night-muted" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search all columns…"
+              title="Matches any text in the row — indicator, kind, status, and every field"
+              className="w-56 rounded-md border border-citrus-border bg-citrus-cream pl-7 pr-6 py-1 text-xs text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
+            />
+            {query && (
+              <button onClick={() => setQuery('')} title="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-citrus-muted hover:text-citrus-pink">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+          {colFilters.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setColMenu({ id: f.id, label: filterLabel(f.id), x: 120, y: 120 })}
+              title="Edit this filter"
+              className="inline-flex items-center gap-1 rounded-full border border-citrus-pink/40 bg-citrus-pink-light/60 px-2 py-0.5 text-[11px] text-citrus-pink dark:bg-citrus-night-elev"
+            >
+              <Filter className="w-3 h-3" />
+              <span className="font-semibold">{filterLabel(f.id)}</span>
+              <span className="text-citrus-pink/80">({f.values.length})</span>
+              <span
+                onClick={(e) => { e.stopPropagation(); removeFilter(f.id) }}
+                title="Remove filter"
+                className="hover:text-citrus-pink-hover"
+              >
+                <X className="w-3 h-3" />
+              </span>
+            </button>
+          ))}
+          {(query || colFilters.length > 0) && (
+            <>
+              <button onClick={() => { setQuery(''); setColFilters([]) }} className="text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted">
+                Clear all
+              </button>
+              <span className="ml-auto text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted">
+                {sortedIndicators.length} of {doc.indicators.length}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Results matrix — one row per indicator, one column bucket per provider. Focusable so the
           arrow keys can move/extend the row highlight. */}
       <div
@@ -768,6 +1061,16 @@ export function EnrichmentView({
         {doc.indicators.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-citrus-muted dark:text-citrus-night-muted">
             No indicators yet — paste some above, or use “Send to Intel” from a notepad or workspace.
+          </div>
+        ) : sortedIndicators.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-citrus-muted dark:text-citrus-night-muted">
+            No results match the filter.
+            <button
+              onClick={() => { setQuery(''); setColFilters([]) }}
+              className="rounded-md border border-citrus-border px-2 py-0.5 text-xs font-semibold hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border"
+            >
+              Clear filters
+            </button>
           </div>
         ) : (
           <table className="text-xs border-collapse">
@@ -795,6 +1098,7 @@ export function EnrichmentView({
                   onClick={() => toggleSort('ind')}
                 >
                   Indicator{arrow('ind')}
+                  {colDots('ind', 'Indicator')}
                 </th>
                 <th
                   rowSpan={2}
@@ -802,12 +1106,19 @@ export function EnrichmentView({
                   onClick={() => toggleSort('kind')}
                 >
                   Kind{arrow('kind')}
+                  {colDots('kind', 'Kind')}
                 </th>
                 {providerIds.map((pid) => (
                   <th
                     key={pid}
                     colSpan={2 + fieldsByProvider[pid].length}
-                    className="px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40"
+                    draggable
+                    onDragStart={() => setDragP(pid)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => { if (dragP) reorderProviders(dragP, pid); setDragP(null) }}
+                    onDragEnd={() => setDragP(null)}
+                    title="Drag to reorder this bucket"
+                    className={`px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${dragP === pid ? 'opacity-40' : ''}`}
                   >
                     {providerName(pid)}
                   </th>
@@ -821,15 +1132,23 @@ export function EnrichmentView({
                       onClick={() => toggleSort(`p:${pid}:status`)}
                     >
                       Status{arrow(`p:${pid}:status`)}
+                      {colDots(`p:${pid}:status`, `${providerName(pid)} Status`)}
                     </th>
                     {fieldsByProvider[pid].map((f) => (
                       <th
                         key={f}
-                        className="px-2 py-1 font-semibold whitespace-nowrap cursor-pointer select-none hover:text-citrus-pink"
+                        draggable
+                        onDragStart={() => setDragF({ pid, f })}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => { if (dragF && dragF.pid === pid) reorderFields(pid, dragF.f, f); setDragF(null) }}
+                        onDragEnd={() => setDragF(null)}
+                        className={`px-2 py-1 font-semibold whitespace-nowrap cursor-move select-none hover:text-citrus-pink ${dragF?.pid === pid && dragF?.f === f ? 'opacity-40' : ''}`}
+                        title="Drag to reorder · click to sort"
                         onClick={() => toggleSort(`p:${pid}:f:${f}`)}
                       >
                         {f}
                         {arrow(`p:${pid}:f:${f}`)}
+                        {colDots(`p:${pid}:f:${f}`, `${providerName(pid)} ${f}`)}
                       </th>
                     ))}
                     <th
@@ -837,6 +1156,7 @@ export function EnrichmentView({
                       onClick={() => toggleSort(`p:${pid}:source`)}
                     >
                       Source{arrow(`p:${pid}:source`)}
+                      {colDots(`p:${pid}:source`, `${providerName(pid)} Source`)}
                     </th>
                   </Fragment>
                 ))}
@@ -901,12 +1221,14 @@ export function EnrichmentView({
                                 {r?.fields[f] ? (
                                   <span className="flex flex-wrap gap-1">
                                     {r.fields[f].split(', ').map((name) => (
-                                      <span
+                                      <button
                                         key={name}
-                                        className="inline-block rounded-full bg-citrus-pink-light px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink dark:bg-citrus-night-elev"
+                                        onClick={() => setQuery(name)}
+                                        title={`Filter to “${name}”`}
+                                        className="inline-block rounded-full bg-citrus-pink-light px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink hover:bg-citrus-pink hover:text-white dark:bg-citrus-night-elev"
                                       >
                                         {name}
-                                      </span>
+                                      </button>
                                     ))}
                                   </span>
                                 ) : (
@@ -1012,6 +1334,18 @@ export function EnrichmentView({
             Remove from list
           </button>
         </div>
+      )}
+
+      {colMenu && (
+        <IntelColMenu
+          label={colMenu.label}
+          distinct={distinctFor(colMenu.id)}
+          current={colFilterFor(colMenu.id)}
+          x={colMenu.x}
+          y={colMenu.y}
+          onApply={(vals) => setColFilter(colMenu.id, vals)}
+          onClose={() => setColMenu(null)}
+        />
       )}
 
       <WatchlistsPanel

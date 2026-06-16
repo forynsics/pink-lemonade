@@ -188,10 +188,10 @@ export function WatchlistsPanel({ open, onClose, onChanged }: {
   const exampleLine = (d: KindDef): string => `e.g. ${d.examples.join('  ·  ')}`
 
   return (
-    <div className="watchlists fixed inset-0 z-50 flex justify-end">
-      {/* Click-catcher to close — intentionally NOT blurred/dimmed so the rest of the screen stays readable. */}
-      <div className="absolute inset-0" onClick={attemptClose} />
-      <aside className="relative flex h-full w-[520px] max-w-[92vw] flex-col border-l border-citrus-border bg-citrus-card shadow-xl dark:border-citrus-night-border dark:bg-citrus-night-card">
+    // Non-modal: the container ignores pointer events (pointer-events-none) so the rest of the Intel
+    // space stays scrollable/clickable; only the panel itself is interactive. Close via X or Escape.
+    <div className="watchlists fixed inset-0 z-50 flex justify-end pointer-events-none">
+      <aside className="pointer-events-auto relative flex h-full w-[520px] max-w-[92vw] flex-col border-l border-citrus-border bg-citrus-card shadow-xl dark:border-citrus-night-border dark:bg-citrus-night-card">
         {/* Header */}
         <div className="flex items-center justify-between gap-2 border-b border-citrus-border px-4 py-3 dark:border-citrus-night-border">
           <div className="min-w-0">

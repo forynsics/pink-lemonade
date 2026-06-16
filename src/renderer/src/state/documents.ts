@@ -52,6 +52,10 @@ export interface EnrichmentDoc extends DocBase {
   /** Path to the intel DB file this tab reads/writes (the modular cache). Empty = resolve to the
    *  default DB at runtime. `name` (DocBase) is the DB's display label, shown in the tab + header. */
   dbPath: string
+  /** User's preferred provider (bucket) order. Providers not listed render after, first-seen. */
+  providerOrder?: string[]
+  /** User's preferred field-column order per provider. Fields not listed render after. */
+  fieldOrder?: Record<string, string[]>
 }
 
 export type PinkDoc = ScratchDoc | WorkspaceDoc | EnrichmentDoc
@@ -131,7 +135,10 @@ function migrate(raw: unknown): PinkDoc | null {
       provider: typeof d.provider === 'string' ? d.provider : 'maxmind',
       indicators: Array.isArray(d.indicators) ? (d.indicators as EnrichItem[]) : [],
       draft: typeof d.draft === 'string' ? d.draft : '',
-      dbPath: typeof d.dbPath === 'string' ? d.dbPath : ''
+      dbPath: typeof d.dbPath === 'string' ? d.dbPath : '',
+      providerOrder: Array.isArray(d.providerOrder) ? (d.providerOrder as string[]) : undefined,
+      fieldOrder:
+        d.fieldOrder && typeof d.fieldOrder === 'object' ? (d.fieldOrder as Record<string, string[]>) : undefined
     }
   }
   if (d?.kind === 'workspace') {

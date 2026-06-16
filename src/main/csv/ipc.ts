@@ -178,6 +178,12 @@ export function registerCsvIpc(): void {
     (_e, { wsId, sourceId, rids, tag }: { wsId: string; sourceId: number; rids: number[]; tag: string | null }) =>
       dbw.call('setTags', wsId, sourceId, rids, tag).then(() => null)
   )
+  // Per-tag counts for the active source under the current filtered view (tag filter excluded).
+  ipcMain.handle(
+    'csv:tagCounts',
+    (_e, { tabId, filters, search }: { tabId: string; filters?: Filter[]; search?: string }) =>
+      dbw.call('getTagCounts', tabId, normalizeFilters(filters), normalizeSearch(search))
+  )
   // Bulk-tag every row matching the current view (filters + search), or clear if tag is null.
   ipcMain.handle(
     'ws:tagByFilter',

@@ -391,6 +391,37 @@ export function buildTagClearByFilterSql(
   return { sql, params: [sourceId, ...where.params] }
 }
 
+/**
+ * Per-tag row counts for the current view, EXCLUDING any tag filter from the predicate — so the
+ * sidebar rollup stays a faceted total (toggling a tag filter doesn't zero out its siblings, and
+ * you can still see/switch to other tags). Each row of the small `tags` table is probed against the
+ * data table by rowid via EXISTS, so the cost scales with the number of tagged rows, not table size.
+ * Returns null for the legacy single-file `data` table, which carries no tags.
+ */
+export function buildTagCountsSql(
+  cols: ColumnMap[],
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  table = 'data'
+): { sql: string; params: unknown[] } | null {
+  assertTable(table)
+  const sid = tableSourceId(table)
+  if (sid == null) return null // legacy `data` table has no tags
+  const nonTag = (filters ?? []).filter((f) => f.op !== 'tag')
+  const where = buildWhere(nonTag, search ? { term: search, cols } : undefined, table)
+  const params: unknown[] = [sid]
+  let existsSql = ''
+  if (where.sql !== '') {
+    // where.sql is ' WHERE <pred>'. The non-tag predicate references only c0..cN columns, so it
+    // resolves unambiguously inside an EXISTS over the data table, correlated by rowid.
+    const pred = where.sql.replace(/^ WHERE /, '')
+    existsSql = ` AND EXISTS (SELECT 1 FROM ${table} WHERE ${table}.rowid = t.rid AND ${pred})`
+    params.push(...where.params)
+  }
+  const sql = `SELECT t.tag AS tag, COUNT(*) AS cnt FROM tags t WHERE t.source_id = ?${existsSql} GROUP BY t.tag`
+  return { sql, params }
+}
+
 export function buildDistinctSql(
   col: string,
   filters: Filter[] | undefined,

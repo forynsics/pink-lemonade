@@ -331,16 +331,37 @@ export function CsvViewer({
   // The active source exposes its tag-filter controls and reports its tag rollup to the sidebar.
   useImperativeHandle(apiRef, () => ({ toggleTagFilter, clearTagFilter }), [toggleTagFilter, clearTagFilter])
   const activeTagsKey = activeTags.join(',')
+  // The rollup must reflect the *view* predicate (column filters + search) but NOT the tag filter —
+  // a tag facet shouldn't zero out its siblings, so you can still see and switch to other tags.
+  const hasViewPredicate = filters.some((f) => f.op !== 'tag') || search !== ''
   useEffect(() => {
     if (!onTagSummary) return
     if (!taggable) {
       onTagSummary(null)
       return
     }
-    const counts: Partial<Record<TagId, number>> = {}
-    for (const t of tags.values()) counts[t as TagId] = (counts[t as TagId] ?? 0) + 1
-    onTagSummary({ counts, activeTags: activeTagsKey ? (activeTagsKey.split(',') as TagId[]) : [] })
-  }, [onTagSummary, taggable, tags, activeTagsKey])
+    const active = activeTagsKey ? (activeTagsKey.split(',') as TagId[]) : []
+    // No view predicate → the whole-source map is already the right answer; count it in memory
+    // (instant, no flicker, no IPC round-trip).
+    if (!hasViewPredicate) {
+      const counts: Partial<Record<TagId, number>> = {}
+      for (const t of tags.values()) counts[t as TagId] = (counts[t as TagId] ?? 0) + 1
+      onTagSummary({ counts, activeTags: active })
+      return
+    }
+    // A filter/search is active: count tagged rows that survive it, in SQL. The worker handles
+    // messages FIFO, so a preceding (unawaited) tag write is already applied when this runs.
+    let live = true
+    void window.api.csv.tagCounts(doc.tabId, filters, search).then((rows) => {
+      if (!live) return
+      const counts: Partial<Record<TagId, number>> = {}
+      for (const r of rows) counts[r.tag as TagId] = r.cnt
+      onTagSummary({ counts, activeTags: active })
+    })
+    return () => {
+      live = false
+    }
+  }, [onTagSummary, taggable, tags, activeTagsKey, hasViewPredicate, filters, search, doc.tabId, tagRev])
 
   // Filter the whole CSV to rows within ±deltaSec of a time cell (one timearound filter per col).
   // Arm the pivot anchor so the grid re-centers on this row once the filtered view is ready.

@@ -115,6 +115,8 @@ export interface CsvApi {
     search: string | undefined,
     tag: string | null
   ) => Promise<{ count: number }>
+  /** Per-tag counts for the active source under the current filtered view (tag filter excluded). */
+  tagCounts: (tabId: string, filters?: CsvFilter[], search?: string) => Promise<Array<{ tag: string; cnt: number }>>
   cancel: (tabId: string) => Promise<{ canceled: boolean }>
   query: (tabId: string, opts: CsvQueryOpts) => Promise<CsvRowsResult>
   count: (

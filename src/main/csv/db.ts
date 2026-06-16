@@ -26,6 +26,7 @@ import {
   buildFiltPageSql,
   buildTagApplyByFilterSql,
   buildTagClearByFilterSql,
+  buildTagCountsSql,
   FILT_TABLE,
   buildDistinctSql,
   buildDistinctChunkSql,
@@ -550,6 +551,22 @@ export function tagByFilter(
   const info = w.db.prepare(q.sql).run(...q.params)
   e.filt = undefined // matching set's tags changed → invalidate the cached filter index
   return { count: info.changes }
+}
+
+/**
+ * Per-tag counts for the active source under the current filters + search (the tag filter itself is
+ * excluded — see buildTagCountsSql). Drives the sidebar rollup so it reflects the filtered view
+ * rather than the whole source. Empty for the legacy single-file table (no tags).
+ */
+export function getTagCounts(
+  tabId: string,
+  filters?: Filter[],
+  search?: string
+): Array<{ tag: string; cnt: number }> {
+  const e = get(tabId)
+  const q = buildTagCountsSql(e.meta.columns, filters, search, e.table)
+  if (!q) return []
+  return e.db.prepare(q.sql).all(...q.params) as Array<{ tag: string; cnt: number }>
 }
 
 export function closeWorkspace(wsId: string): void {

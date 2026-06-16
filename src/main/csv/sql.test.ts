@@ -13,6 +13,7 @@ import {
   buildFiltPageSql,
   buildTagApplyByFilterSql,
   buildTagClearByFilterSql,
+  buildTagCountsSql,
   buildDistinctSql,
   buildDistinctChunkSql,
   buildDistinctCountSql,
@@ -317,6 +318,54 @@ describe('bulk tag-by-filter builders', () => {
       "DELETE FROM tags WHERE source_id = ? AND rid IN (SELECT rowid FROM data_2 WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\'))"
     )
     expect(params).toEqual([2, '%mimikatz%', '%mimikatz%'])
+  })
+})
+
+describe('buildTagCountsSql (filtered tag rollup)', () => {
+  it('groups tag counts over rows surviving the view predicate (correlated by rowid)', () => {
+    const q = buildTagCountsSql(cols, [{ col: 'c1', op: 'eq', value: 'US' }], undefined, 'data_5')
+    expect(q?.sql).toBe(
+      'SELECT t.tag AS tag, COUNT(*) AS cnt FROM tags t WHERE t.source_id = ? ' +
+        'AND EXISTS (SELECT 1 FROM data_5 WHERE data_5.rowid = t.rid AND c1 = ?) GROUP BY t.tag'
+    )
+    expect(q?.params).toEqual([5, 'US'])
+  })
+
+  it('folds search into the predicate', () => {
+    const q = buildTagCountsSql(cols, undefined, 'mimikatz', 'data_2')
+    expect(q?.sql).toBe(
+      'SELECT t.tag AS tag, COUNT(*) AS cnt FROM tags t WHERE t.source_id = ? ' +
+        "AND EXISTS (SELECT 1 FROM data_2 WHERE data_2.rowid = t.rid AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')) GROUP BY t.tag"
+    )
+    expect(q?.params).toEqual([2, '%mimikatz%', '%mimikatz%'])
+  })
+
+  it('excludes the tag filter itself so a facet does not zero out its siblings', () => {
+    const q = buildTagCountsSql(
+      cols,
+      [
+        { col: 'c1', op: 'eq', value: 'US' },
+        { op: 'tag', tags: ['malicious'] }
+      ],
+      undefined,
+      'data_5'
+    )
+    // The tag op is dropped from the predicate — only the column filter constrains the rollup.
+    expect(q?.sql).toBe(
+      'SELECT t.tag AS tag, COUNT(*) AS cnt FROM tags t WHERE t.source_id = ? ' +
+        'AND EXISTS (SELECT 1 FROM data_5 WHERE data_5.rowid = t.rid AND c1 = ?) GROUP BY t.tag'
+    )
+    expect(q?.params).toEqual([5, 'US'])
+  })
+
+  it('omits the EXISTS clause entirely when there is no view predicate', () => {
+    const q = buildTagCountsSql(cols, [{ op: 'tag', tags: ['malicious'] }], '', 'data_3')
+    expect(q?.sql).toBe('SELECT t.tag AS tag, COUNT(*) AS cnt FROM tags t WHERE t.source_id = ? GROUP BY t.tag')
+    expect(q?.params).toEqual([3])
+  })
+
+  it('returns null for the legacy single-file table (no tags)', () => {
+    expect(buildTagCountsSql(cols, [{ col: 'c0', op: 'eq', value: 'x' }], undefined, 'data')).toBeNull()
   })
 })
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Filter, ListTree, Loader2 } from 'lucide-react'
+import { Check, EyeOff, Filter, ListTree, Loader2 } from 'lucide-react'
 import type { CsvViewSource } from './CsvViewer'
 import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
 
@@ -24,7 +24,8 @@ export function ColumnMenu({
   initialShowFilter,
   onClose,
   onShowDistinct,
-  onApplyInFilter
+  onApplyInFilter,
+  onHide
 }: {
   doc: CsvViewSource
   col: CsvColumn
@@ -37,6 +38,8 @@ export function ColumnMenu({
   onClose: () => void
   onShowDistinct: (col: CsvColumn) => void
   onApplyInFilter: (col: string, values: string[]) => void
+  /** Hide this column from the grid (restore via the toolbar's Columns picker). */
+  onHide: (col: CsvColumn) => void
 }): JSX.Element {
   const [showFilter, setShowFilter] = useState(!!initialShowFilter)
   const [rows, setRows] = useState<CsvDistinctRow[]>([])
@@ -140,6 +143,11 @@ export function ColumnMenu({
       <button className={item} onClick={() => { onShowDistinct(col); onClose() }} title="Show distinct values in the side panel">
         <ListTree className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
         Distinct values
+      </button>
+
+      <button className={item} onClick={() => { onHide(col); onClose() }} title="Hide this column (restore it from the Columns picker)">
+        <EyeOff className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+        Hide column
       </button>
 
       <div className="border-t border-citrus-border/60 dark:border-citrus-night-border/60" />

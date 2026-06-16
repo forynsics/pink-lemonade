@@ -117,6 +117,7 @@ export function VirtualGrid({
   rids,
   tags,
   sightings,
+  hidden,
   anchorRid,
   baseOffset,
   total,
@@ -140,6 +141,8 @@ export function VirtualGrid({
   tags?: Map<number, string>
   /** Map of rowid → the indicators that matched on that row; drives the gutter marker + cell highlight. */
   sightings?: Map<number, string[]>
+  /** Column names (`c<n>`) the user has hidden — skipped in render only; all indices stay full-width. */
+  hidden?: Set<string>
   /** The pivot anchor's rowid — that row gets a persistent pink ring + pin so you don't lose your spot. */
   anchorRid?: number
   baseOffset: number
@@ -192,7 +195,9 @@ export function VirtualGrid({
   useEffect(() => {
     setWidths((w) => (w.length === columns.length ? w : columns.map((_, i) => w[i] ?? DEFAULT_COL_W)))
   }, [columns])
-  const totalWidth = IDX_W + widths.reduce((a, b) => a + b, 0)
+  // Hidden columns are skipped in render but keep their slot in `widths`/`dataIdx`/selection indices,
+  // so the layout width only counts the visible ones.
+  const totalWidth = IDX_W + columns.reduce((a, c, i) => a + (hidden?.has(c.name) ? 0 : widths[i] ?? DEFAULT_COL_W), 0)
 
   const resize = useRef<{ idx: number; startX: number; startW: number } | null>(null)
   const startResize = useCallback((e: React.MouseEvent, idx: number) => {
@@ -351,12 +356,15 @@ export function VirtualGrid({
       for (let r = minR; r <= maxR; r++) {
         const row = rows[r - baseOffset]
         const cells: string[] = []
-        for (let c = minC; c <= maxC; c++) cells.push(row ? row[dataIdx[c]] ?? '' : '')
+        for (let c = minC; c <= maxC; c++) {
+          if (hidden?.has(columns[c]?.name)) continue // a hidden column isn't visible → not copied
+          cells.push(row ? row[dataIdx[c]] ?? '' : '')
+        }
         lines.push(cells.join('\t'))
       }
       void navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
     },
-    [sel, rows, baseOffset, dataIdx]
+    [sel, rows, baseOffset, dataIdx, columns, hidden]
   )
 
   // Keep row `r` just inside the viewport (no centering) — used while arrow-navigating selection.
@@ -372,18 +380,22 @@ export function VirtualGrid({
   const jumpToSightingCell = useCallback(
     (absRow: number, rowData: string[], vals: string[]) => {
       const lc = vals.map((v) => v.toLowerCase())
-      let c = columns.findIndex((_, i) => {
+      // Land on the first VISIBLE column holding the match (a hidden column can't be scrolled to).
+      let c = columns.findIndex((col, i) => {
+        if (hidden?.has(col.name)) return false
         const cell = (rowData[dataIdx[i]] ?? '').toLowerCase()
         return lc.some((v) => v !== '' && cell.includes(v))
       })
-      if (c < 0) c = 0
+      if (c < 0) c = columns.findIndex((col) => !hidden?.has(col.name))
+      if (c < 0) return
       virtualizer.scrollToIndex(absRow, { align: 'center' })
-      const left = IDX_W + widths.slice(0, c).reduce((a, b) => a + (b ?? DEFAULT_COL_W), 0)
+      let left = IDX_W
+      for (let i = 0; i < c; i++) if (!hidden?.has(columns[i].name)) left += widths[i] ?? DEFAULT_COL_W
       if (scrollRef.current) scrollRef.current.scrollLeft = Math.max(0, left - 48)
       scrollRef.current?.focus()
       setSel({ anchor: { r: absRow, c }, focus: { r: absRow, c } })
     },
-    [columns, dataIdx, widths, virtualizer]
+    [columns, dataIdx, widths, virtualizer, hidden]
   )
 
   // ArrowUp/Down move the selected row; Shift+ArrowUp/Down extend it (full-width rows). Other keys
@@ -476,6 +488,7 @@ export function VirtualGrid({
           #
         </div>
         {columns.map((col, idx) => {
+          if (hidden?.has(col.name)) return null
           const active = sort?.col === col.name
           return (
             <div
@@ -607,6 +620,7 @@ export function VirtualGrid({
                 {abs + 1}
               </div>
               {columns.map((col, c) => {
+                if (hidden?.has(col.name)) return null
                 const v = row[dataIdx[c]] ?? ''
                 return (
                   <div

@@ -33,6 +33,7 @@ import { CellContextMenu } from './CellContextMenu'
 import { FilterBar } from './FilterBar'
 import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
+import { ColumnPicker } from './ColumnPicker'
 import { DistinctPanel } from './DistinctPanel'
 import { SweepDialog } from './SweepDialog'
 import { SightingsPanel } from './SightingsPanel'
@@ -82,6 +83,36 @@ export function CsvViewer({
     showFilter?: boolean
   } | null>(null)
   const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
+  // Columns the user has hidden, keyed by stable `c<n>` name (so reorder doesn't disturb them).
+  // Pure display state — the query still selects every column; this only gates rendering. Session-
+  // local (this viewer stays mounted per source), reset if the source's column set changes.
+  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    setHidden((prev) => {
+      const valid = new Set(doc.columns.map((c) => c.name))
+      const next = new Set([...prev].filter((n) => valid.has(n)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [doc.columns])
+  const hideColumn = useCallback((col: CsvColumn): void => {
+    setHidden((prev) => {
+      if (prev.has(col.name)) return prev
+      // Never hide the last visible column — the grid needs at least one.
+      if (doc.columns.length - prev.size <= 1) return prev
+      const next = new Set(prev)
+      next.add(col.name)
+      return next
+    })
+  }, [doc.columns.length])
+  const toggleColumn = useCallback((name: string): void => {
+    setHidden((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }, [])
+  const showAllColumns = useCallback((): void => setHidden(new Set()), [])
   // The column whose distinct values are shown in the side panel (null = panel closed).
   const [distinctCol, setDistinctCol] = useState<CsvColumn | null>(null)
   // Right-clicked cell (or a clicked ± chip) → the cell menu at the cursor. `tagRids` are the rows
@@ -562,6 +593,7 @@ export function CsvViewer({
               {sightings.size.toLocaleString()} {sightings.size === 1 ? 'sighting' : 'sightings'}
             </button>
           )}
+          <ColumnPicker columns={doc.columns} hidden={hidden} onToggle={toggleColumn} onShowAll={showAllColumns} />
           <button
             onClick={() => setExportOpen(true)}
             disabled={exporting}
@@ -653,6 +685,7 @@ export function CsvViewer({
           rids={rids}
           tags={taggable ? tags : undefined}
           sightings={taggable ? sightings : undefined}
+          hidden={hidden}
           anchorRid={anchorRid ?? undefined}
           baseOffset={baseOffset}
           total={total}
@@ -714,6 +747,7 @@ export function CsvViewer({
             setDistinctCol(col)
           }}
           onApplyInFilter={applyInFilter}
+          onHide={hideColumn}
         />
       )}
       {popout && <CellPopout label={popout.label} value={popout.value} onClose={() => setPopout(null)} />}

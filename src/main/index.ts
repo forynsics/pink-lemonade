@@ -2,12 +2,17 @@ import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
 import { readFile, writeFile, stat } from 'fs/promises'
+import { existsSync } from 'fs'
 import { basename } from 'path'
 import { registerCsvIpc } from './csv/ipc'
 import { registerEnrichIpc } from './enrich/ipc'
 import { initDbWorker, call as dbCall } from './csv/dbClient'
 
 function createWindow(): void {
+  // Dev: the running binary is electron.exe, so set the window/taskbar icon explicitly. Prod: the
+  // packaged .exe already carries this icon (electron-builder build/icon.ico), so the file isn't
+  // bundled into out/ — guard so a missing path is a no-op rather than a warning.
+  const iconPath = join(__dirname, '../../build/icon.ico')
   const win = new BrowserWindow({
     width: 1180,
     height: 800,
@@ -17,6 +22,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#16131c',
     title: 'pink-lemonade',
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,

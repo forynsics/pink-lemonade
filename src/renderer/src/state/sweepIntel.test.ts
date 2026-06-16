@@ -9,7 +9,7 @@ describe('parseIntelText — classification + feedback', () => {
       { value: 'evil.com', kind: 'domain' },
       { value: 'd41d8cd98f00b204e9800998ecf8427e', kind: 'hash' }
     ])
-    expect(counts).toEqual({ ipv4: 1, domain: 1, hash: 1, skipped: 0 })
+    expect(counts).toEqual({ ipv4: 1, domain: 1, hash: 1, filename: 0, skipped: 0 })
   })
 
   it('reduces a URL to its domain (with a note)', () => {
@@ -40,5 +40,27 @@ describe('parseIntelText — classification + feedback', () => {
   it('dedupes case-insensitively', () => {
     const { entries } = parseIntelText('Evil.com\nevil.com\nEVIL.COM')
     expect(entries).toEqual([{ value: 'Evil.com', kind: 'domain' }])
+  })
+
+  it('does NOT auto-classify a filename in classify mode (evil.exe reads as a domain)', () => {
+    const { entries } = parseIntelText('evil.exe')
+    // The classifier can't tell evil.exe from a domain — this is why filename is declared-only.
+    expect(entries).toEqual([{ value: 'evil.exe', kind: 'domain' }])
+  })
+})
+
+describe('parseIntelText — declared filename mode', () => {
+  it('treats each line as a file name, taking the basename of a path', () => {
+    const { entries } = parseIntelText('svchost.exe\nC:\\Windows\\System32\\evil.dll', 'filename')
+    expect(entries).toEqual([
+      { value: 'svchost.exe', kind: 'filename' },
+      { value: 'evil.dll', kind: 'filename' }
+    ])
+  })
+
+  it('skips a line that is not a single file-name token', () => {
+    const { lines, counts } = parseIntelText('not a filename', 'filename')
+    expect(lines[0]).toMatchObject({ status: 'skip' })
+    expect(counts.skipped).toBe(1)
   })
 })

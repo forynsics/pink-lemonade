@@ -51,6 +51,20 @@ function hasToken(hay: string, needle: string, isTokenChar: (c: string) => boole
   return false
 }
 
+// The per-kind match rule registry: ONE row per indicator kind, so adding a kind is a single entry
+// (a bucket on CompiledIntel + a row here) — no scattered loops. `test` runs against lowercased text.
+// Order here is the order hits are reported within a cell.
+interface KindMatcher {
+  kind: SweepKind
+  test: (hay: string, needle: string) => boolean
+}
+const KIND_MATCHERS: KindMatcher[] = [
+  { kind: 'ipv4', test: (h, n) => hasToken(h, n, isDigit) },
+  { kind: 'hash', test: (h, n) => hasToken(h, n, isHex) },
+  { kind: 'filename', test: (h, n) => hasToken(h, n, isFileChar) },
+  { kind: 'domain', test: (h, n) => h.includes(n) }
+]
+
 /** Compile an intel set into per-kind lowercased lists (deduped). Done once; reused per cell. */
 export function compileIntel(entries: IntelEntry[]): CompiledIntel {
   const out: CompiledIntel = { ipv4: [], hash: [], filename: [], domain: [] }
@@ -58,11 +72,13 @@ export function compileIntel(entries: IntelEntry[]): CompiledIntel {
   for (const e of entries) {
     const value = e.value.trim()
     if (value === '') continue
+    const bucket = out[e.kind]
+    if (!bucket) continue // unknown kind arriving over IPC — ignore rather than crash
     const lc = value.toLowerCase()
     const key = `${e.kind}:${lc}`
     if (seen.has(key)) continue
     seen.add(key)
-    out[e.kind].push({ value, lc })
+    bucket.push({ value, lc })
   }
   return out
 }
@@ -72,9 +88,8 @@ export function matchText(text: string, intel: CompiledIntel): IntelEntry[] {
   if (text === '') return []
   const hay = text.toLowerCase()
   const hits: IntelEntry[] = []
-  for (const e of intel.ipv4) if (hasToken(hay, e.lc, isDigit)) hits.push({ value: e.value, kind: 'ipv4' })
-  for (const e of intel.hash) if (hasToken(hay, e.lc, isHex)) hits.push({ value: e.value, kind: 'hash' })
-  for (const e of intel.filename) if (hasToken(hay, e.lc, isFileChar)) hits.push({ value: e.value, kind: 'filename' })
-  for (const e of intel.domain) if (hay.includes(e.lc)) hits.push({ value: e.value, kind: 'domain' })
+  for (const m of KIND_MATCHERS) {
+    for (const e of intel[m.kind]) if (m.test(hay, e.lc)) hits.push({ value: e.value, kind: m.kind })
+  }
   return hits
 }

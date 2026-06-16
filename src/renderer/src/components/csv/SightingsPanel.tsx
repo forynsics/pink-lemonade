@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Crosshair, Loader2, Trash2, X } from 'lucide-react'
+import { kindChip } from '../../state/indicatorKinds'
 
 // Side panel: the per-indicator sighting rollup (what matched + how many rows), so you can zero in
 // on one or several indicators (filter the grid) or clear false positives. Mirrors DistinctPanel's
@@ -8,12 +9,6 @@ import { Crosshair, Loader2, Trash2, X } from 'lucide-react'
 const MIN_W = 240
 const MAX_W = 760
 const DEFAULT_W = 308
-
-const KIND_CHIP: Record<string, string> = {
-  ipv4: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
-  domain: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  hash: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-}
 
 interface SummaryRow {
   indicator: string
@@ -186,7 +181,7 @@ export function SightingsPanel({
                         : `Left-click to filter to ${r.indicator} · right-click to exclude it`
                   }
                 >
-                  <span className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${KIND_CHIP[r.kind] ?? ''}`}>{r.kind}</span>
+                  <span className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${kindChip(r.kind)}`}>{r.kind}</span>
                   <span
                     className={`truncate ${
                       on

@@ -2,15 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ChevronDown, Crosshair, FileUp, ListChecks, X } from 'lucide-react'
 import type { CsvColumn } from '../../state/csvTypes'
 import type { WatchlistInfo } from '../../state/enrichTypes'
-import { parseIntelText, type SweepKind } from '../../state/sweepIntel'
+import { parseIntelText } from '../../state/sweepIntel'
+import { INDICATOR_KINDS, kindChip } from '../../state/indicatorKinds'
 
-const KIND_CHIP: Record<SweepKind, string> = {
-  ipv4: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
-  domain: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  hash: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-}
 // Watchlist kinds map onto sweep kinds (asn has no sweep matcher, so those lists are filtered out).
-const WL_CHIP: Record<string, string> = { ip: KIND_CHIP.ipv4, domain: KIND_CHIP.domain, hash: KIND_CHIP.hash }
+const WL_CHIP: Record<string, string> = { ip: kindChip('ipv4'), domain: kindChip('domain'), hash: kindChip('hash') }
 
 /**
  * Intel Sweep dialog: paste an intel set (IPs / domains / hashes), pick which columns to scan, and
@@ -42,6 +38,9 @@ export function SweepDialog({
   const [lastRunText, setLastRunText] = useState<string | null>(null)
   // With prior sightings, default to keeping them (Add) so a re-sweep never silently wipes progress.
   const [mode, setMode] = useState<'replace' | 'add'>(existingCount > 0 ? 'add' : 'replace')
+  // Declared-filename mode: when on, every line is treated as a file name (no auto-detection), so an
+  // ambiguous kind that can't be sniffed (evil.exe vs a domain) enters via an explicit declaration.
+  const [filenameMode, setFilenameMode] = useState(false)
   const [allColumns, setAllColumns] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(() => new Set(columns.map((c) => c.name)))
   const [running, setRunning] = useState(false)
@@ -94,7 +93,7 @@ export function SweepDialog({
     appendIntel(f.content.split(/[\s,;]+/).filter(Boolean).join('\n'))
   }
 
-  const parsed = useMemo(() => parseIntelText(text), [text])
+  const parsed = useMemo(() => parseIntelText(text, filenameMode ? 'filename' : 'classify'), [text, filenameMode])
   const colCount = allColumns ? columns.length : selected.size
   const canRun = parsed.entries.length > 0 && colCount > 0 && !running
 
@@ -208,12 +207,27 @@ export function SweepDialog({
           />
           {loadNote && <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{loadNote}</div>}
 
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11px] text-citrus-dark dark:text-citrus-night-text">
+            <input
+              type="checkbox"
+              checked={filenameMode}
+              onChange={(e) => {
+                setFilenameMode(e.target.checked)
+                setResult(null)
+              }}
+            />
+            Treat each line as a <strong>file name</strong>
+            <span className="text-citrus-muted dark:text-citrus-night-muted">(skips IP/domain/hash auto-detection)</span>
+          </label>
+
           {/* Live parse feedback */}
           {text.trim() !== '' && (
             <div className="mt-1.5">
               <div className="text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-                <strong className="text-citrus-dark dark:text-citrus-night-text">{parsed.entries.length}</strong> to sweep ·{' '}
-                {parsed.counts.ipv4} IP · {parsed.counts.domain} domain · {parsed.counts.hash} hash
+                <strong className="text-citrus-dark dark:text-citrus-night-text">{parsed.entries.length}</strong> to sweep
+                {INDICATOR_KINDS.filter((k) => parsed.counts[k.id] > 0).map((k) => (
+                  <span key={k.id}> · {parsed.counts[k.id]} {k.label}</span>
+                ))}
                 {parsed.counts.skipped > 0 && (
                   <span className="text-red-600 dark:text-red-400"> · {parsed.counts.skipped} skipped</span>
                 )}
@@ -226,7 +240,7 @@ export function SweepDialog({
                   >
                     {l.status === 'ok' ? (
                       <>
-                        <span className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${KIND_CHIP[l.kind]}`}>{l.kind}</span>
+                        <span className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${kindChip(l.kind)}`}>{l.kind}</span>
                         <span className="truncate text-citrus-dark dark:text-citrus-night-text">{l.value}</span>
                         {l.note && <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted">({l.note})</span>}
                       </>

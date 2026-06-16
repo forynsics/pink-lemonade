@@ -1,3 +1,8 @@
+---
+title: Home
+nav_order: 1
+---
+
 <p align="center">
   <img src="assets/logo.png" alt="pink-lemonade" width="96" />
 </p>

@@ -1,3 +1,8 @@
+---
+title: Tagging
+nav_order: 6
+---
+
 # Tagging
 
 As you work through a source, you’ll want to mark rows: this one’s malicious, that one’s benign,

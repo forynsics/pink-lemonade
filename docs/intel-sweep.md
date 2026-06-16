@@ -1,3 +1,8 @@
+---
+title: Intel Sweep
+nav_order: 7
+---
+
 # Intel Sweep
 
 Tagging is for marking rows *you* judge. **Intel Sweep** is the other direction: you already have a

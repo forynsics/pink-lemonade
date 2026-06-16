@@ -1,3 +1,8 @@
+---
+title: Exploring data
+nav_order: 5
+---
+
 # Exploring data
 
 Once you’ve imported a file into a [workspace](workspaces.md), you get a fast, spreadsheet-style

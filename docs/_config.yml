@@ -1,7 +1,30 @@
-# Jekyll config for the GitHub Pages docs site (built from this docs/ folder).
-# GitHub Pages enables jekyll-optional-front-matter (renders .md without front matter),
-# jekyll-relative-links (rewrites [text](page.md) links to the built URLs), and
-# jekyll-readme-index (serves docs/README.md as the site index) — so the guides work as-is.
+# GitHub Pages docs site, built from this docs/ folder with the just-the-docs theme.
+# Requires Settings → Pages → Source = "GitHub Actions" (see .github/workflows/pages.yml).
 title: pink-lemonade
 description: A desktop toolkit for cybersecurity investigation and data wrangling.
-theme: jekyll-theme-cayman
+
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+
+# Project site served under /pink-lemonade — pin so theme CSS/JS, search, and the logo resolve.
+url: https://forynsics.github.io
+baseurl: /pink-lemonade
+
+# Brand: the app's citrus palette (see docs/_sass/color_schemes/citrus.scss).
+color_scheme: citrus
+logo: /assets/logo.png
+
+# Sidebar search (just-the-docs builds the index at deploy time).
+search_enabled: true
+search:
+  heading_level: 2
+  previews: 2
+
+# Link back to the project from the docs header.
+aux_links:
+  GitHub: https://github.com/forynsics/pink-lemonade
+aux_links_new_tab: true
+
+back_to_top: true
+back_to_top_text: "Back to top"

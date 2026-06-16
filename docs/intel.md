@@ -1,3 +1,8 @@
+---
+title: "Intel & watchlists"
+nav_order: 8
+---
+
 # Intel & watchlists
 
 The **Intel** tab is where you add context to indicators — look up what an IP / domain / hash *is*,

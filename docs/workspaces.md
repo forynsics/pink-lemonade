@@ -1,3 +1,8 @@
+---
+title: Workspaces
+nav_order: 4
+---
+
 # Workspaces
 
 A **workspace** is a self-contained investigation. It holds one or more imported CSV/TSV files

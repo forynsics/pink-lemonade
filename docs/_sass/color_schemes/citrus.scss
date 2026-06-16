@@ -1,0 +1,16 @@
+// pink-lemonade "citrus" color scheme for just-the-docs — mirrors the app's palette
+// (src/renderer/src/styles/app.css). Overrides the theme's light defaults; anything not set
+// here inherits from the light scheme.
+
+$link-color:            #d76f6f; // citrus pink (hover shade — better contrast on white)
+$btn-primary-color:     #e88383; // citrus pink
+$body-heading-color:    #232726; // citrus dark
+$body-text-color:       #2c302e;
+$nav-child-link-color:  #5d6361;
+
+$sidebar-color:         #fcfaf6; // citrus cream
+$body-background-color: #ffffff; // citrus card
+$search-background-color: #ffffff;
+$border-color:          #e8e2d5; // citrus border
+$code-background-color: #f5efe4; // ~citrus sand
+$search-result-preview-color: #737a78; // citrus muted

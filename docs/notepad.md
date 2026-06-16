@@ -1,3 +1,8 @@
+---
+title: Notepad
+nav_order: 3
+---
+
 # Notepad — text transforms
 
 The notepad is for quick, repeatable text work: the kind of thing you’d otherwise do in

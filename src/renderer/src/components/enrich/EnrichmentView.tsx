@@ -15,6 +15,11 @@ import type { EnrichCachedRow, EnrichItem, EnrichProgress, EnrichProviderInfo, E
 // indicator value -> providerId -> that provider's result
 type ResultMap = Record<string, Record<string, EnrichResultRow>>
 
+// Max entries "Load all" pulls in. The Intel grid is virtualized, so this is bounded by the in-JS
+// TanStack models (filter/sort/facet over the full array), not by the DOM. Keep in sync with
+// DUMP_CAP (cache.ts) and the enrich:cacheDump ipc fallback.
+const LOAD_CAP = 50000
+
 let lookupCounter = 1
 
 export function EnrichmentView({
@@ -200,7 +205,7 @@ export function EnrichmentView({
   // "Load all": pull every entry in the bound DB into the working list + results (capped).
   function loadAll(): void {
     if (!doc.dbPath) return
-    void window.api.enrich.cacheDump(doc.dbPath).then((rows) => {
+    void window.api.enrich.cacheDump(doc.dbPath, LOAD_CAP).then((rows) => {
       const have = new Set(doc.indicators.map((i) => i.value))
       const seen = new Set<string>()
       const add: EnrichItem[] = []
@@ -211,7 +216,11 @@ export function EnrichmentView({
       }
       if (add.length > 0) onPatch({ indicators: [...doc.indicators, ...add] })
       mergeCacheRows(rows)
-      setAddNote(rows.length >= 5000 ? 'loaded first 5,000 entries from the database' : `loaded ${add.length} from the database`)
+      setAddNote(
+        rows.length >= LOAD_CAP
+          ? `loaded first ${LOAD_CAP.toLocaleString()} entries from the database`
+          : `loaded ${add.length} from the database`
+      )
     })
   }
 

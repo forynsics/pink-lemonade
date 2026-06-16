@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   useReactTable,
   getCoreRowModel,
@@ -453,6 +454,23 @@ export function IntelGrid({
   const dragRef = useRef(false)
   const gridRef = useRef<HTMLDivElement>(null)
   const headerBoxRef = useRef<HTMLInputElement>(null)
+
+  // Row virtualization: only the on-screen rows of the (already filtered/sorted/grouped) row model
+  // are mounted. The virtualizer operates over `rows` — the OUTPUT of TanStack's models — so it
+  // never touches filtering, faceted distinct values, search, or grouping; it only decides which of
+  // the resulting rows get DOM nodes. Heights are measured per-row (`measureElement`) because the
+  // Wrap toggle makes rows multi-line, so we can't assume a fixed height.
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => gridRef.current,
+    estimateSize: () => 29,
+    overscan: 16,
+    // Re-key measurement when Wrap flips (cached heights are stale once rows can grow/shrink).
+    getItemKey: (index) => rows[index]?.id ?? index
+  })
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const padTop = virtualRows.length ? virtualRows[0].start : 0
+  const padBottom = virtualRows.length ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
   useEffect(() => {
     if (headerBoxRef.current) headerBoxRef.current.indeterminate = table.getIsSomeRowsSelected() && !table.getIsAllRowsSelected()
   }, [rowSelection, table])
@@ -503,6 +521,7 @@ export function IntelGrid({
       setRowSelection({ [visibleValues[next]]: true })
       anchorRef.current = next
     }
+    rowVirtualizer.scrollToIndex(next) // keep the focused row on-screen when virtualized
   }
 
   // --- right-click context menu ---
@@ -552,23 +571,50 @@ export function IntelGrid({
   // --- column reorder (drag bucket / field headers); persisted via onReorder(doc order) ---
   const [dragP, setDragP] = useState<string | null>(null)
   const [dragF, setDragF] = useState<{ pid: string; f: string } | null>(null)
-  function reorderProviders(from: string, to: string): void {
-    if (from === to) return
-    const next = providerIds.filter((p) => p !== from)
-    const idx = next.indexOf(to)
-    next.splice(idx < 0 ? next.length : idx, 0, from)
-    onReorder({ providerOrder: next })
+  // Live drop indicator: which header is hovered + which edge the dragged column will land on.
+  const [dropAt, setDropAt] = useState<{ colId: string; side: 'before' | 'after' } | null>(null)
+
+  // Which half of the hovered header the cursor is in → insert before (left half) or after (right).
+  function dropSide(e: React.DragEvent): 'before' | 'after' {
+    const r = e.currentTarget.getBoundingClientRect()
+    return e.clientX < r.left + r.width / 2 ? 'before' : 'after'
   }
-  function reorderFields(pid: string, from: string, to: string): void {
+  // Move `from` to sit before/after `to`. Symmetric in both drag directions — a plain insert-before
+  // no-ops when you drop a column on its immediate right neighbour (the old reorder bug).
+  function moveBeside<T>(arr: T[], from: T, to: T, side: 'before' | 'after'): T[] {
+    const next = arr.filter((x) => x !== from)
+    let idx = next.indexOf(to)
+    if (idx < 0) idx = next.length
+    if (side === 'after') idx += 1
+    next.splice(idx, 0, from)
+    return next
+  }
+  function reorderProviders(from: string, to: string, side: 'before' | 'after'): void {
     if (from === to) return
-    const next = fieldsByProvider[pid].filter((f) => f !== from)
-    const idx = next.indexOf(to)
-    next.splice(idx < 0 ? next.length : idx, 0, from)
-    onReorder({ fieldOrder: { ...(fieldOrder ?? {}), [pid]: next } })
+    onReorder({ providerOrder: moveBeside(providerIds, from, to, side) })
+  }
+  function reorderFields(pid: string, from: string, to: string, side: 'before' | 'after'): void {
+    if (from === to) return
+    onReorder({ fieldOrder: { ...(fieldOrder ?? {}), [pid]: moveBeside(fieldsByProvider[pid], from, to, side) } })
+  }
+  // The pink insertion line drawn on a header's left/right edge while it's the active drop target.
+  function dropLine(colId: string): JSX.Element | null {
+    if (dropAt?.colId !== colId) return null
+    return (
+      <span
+        className={`pointer-events-none absolute top-0 bottom-0 z-20 w-[3px] bg-citrus-pink ${dropAt.side === 'before' ? 'left-0' : 'right-0'}`}
+      />
+    )
   }
 
   const [wrap, setWrap] = useState(false)
   const [colsOpen, setColsOpen] = useState(false)
+
+  // Wrap changes every row's height, so the virtualizer's cached measurements are stale — reset
+  // them and re-measure on the next paint.
+  useEffect(() => {
+    rowVirtualizer.measure()
+  }, [wrap, rowVirtualizer])
 
   function colDots(colId: string): JSX.Element {
     const active = !!table.getColumn(colId)?.getFilterValue()
@@ -610,20 +656,41 @@ export function IntelGrid({
         key={l.colId}
         style={{ width: w, minWidth: w, maxWidth: w }}
         draggable={!!drag}
-        onDragStart={drag ? () => setDragF({ pid: l.pid!, f: l.field! }) : undefined}
-        onDragOver={drag ? (e) => e.preventDefault() : undefined}
-        onDrop={drag ? () => { if (dragF && dragF.pid === l.pid) reorderFields(l.pid!, dragF.f, l.field!); setDragF(null) } : undefined}
-        onDragEnd={drag ? () => setDragF(null) : undefined}
+        onDragStart={drag ? (e) => { setDragF({ pid: l.pid!, f: l.field! }); e.dataTransfer.effectAllowed = 'move' } : undefined}
+        onDragOver={
+          drag
+            ? (e) => {
+                // Only fields of the SAME bucket are valid drop targets (no cross-provider moves).
+                if (!dragF || dragF.pid !== l.pid || dragF.f === l.field) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                const side = dropSide(e)
+                setDropAt((d) => (d?.colId === l.colId && d.side === side ? d : { colId: l.colId, side }))
+              }
+            : undefined
+        }
+        onDrop={
+          drag
+            ? (e) => {
+                e.preventDefault()
+                if (dragF && dragF.pid === l.pid) reorderFields(l.pid!, dragF.f, l.field!, dropSide(e))
+                setDragF(null)
+                setDropAt(null)
+              }
+            : undefined
+        }
+        onDragEnd={drag ? () => { setDragF(null); setDropAt(null) } : undefined}
         title={drag ? 'Drag to reorder · click to sort (Shift = add)' : 'Click to sort (Shift = add)'}
         className={`${headTh} whitespace-nowrap overflow-hidden hover:text-citrus-pink ${drag ? 'cursor-move' : 'cursor-pointer'} ${div} ${
           dragF?.pid === l.pid && dragF?.f === l.field ? 'opacity-40' : ''
-        }`}
+        } ${dropAt?.colId === l.colId ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/60' : ''}`}
         onClick={(e) => table.getColumn(l.colId)?.toggleSorting(undefined, e.shiftKey)}
       >
         <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Source' : l.field}</span>
         {sortBadge(l.colId)}
         {colDots(l.colId)}
         {resizeHandle(l.colId)}
+        {dropLine(l.colId)}
       </th>
     )
   }
@@ -792,14 +859,29 @@ export function IntelGrid({
                     key={b.pid}
                     colSpan={b.count}
                     draggable
-                    onDragStart={() => setDragP(b.pid)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => { if (dragP) reorderProviders(dragP, b.pid); setDragP(null) }}
-                    onDragEnd={() => setDragP(null)}
+                    onDragStart={(e) => { setDragP(b.pid); e.dataTransfer.effectAllowed = 'move' }}
+                    onDragOver={(e) => {
+                      if (!dragP || dragP === b.pid) return
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      const side = dropSide(e)
+                      const colId = `bucket:${b.pid}`
+                      setDropAt((d) => (d?.colId === colId && d.side === side ? d : { colId, side }))
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      if (dragP) reorderProviders(dragP, b.pid, dropSide(e))
+                      setDragP(null)
+                      setDropAt(null)
+                    }}
+                    onDragEnd={() => { setDragP(null); setDropAt(null) }}
                     title="Drag to reorder this bucket"
-                    className={`px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${dragP === b.pid ? 'opacity-40' : ''}`}
+                    className={`relative px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${
+                      dragP === b.pid ? 'opacity-40' : ''
+                    } ${dropAt?.colId === `bucket:${b.pid}` ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/60' : ''}`}
                   >
                     {b.name}
+                    {dropLine(`bucket:${b.pid}`)}
                   </th>
                 ))}
               </tr>
@@ -821,7 +903,16 @@ export function IntelGrid({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, i) => {
+              {/* Top spacer: stands in for the rows scrolled off above, so table layout + the
+                  running # column stay correct without mounting those rows. */}
+              {padTop > 0 && (
+                <tr aria-hidden>
+                  <td colSpan={totalCols} style={{ height: padTop }} className="p-0 border-0" />
+                </tr>
+              )}
+              {virtualRows.map((vrow) => {
+                const i = vrow.index
+                const row = rows[i]
                 // Group summary row: a sticky caret + grouped value + count; expand to see members.
                 if (row.getIsGrouped()) {
                   const gcol = row.groupingColumnId!
@@ -829,6 +920,8 @@ export function IntelGrid({
                   return (
                     <tr
                       key={row.id}
+                      data-index={i}
+                      ref={rowVirtualizer.measureElement}
                       className="cursor-pointer select-none border-t border-citrus-border/60 bg-citrus-sand/40 hover:bg-citrus-sand/60 dark:border-citrus-night-border/60 dark:bg-citrus-night-elev/50 dark:hover:bg-citrus-night-elev/70"
                       onClick={row.getToggleExpandedHandler()}
                     >
@@ -853,6 +946,8 @@ export function IntelGrid({
                 return (
                   <tr
                     key={rr.value}
+                    data-index={i}
+                    ref={rowVirtualizer.measureElement}
                     className={`cursor-pointer select-none border-t border-citrus-border/60 dark:border-citrus-night-border/60 hover:bg-citrus-sand/30 dark:hover:bg-citrus-night-elev/40 ${
                       isSel ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/70' : i % 2 === 1 ? 'bg-citrus-sand/15 dark:bg-citrus-night-card/30' : ''
                     }`}
@@ -929,6 +1024,11 @@ export function IntelGrid({
                   </tr>
                 )
               })}
+              {padBottom > 0 && (
+                <tr aria-hidden>
+                  <td colSpan={totalCols} style={{ height: padBottom }} className="p-0 border-0" />
+                </tr>
+              )}
             </tbody>
           </table>
         )}

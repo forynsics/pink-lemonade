@@ -41,9 +41,10 @@ export function registerEnrichIpc(): void {
   ipcMain.handle('enrich:cacheGet', (_e, { dbPath, indicators }: { dbPath: string; indicators: string[] }) =>
     dbw.call('enrichCacheGet', dbPath, indicators ?? [])
   )
-  // Load every entry in the DB (capped) — powers "Load all from DB".
+  // Load every entry in the DB (capped) — powers "Load all from DB". Fallback limit only; the
+  // renderer passes its own LOAD_CAP. Keep this in sync with DUMP_CAP / LOAD_CAP.
   ipcMain.handle('enrich:cacheDump', (_e, { dbPath, limit }: { dbPath: string; limit?: number }) =>
-    dbw.call('enrichCacheDump', dbPath, limit ?? 5000)
+    dbw.call('enrichCacheDump', dbPath, limit ?? 50000)
   )
   // Drop all cached results (every provider) for these indicators — so the next enrich is fresh.
   ipcMain.handle('enrich:cacheDelete', (_e, { dbPath, indicators }: { dbPath: string; indicators: string[] }) =>

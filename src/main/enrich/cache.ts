@@ -69,8 +69,13 @@ interface CacheRow {
 }
 
 const GET_CHUNK = 900
-/** Max rows "Load all" pulls into the view, to keep the renderer matrix manageable. */
-export const DUMP_CAP = 5000
+/**
+ * Max rows "Load all" pulls into the view. The Intel grid is virtualized (only on-screen rows are
+ * in the DOM), so rendering is no longer the bottleneck — this ceiling now exists only to bound the
+ * in-JS TanStack Table models (filter/sort/facet run over the full array). Renderer passes its own
+ * limit; this is the fallback. Keep in sync with LOAD_CAP in EnrichmentView.tsx and the ipc default.
+ */
+export const DUMP_CAP = 50000
 
 /** Cached entries for the given indicators of one provider in `dbPath` — a Map of hits only. */
 export function get(dbPath: string, provider: string, indicators: string[]): Map<string, CachedEntry> {

@@ -14,6 +14,7 @@ import {
   buildTagApplyByFilterSql,
   buildTagClearByFilterSql,
   buildTagCountsSql,
+  buildSweepScanSql,
   buildDistinctSql,
   buildDistinctChunkSql,
   buildDistinctCountSql,
@@ -318,6 +319,29 @@ describe('bulk tag-by-filter builders', () => {
       "DELETE FROM tags WHERE source_id = ? AND rid IN (SELECT rowid FROM data_2 WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\'))"
     )
     expect(params).toEqual([2, '%mimikatz%', '%mimikatz%'])
+  })
+})
+
+describe('sighting filter + sweep scan', () => {
+  it('resolves a sighting filter against intel_hits by source id', () => {
+    const { sql, params } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'sighting' }] }, 'data_7')
+    expect(sql).toBe('SELECT c0, c1 FROM data_7 WHERE rowid IN (SELECT rid FROM intel_hits WHERE source_id = ?) LIMIT ? OFFSET ?')
+    expect(params).toEqual([7, 10, 0])
+  })
+
+  it('a sighting filter on the legacy single-file table matches nothing', () => {
+    const { sql } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'sighting' }] }, 'data')
+    expect(sql).toBe('SELECT c0, c1 FROM data WHERE 0 LIMIT ? OFFSET ?')
+  })
+
+  it('buildSweepScanSql selects rowid + chosen columns over a rowid window', () => {
+    const { sql, params } = buildSweepScanSql(['c0', 'c3'], 0, 1_000_000, 'data_2')
+    expect(sql).toBe('SELECT rowid, c0, c3 FROM data_2 WHERE rowid > ? AND rowid <= ?')
+    expect(params).toEqual([0, 1_000_000])
+  })
+
+  it('buildSweepScanSql rejects a non-whitelisted column (injection guard)', () => {
+    expect(() => buildSweepScanSql(['c0; DROP TABLE data'], 0, 100, 'data_2')).toThrow()
   })
 })
 

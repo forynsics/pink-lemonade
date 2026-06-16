@@ -18,6 +18,7 @@ function fmtDelta(sec: number): string {
 
 function chipText(f: CsvFilter, label: (n: string) => string): string {
   if (f.op === 'tag') return `tagged ${f.tags.map((t) => tagDef(t)?.label ?? t).join(' / ')}`
+  if (f.op === 'sighting') return 'intel sightings'
   if (f.op === 'in') return `${label(f.col)} ∈ ${f.values.join(', ')}`
   if (f.op === 'timearound') return `${label(f.col)} ≈ ${f.value} ±${fmtDelta(f.deltaSec)}`
   if (f.op === 'timerange') {
@@ -69,6 +70,7 @@ export function FilterBar({
   // Clicking a chip → load it into the form for editing (or delegate the special kinds).
   function editChip(f: CsvFilter, i: number, at: { x: number; y: number }): void {
     if (f.op === 'tag') return // tag chips are toggled from the legend; only the ✕ removes them
+    if (f.op === 'sighting') return // sighting chip is toggled from the sweep control; only ✕ removes it
     if (f.op === 'timearound') return onEditTimearound(f, at)
     if (f.op === 'in') return onEditIn(f, at)
     setEditIndex(i)
@@ -122,9 +124,9 @@ export function FilterBar({
       <Filter className="w-3 h-3 text-citrus-muted dark:text-citrus-night-muted" />
       {filters.map((f, i) => (
         <span
-          key={`${f.op === 'tag' ? 'tag' : f.col}-${f.op}-${i}`}
+          key={`${f.op === 'tag' || f.op === 'sighting' ? f.op : f.col}-${f.op}-${i}`}
           className={`filter-chip inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border font-mono ${
-            f.op === 'tag' ? '' : 'cursor-pointer'
+            f.op === 'tag' || f.op === 'sighting' ? '' : 'cursor-pointer'
           } ${
             editIndex === i
               ? 'bg-citrus-pink text-white border-citrus-pink'

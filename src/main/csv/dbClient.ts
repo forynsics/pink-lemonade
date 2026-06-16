@@ -167,6 +167,30 @@ export function enrichCancel(): void {
   worker?.postMessage({ t: 'enrichCancel' })
 }
 
+/** Sweep a source's rows for an intel set, recording sightings; streams scan progress via `onPartial`. */
+export function sweep(
+  tabId: string,
+  reqId: number,
+  entries: Array<{ value: string; kind: string }>,
+  columns: string[] | undefined,
+  onPartial: (p: { sightings: number; scanned: number; max: number }) => void
+): Promise<{ sightings: number; hits: number } | null> {
+  return new Promise<{ sightings: number; hits: number } | null>((resolve, reject) => {
+    const id = nextId++
+    pending.set(id, {
+      resolve: resolve as (v: unknown) => void,
+      reject,
+      onProgress: (p) => onPartial(p as { sightings: number; scanned: number; max: number })
+    })
+    w().postMessage({ t: 'sweep', id, tabId, reqId, entries, columns })
+  })
+}
+
+/** Abort an in-flight sweep for a tab (a newer sweep or a user cancel). */
+export function sweepCancel(tabId: string): void {
+  worker?.postMessage({ t: 'sweepCancel', tabId })
+}
+
 export async function terminateDbWorker(): Promise<void> {
   if (!worker) return
   try {

@@ -37,6 +37,7 @@ export type CsvFilter =
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
   | { op: 'tag'; tags: string[] }
+  | { op: 'sighting' }
 export interface CsvQueryOpts {
   sort?: CsvSort
   filters?: CsvFilter[]
@@ -73,6 +74,14 @@ export interface CsvDistinctProgress {
   reqId: number
   scanned: number
   count: number
+  max: number
+}
+/** Live progress of a chunked intel sweep (rows scanned + sightings found so far). */
+export interface CsvSweepProgress {
+  tabId: string
+  reqId: number
+  sightings: number
+  scanned: number
   max: number
 }
 export interface CsvColumnStats {
@@ -134,6 +143,17 @@ export interface CsvApi {
   ) => Promise<{ rows: CsvDistinctRow[]; total: number; truncated: boolean } | { canceled: true }>
   distinctCancel: (tabId: string) => Promise<null>
   onDistinctProgress: (cb: (p: CsvDistinctProgress) => void) => () => void
+  /** Sweep a source for an intel set → record sightings; resolves with counts or { canceled }. */
+  sweep: (
+    tabId: string,
+    reqId: number,
+    entries: Array<{ value: string; kind: string }>,
+    columns?: string[]
+  ) => Promise<{ sightings: number; hits: number } | { canceled: true }>
+  sweepCancel: (tabId: string) => Promise<null>
+  onSweepProgress: (cb: (p: CsvSweepProgress) => void) => () => void
+  sightingList: (wsId: string, sourceId: number) => Promise<Array<{ rid: number; indicator: string; kind: string }>>
+  sightingClear: (wsId: string, sourceId: number) => Promise<null>
   longest: (tabId: string, col: string) => Promise<string>
   /** 0-based ordinal of a row (by rowid) in the current unsorted filtered view, or -1. */
   locate: (tabId: string, rid: number, filters: CsvFilter[] | undefined, search: string | undefined) => Promise<number>

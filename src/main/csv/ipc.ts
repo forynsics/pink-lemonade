@@ -85,6 +85,39 @@ export function registerCsvIpc(): void {
     return null
   })
 
+  // Intel sweep: scan a source's rows for an intel set, recording sightings (intel_hits). Chunked +
+  // cancelable in the worker; scan progress streams over 'csv:sweep-progress'. Resolves with the
+  // { sightings, hits } counts, or { canceled } if a newer sweep superseded it.
+  ipcMain.handle(
+    'csv:sweep',
+    async (
+      e,
+      {
+        tabId,
+        reqId,
+        entries,
+        columns
+      }: { tabId: string; reqId: number; entries: Array<{ value: string; kind: string }>; columns?: string[] }
+    ) => {
+      const res = await dbw.sweep(tabId, reqId, entries, columns, (p) => {
+        if (!e.sender.isDestroyed()) {
+          e.sender.send('csv:sweep-progress', { tabId, reqId, sightings: p.sightings, scanned: p.scanned, max: p.max })
+        }
+      })
+      return res == null ? { canceled: true } : res
+    }
+  )
+  ipcMain.handle('csv:sweepCancel', (_e, { tabId }: { tabId: string }) => {
+    dbw.sweepCancel(tabId)
+    return null
+  })
+  ipcMain.handle('csv:sightingList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    dbw.call('listSightings', wsId, sourceId)
+  )
+  ipcMain.handle('csv:sightingClear', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    dbw.call('clearSightings', wsId, sourceId).then(() => null)
+  )
+
   ipcMain.handle('csv:longest', (_e, { tabId, col }: { tabId: string; col: string }) =>
     dbw.call('getColumnLongest', tabId, col)
   )
@@ -311,6 +344,10 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
     if (f.op === 'tag') {
       const tags = Array.isArray(f.tags) ? f.tags.filter((t) => typeof t === 'string' && t) : []
       if (tags.length > 0) out.push({ op: 'tag', tags })
+      continue
+    }
+    if (f.op === 'sighting') {
+      out.push({ op: 'sighting' })
       continue
     }
     if (typeof f.col !== 'string') continue

@@ -33,6 +33,8 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   setTags: db.setTags,
   tagByFilter: db.tagByFilter,
   getTagCounts: db.getTagCounts,
+  listSightings: db.listSightings,
+  clearSightings: db.clearSightings,
   locateRow: db.locateRow,
   queryRows: db.queryRows,
   exportRows: db.exportRows,
@@ -72,6 +74,7 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
 const aborters = new Map<string, AbortController>()
 const countReq = new Map<string, number>()
 const distinctReq = new Map<string, number>()
+const sweepReq = new Map<string, number>()
 // Latest enrichment bulk reqId (one Enrichment tab runs at a time). A newer run — or a cancel
 // (sets -1, which no positive reqId matches) — supersedes the running one.
 let enrichReq = 0
@@ -85,6 +88,8 @@ type Msg =
   | { t: 'distinctCancel'; tabId: string }
   | { t: 'enrich'; id: number; reqId: number; dbPath: string; providerId: string; items: unknown[]; now: number }
   | { t: 'enrichCancel' }
+  | { t: 'sweep'; id: number; tabId: string; reqId: number; entries: unknown[]; columns?: string[] }
+  | { t: 'sweepCancel'; tabId: string }
 
 port.on('message', async (msg: Msg) => {
   try {
@@ -165,6 +170,22 @@ port.on('message', async (msg: Msg) => {
         shouldAbort
       )
       port.postMessage({ t: 'result', id: msg.id, ok: true, value })
+      return
+    }
+    if (msg.t === 'sweepCancel') {
+      sweepReq.set(msg.tabId, -1) // no positive reqId matches → the running sweep aborts
+      return
+    }
+    if (msg.t === 'sweep') {
+      sweepReq.set(msg.tabId, msg.reqId)
+      const onPartial = (sightings: number, scanned: number, max: number): void => {
+        if (sweepReq.get(msg.tabId) === msg.reqId) {
+          port.postMessage({ t: 'progress', id: msg.id, payload: { sightings, scanned, max } })
+        }
+      }
+      const shouldAbort = (): boolean => sweepReq.get(msg.tabId) !== msg.reqId
+      const value = await db.intelSweep(msg.tabId, msg.entries as never, msg.columns, onPartial, shouldAbort)
+      port.postMessage({ t: 'result', id: msg.id, ok: true, value }) // result or null (canceled)
       return
     }
   } catch (e) {

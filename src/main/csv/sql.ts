@@ -42,6 +42,9 @@ export type Filter =
   // Row-tag membership: rows whose (source_id, rowid) carry ANY of these tags in the `tags` table
   // (OR across the set — a row has one tag, so AND would match nothing).
   | { op: 'tag'; tags: string[] }
+  // Intel-sweep sightings: rows that carry at least one hit in the `intel_hits` table (a "show only
+  // sightings" toggle). Like the tag op, it isn't tied to a column — resolved against the source id.
+  | { op: 'sighting' }
 
 /** The source id of a workspace data table (`data_<id>` → id), or null for the legacy `data` table. */
 function tableSourceId(table: string): number | null {
@@ -127,6 +130,15 @@ function buildWhere(
           const placeholders = f.tags.map(() => '?').join(', ')
           clauses.push(`rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag IN (${placeholders}))`)
           params.push(sid, ...f.tags)
+        }
+        continue
+      }
+      if (f.op === 'sighting') {
+        const sid = tableSourceId(table)
+        if (sid == null) clauses.push('0') // legacy single-file table has no sightings → match nothing
+        else {
+          clauses.push('rowid IN (SELECT rid FROM intel_hits WHERE source_id = ?)')
+          params.push(sid)
         }
         continue
       }
@@ -389,6 +401,24 @@ export function buildTagClearByFilterSql(
   const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
   const sql = `DELETE FROM tags WHERE source_id = ? AND rid IN (SELECT rowid FROM ${table}${where.sql})`
   return { sql, params: [sourceId, ...where.params] }
+}
+
+/** SELECT rowid + the chosen columns over a rowid window (lo, hi] — the read side of an intel
+ *  sweep, scanned in chunks. `columns` are c0..cN names (whitelisted); the caller passes ≥1. */
+export function buildSweepScanSql(
+  columns: string[],
+  lo: number,
+  hi: number,
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
+  const names = columns
+    .map((c) => {
+      assertCol(c)
+      return c
+    })
+    .join(', ')
+  return { sql: `SELECT rowid, ${names} FROM ${table} WHERE rowid > ? AND rowid <= ?`, params: [lo, hi] }
 }
 
 /**

@@ -27,6 +27,7 @@ import {
   buildTagApplyByFilterSql,
   buildTagClearByFilterSql,
   buildTagCountsSql,
+  buildSweepScanSql,
   FILT_TABLE,
   buildDistinctSql,
   buildDistinctChunkSql,
@@ -40,6 +41,7 @@ import {
   type QueryOpts,
   type Sort
 } from './sql'
+import { compileIntel, matchText, type IntelEntry } from './sweep'
 
 // Loads the native better-sqlite3 binding for the CSV/workspace engine (enrich/cache.ts is the
 // other better-sqlite3 user — both run only in the DB worker). Storage is PERSISTENT: a session
@@ -374,6 +376,7 @@ export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
     'CREATE TABLE source_columns (source_id INTEGER, idx INTEGER, name TEXT, original TEXT, time TEXT, PRIMARY KEY(source_id, idx))'
   )
   db.exec(TAGS_DDL)
+  db.exec(INTEL_HITS_DDL)
   applyQueryPragmas(db)
   workspaces.set(wsId, { db, dbPath, name, nextSourceId: 0 })
   return { wsId, dbPath, name, sources: [], intelMode: 'global' }
@@ -433,6 +436,7 @@ export function openWorkspace(wsId: string, dbPath: string): WorkspaceInfo {
     throw new Error('Not a pink-lemonade workspace')
   }
   db.exec(TAGS_DDL) // workspaces created before tagging shipped won't have this table yet
+  db.exec(INTEL_HITS_DDL) // …nor intel-sweep sightings
   applyQueryPragmas(db)
   const m = Object.fromEntries(metaRows.map((r) => [r.key, r.value]))
   const name = m.name ?? basename(dbPath)
@@ -495,6 +499,11 @@ export function removeSource(wsId: string, sourceId: number): void {
 // their original insert order forever). One tag per row: setting replaces, clearing deletes.
 const TAGS_DDL =
   'CREATE TABLE IF NOT EXISTS tags (source_id INTEGER NOT NULL, rid INTEGER NOT NULL, tag TEXT NOT NULL, note TEXT, updated_at INTEGER, PRIMARY KEY (source_id, rid))'
+
+// Intel-sweep results: one row per (source row, matched indicator). A row with ≥1 entry here is a
+// "sighting". Keyed independently of `tags`, so a row can carry an intent tag AND be a sighting.
+const INTEL_HITS_DDL =
+  'CREATE TABLE IF NOT EXISTS intel_hits (source_id INTEGER NOT NULL, rid INTEGER NOT NULL, indicator TEXT NOT NULL, kind TEXT NOT NULL, hitset TEXT, PRIMARY KEY (source_id, rid, indicator))'
 
 /** Every tag in a source, as [rid, tag] pairs — the renderer holds these in a Map for markers. */
 export function listTags(wsId: string, sourceId: number): Array<{ rid: number; tag: string }> {
@@ -567,6 +576,79 @@ export function getTagCounts(
   const q = buildTagCountsSql(e.meta.columns, filters, search, e.table)
   if (!q) return []
   return e.db.prepare(q.sql).all(...q.params) as Array<{ tag: string; cnt: number }>
+}
+
+/**
+ * Sweep a source's rows for an intel set, recording each row that contains a known indicator as a
+ * "sighting" in intel_hits. Scans the chosen columns (or all when none given) in rowid chunks so it
+ * yields between slices — responsive, cancelable, progress-reporting — and replaces any prior
+ * sightings for the source. Cost scales with rows × intel-set size (the JS match per cell), so it's
+ * a background op like distinct/count. Returns the sighting (distinct hit-row) + total-hit counts,
+ * or null if canceled mid-scan.
+ */
+export async function intelSweep(
+  tabId: string,
+  entries: IntelEntry[],
+  columns: string[] | undefined,
+  onPartial: (sightings: number, scanned: number, max: number) => void,
+  shouldAbort: () => boolean
+): Promise<{ sightings: number; hits: number } | null> {
+  const e = get(tabId)
+  const m = /^data_(\d+)$/.exec(e.table)
+  if (!m) return { sightings: 0, hits: 0 } // legacy single-file table: no workspace/sightings
+  const sid = Number(m[1])
+  const intel = compileIntel(entries)
+  const scanCols = columns && columns.length > 0 ? columns : e.meta.columns.map((c) => c.name)
+  e.db.exec(INTEL_HITS_DDL) // ensure (older workspaces / first sweep)
+  e.db.prepare('DELETE FROM intel_hits WHERE source_id = ?').run(sid) // re-sweep replaces
+  const ins = e.db.prepare(
+    'INSERT OR IGNORE INTO intel_hits (source_id, rid, indicator, kind, hitset) VALUES (?, ?, ?, ?, ?)'
+  )
+  const max = e.meta.rowCount
+  const sightingRids = new Set<number>()
+  let hits = 0
+  for (let lo = 0; lo < max; lo += FILT_CHUNK) {
+    if (shouldAbort()) return null
+    const hi = Math.min(lo + FILT_CHUNK, max)
+    const q = buildSweepScanSql(scanCols, lo, hi, e.table)
+    const slice = e.db.prepare(q.sql).raw(true).all(...q.params) as unknown[][]
+    const writeChunk = e.db.transaction((rows: unknown[][]) => {
+      for (const row of rows) {
+        const rid = row[0] as number
+        // row[1..] are the scanned columns; join them so one matchText covers the whole row.
+        let text = ''
+        for (let i = 1; i < row.length; i++) if (row[i] != null) text += String(row[i]) + '\n'
+        const found = matchText(text, intel)
+        if (found.length === 0) continue
+        sightingRids.add(rid)
+        for (const f of found) hits += ins.run(sid, rid, f.value, f.kind, 'pasted').changes
+      }
+    })
+    writeChunk(slice)
+    onPartial(sightingRids.size, hi, max)
+    await new Promise((resolve) => setImmediate(resolve)) // yield between chunks
+  }
+  e.filt = undefined // a "show only sightings" filter's match set just changed
+  return { sightings: sightingRids.size, hits }
+}
+
+/** Every sighting in a source as (rid, indicator, kind) — the renderer maps these to row markers. */
+export function listSightings(wsId: string, sourceId: number): Array<{ rid: number; indicator: string; kind: string }> {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId)) return []
+  w.db.exec(INTEL_HITS_DDL)
+  return w.db
+    .prepare('SELECT rid, indicator, kind FROM intel_hits WHERE source_id = ? ORDER BY rid')
+    .all(sourceId) as Array<{ rid: number; indicator: string; kind: string }>
+}
+
+/** Drop all sightings for a source (re-sweep or user clear). */
+export function clearSightings(wsId: string, sourceId: number): void {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId)) return
+  w.db.prepare('DELETE FROM intel_hits WHERE source_id = ?').run(sourceId)
+  const e = tables.get(sourceKey(wsId, sourceId))
+  if (e) e.filt = undefined
 }
 
 export function closeWorkspace(wsId: string): void {

@@ -30,6 +30,7 @@ export type CsvFilter =
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
   | { op: 'tag'; tags: string[] }
+  | { op: 'sighting' }
 
 export interface CsvQueryOpts {
   sort?: CsvSort
@@ -64,6 +65,14 @@ export interface CsvDistinctProgress {
   reqId: number
   scanned: number
   count: number
+  max: number
+}
+/** Live progress of a chunked intel sweep (rows scanned + sightings found so far). */
+export interface CsvSweepProgress {
+  tabId: string
+  reqId: number
+  sightings: number
+  scanned: number
   max: number
 }
 

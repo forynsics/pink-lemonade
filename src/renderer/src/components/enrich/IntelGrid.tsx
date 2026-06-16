@@ -6,15 +6,19 @@ import {
   getFilteredRowModel,
   getFacetedRowModel,
   getFacetedUniqueValues,
+  getGroupedRowModel,
+  getExpandedRowModel,
   type ColumnDef,
   type FilterFn,
   type SortingState,
   type ColumnFiltersState,
   type RowSelectionState,
   type VisibilityState,
-  type ColumnSizingState
+  type ColumnSizingState,
+  type GroupingState,
+  type ExpandedState
 } from '@tanstack/react-table'
-import { Check, Columns3, Copy, Download, Eraser, Filter, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Columns3, Copy, Download, Eraser, Filter, Layers, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
 import type { EnrichItem, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
 
 // The Intel results grid, built on TanStack Table (headless): TanStack owns the STATE + models —
@@ -124,13 +128,15 @@ function ValueCell({ text, wrap, mono, style, className }: {
 }
 
 // A column's 3-dots dropdown: distinct values (faceted, with counts) as a multi-select checklist.
-function ColMenu({ label, distinct, current, x, y, onApply, onClose }: {
+function ColMenu({ label, distinct, current, grouped, x, y, onApply, onToggleGroup, onClose }: {
   label: string
   distinct: Array<{ value: string; count: number }>
   current: string[]
+  grouped: boolean
   x: number
   y: number
   onApply: (values: string[]) => void
+  onToggleGroup: () => void
   onClose: () => void
 }): JSX.Element {
   const allVals = useMemo(() => distinct.map((d) => d.value), [distinct])
@@ -175,6 +181,13 @@ function ColMenu({ label, distinct, current, x, y, onApply, onClose }: {
         <span className="truncate">{label}</span>
         <span className="ml-auto font-normal normal-case tracking-normal">{distinct.length} distinct</span>
       </div>
+      <button
+        onClick={() => { onToggleGroup(); onClose() }}
+        className="flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 border-b border-citrus-border/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev dark:border-citrus-night-border/60"
+      >
+        <Layers className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+        {grouped ? 'Remove grouping' : 'Group by this column'}
+      </button>
       <input
         autoFocus
         value={needle}
@@ -327,7 +340,7 @@ export function IntelGrid({
       size: defaultSize(l.ckind),
       minSize: MIN_W
     }))
-    cols.push({ id: '__search', accessorFn: (r) => r.hay, enableGlobalFilter: true, enableSorting: false })
+    cols.push({ id: '__search', accessorFn: (r) => r.hay, enableGlobalFilter: true, enableSorting: false, enableGrouping: false })
     return cols
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leaves])
@@ -338,11 +351,13 @@ export function IntelGrid({
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
+  const [grouping, setGrouping] = useState<GroupingState>([])
+  const [expanded, setExpanded] = useState<ExpandedState>({})
 
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, columnFilters, globalFilter, rowSelection, columnVisibility, columnSizing },
+    state: { sorting, columnFilters, globalFilter, rowSelection, columnVisibility, columnSizing, grouping, expanded },
     getRowId: (r) => r.value,
     filterFns: { inSet },
     globalFilterFn: 'includesString',
@@ -353,15 +368,19 @@ export function IntelGrid({
     onRowSelectionChange: setRowSelection,
     onColumnVisibilityChange: setColumnVisibility,
     onColumnSizingChange: setColumnSizing,
+    onGroupingChange: setGrouping,
+    onExpandedChange: setExpanded,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getGroupedRowModel: getGroupedRowModel(),
+    getExpandedRowModel: getExpandedRowModel(),
     getFacetedRowModel: getFacetedRowModel(),
     getFacetedUniqueValues: getFacetedUniqueValues()
   })
 
   const rows = table.getRowModel().rows
-  const visibleValues = useMemo(() => rows.map((r) => r.original.value), [rows])
+  const visibleValues = useMemo(() => rows.map((r) => r.original?.value ?? ''), [rows])
   const labelFor = (colId: string): string => leaves.find((l) => l.colId === colId)?.label ?? colId
   const widthOf = (colId: string): number => table.getColumn(colId)?.getSize() ?? 150
   const isVis = (colId: string): boolean => table.getColumn(colId)?.getIsVisible() ?? true
@@ -517,9 +536,10 @@ export function IntelGrid({
     const set = new Set(values)
     const cols = leaves.filter((l) => isVis(l.colId))
     const lines = [cols.map((l) => csvEsc(l.label)).join(',')]
-    for (const r of rows) {
-      if (!set.has(r.original.value)) continue
-      lines.push(cols.map((l) => csvEsc(r.original.cells[l.colId] ?? '')).join(','))
+    // Iterate the flat data (grouping-independent) so collapsed-group rows still export.
+    for (const r of data) {
+      if (!set.has(r.value)) continue
+      lines.push(cols.map((l) => csvEsc(r.cells[l.colId] ?? '')).join(','))
     }
     return lines.join('\n')
   }
@@ -617,6 +637,7 @@ export function IntelGrid({
   const headPin = 'bg-citrus-cream dark:bg-citrus-night'
   const pinBg = (sel: boolean): string => (sel ? 'bg-citrus-pink-light dark:bg-citrus-night-elev' : 'bg-citrus-cream dark:bg-citrus-night')
   const sticky = (left: number, w: number, z: number): React.CSSProperties => ({ position: 'sticky', left, width: w, minWidth: w, maxWidth: w, zIndex: z })
+  const totalCols = 2 + (isVis('value') ? 1 : 0) + (isVis('kind') ? 1 : 0) + visBuckets.reduce((n, b) => n + b.count, 0)
 
   return (
     <>
@@ -657,6 +678,15 @@ export function IntelGrid({
             Clear all
           </button>
         )}
+        {grouping.map((colId) => (
+          <span key={colId} className="inline-flex items-center gap-1 rounded-full border border-citrus-pink/40 bg-citrus-pink-light/40 px-2 py-0.5 text-[11px] text-citrus-pink dark:bg-citrus-night-elev">
+            <Layers className="w-3 h-3" />
+            <span className="font-semibold">{labelFor(colId)}</span>
+            <button onClick={() => table.getColumn(colId)?.toggleGrouping()} title="Remove grouping" className="hover:text-citrus-pink-hover">
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
         <div className="ml-auto flex items-center gap-2">
           {hasFilter && (
             <span className="text-[11px] font-mono text-citrus-muted dark:text-citrus-night-muted">
@@ -792,6 +822,32 @@ export function IntelGrid({
             </thead>
             <tbody>
               {rows.map((row, i) => {
+                // Group summary row: a sticky caret + grouped value + count; expand to see members.
+                if (row.getIsGrouped()) {
+                  const gcol = row.groupingColumnId!
+                  const val = String(row.getGroupingValue(gcol) ?? '')
+                  return (
+                    <tr
+                      key={row.id}
+                      className="cursor-pointer select-none border-t border-citrus-border/60 bg-citrus-sand/40 hover:bg-citrus-sand/60 dark:border-citrus-night-border/60 dark:bg-citrus-night-elev/50 dark:hover:bg-citrus-night-elev/70"
+                      onClick={row.getToggleExpandedHandler()}
+                    >
+                      <td style={sticky(0, SELECT_W, 20)} className="px-2 py-1 bg-citrus-sand/40 dark:bg-citrus-night-elev/50" />
+                      <td
+                        colSpan={totalCols - 1}
+                        style={{ position: 'sticky', left: SELECT_W, zIndex: 20 }}
+                        className="px-2 py-1 bg-citrus-sand/40 dark:bg-citrus-night-elev/50 text-citrus-dark dark:text-citrus-night-text whitespace-nowrap"
+                      >
+                        <span style={{ paddingLeft: row.depth * 14 }} className="inline-flex items-center gap-1.5">
+                          {row.getIsExpanded() ? <ChevronDown className="w-3.5 h-3.5 text-citrus-pink" /> : <ChevronRight className="w-3.5 h-3.5 text-citrus-pink" />}
+                          <span className="text-citrus-muted dark:text-citrus-night-muted">{labelFor(gcol)}:</span>
+                          <strong className="font-mono">{val === '' ? '∅ (empty)' : val}</strong>
+                          <span className="text-citrus-muted dark:text-citrus-night-muted">({row.subRows.length})</span>
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                }
                 const rr = row.original
                 const isSel = row.getIsSelected()
                 return (
@@ -883,9 +939,11 @@ export function IntelGrid({
           label={labelFor(colMenu.colId)}
           distinct={distinctFor(colMenu.colId)}
           current={(table.getColumn(colMenu.colId)?.getFilterValue() as string[]) ?? []}
+          grouped={!!table.getColumn(colMenu.colId)?.getIsGrouped()}
           x={colMenu.x}
           y={colMenu.y}
           onApply={(vals) => table.getColumn(colMenu.colId)?.setFilterValue(vals.length ? vals : undefined)}
+          onToggleGroup={() => table.getColumn(colMenu.colId)?.toggleGrouping()}
           onClose={() => setColMenu(null)}
         />
       )}

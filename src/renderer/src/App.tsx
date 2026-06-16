@@ -7,6 +7,7 @@ import { DocTabs } from './components/DocTabs'
 import { Welcome } from './components/Welcome'
 import { CsvViewer, type CsvViewerHandle, type TagSummary } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
+import { IntelSweepTargetDialog, type SweepTargetWorkspace } from './components/csv/IntelSweepTargetDialog'
 import { WorkspaceSidebar } from './components/csv/WorkspaceSidebar'
 import { EnrichmentView } from './components/enrich/EnrichmentView'
 import { getById, defaultOptions } from './tools/registry'
@@ -72,6 +73,13 @@ export default function App(): JSX.Element {
   // tag filter. Only the active source's viewer populates these.
   const [tagSummary, setTagSummary] = useState<TagSummary | null>(null)
   const tagApiRef = useRef<CsvViewerHandle | null>(null)
+  // Intel-tab → sweep pivot. `pendingSweep` is delivered to the target source's CsvViewer (opens its
+  // Sweep dialog pre-filled); `sweepPicker` holds the indicators while the target dialog is choosing;
+  // `sweepNotice` covers the "no workspace to sweep into" case. Token makes repeat pivots distinct.
+  const [pendingSweep, setPendingSweep] = useState<{ wsDocId: string; sourceId: number; values: string[]; token: number } | null>(null)
+  const [sweepPicker, setSweepPicker] = useState<{ values: string[] } | null>(null)
+  const [sweepNotice, setSweepNotice] = useState<string | null>(null)
+  const sweepTokenRef = useRef(0)
   // The configurable workspace storage folder (Open-Workspace default + where new workspaces save).
   const [workspaceDir, setWorkspaceDirState] = useState('')
   useEffect(() => {
@@ -220,6 +228,43 @@ export default function App(): JSX.Element {
       const doc: EnrichmentDoc = { ...createEnrichmentDoc(label, dbPath), draft: recognized.join('\n') }
       return { docs: [...s.docs, doc], activeId: doc.id }
     })
+  }
+
+  /** Workspaces that can receive a sweep right now (open, reopened, with at least one source). */
+  function sweepableWorkspaces(): SweepTargetWorkspace[] {
+    return docs
+      .filter((d): d is WorkspaceDoc => d.kind === 'workspace' && !d.needsReopen && d.sources.length > 0)
+      .map((d) => ({ id: d.id, name: d.name, sources: d.sources.map((s) => ({ sourceId: s.sourceId, name: s.name })) }))
+  }
+
+  /** Mirror of sendToEnrichment: pivot selected Intel-tab indicators into a workspace sweep. With one
+   *  eligible source, go straight to it; with several, ask which; with none, nudge to open a workspace. */
+  function sweepFromIntel(values: string[]): void {
+    const vals = values.map((v) => v.trim()).filter(Boolean)
+    if (vals.length === 0) return
+    const targets = sweepableWorkspaces()
+    const sourceCount = targets.reduce((n, w) => n + w.sources.length, 0)
+    if (sourceCount === 0) {
+      setSweepNotice('Open a workspace and import a CSV first — a sweep marks rows in a workspace source.')
+      return
+    }
+    if (sourceCount === 1) {
+      startSweep(targets[0].id, targets[0].sources[0].sourceId, vals)
+      return
+    }
+    setSweepPicker({ values: vals })
+  }
+
+  /** Make the target source active and hand its CsvViewer the indicators to pre-fill the Sweep dialog. */
+  function startSweep(wsDocId: string, sourceId: number, values: string[]): void {
+    setHome(false)
+    setSweepPicker(null)
+    setState((s) => ({
+      ...s,
+      activeId: wsDocId,
+      docs: s.docs.map((d) => (d.id === wsDocId && d.kind === 'workspace' ? { ...d, activeSourceId: sourceId } : d))
+    }))
+    setPendingSweep({ wsDocId, sourceId, values, token: ++sweepTokenRef.current })
   }
 
   // ---- document operations ----
@@ -654,6 +699,7 @@ export default function App(): JSX.Element {
                   onPatch={(patch) => patchEnrichmentById(d.id, patch)}
                   onOpenIntelDb={openIntelDb}
                   onNewIntelDb={newIntelDb}
+                  onSweep={sweepFromIntel}
                 />
               )
             }
@@ -691,6 +737,12 @@ export default function App(): JSX.Element {
                           onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
                           savedHidden={src.hiddenColumns}
                           onHiddenColumns={(names) => setSourceHiddenColumns(d.id, src.sourceId, names)}
+                          pendingSweep={
+                            pendingSweep && pendingSweep.wsDocId === d.id && pendingSweep.sourceId === src.sourceId
+                              ? { values: pendingSweep.values, token: pendingSweep.token }
+                              : undefined
+                          }
+                          onConsumePendingSweep={() => setPendingSweep(null)}
                           apiRef={isActiveSource ? tagApiRef : undefined}
                           onTagSummary={isActiveSource ? setTagSummary : undefined}
                           onSendToEnrichment={(vals) =>
@@ -713,9 +765,41 @@ export default function App(): JSX.Element {
         </main>
       </div>
 
+      {sweepPicker && (
+        <IntelSweepTargetDialog
+          workspaces={sweepableWorkspaces()}
+          indicatorCount={sweepPicker.values.length}
+          onConfirm={(wsDocId, sourceId) => startSweep(wsDocId, sourceId, sweepPicker.values)}
+          onCancel={() => setSweepPicker(null)}
+        />
+      )}
+
+      {sweepNotice && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          onClick={() => setSweepNotice(null)}
+        >
+          <div
+            className="w-[24rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Run Intel Sweep</div>
+            <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">{sweepNotice}</p>
+            <div className="mt-4 flex justify-end">
+              <button
+                className="rounded-md bg-citrus-pink px-3 py-1 text-[11px] font-bold text-white hover:bg-citrus-pink-hover"
+                onClick={() => setSweepNotice(null)}
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {about && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
           onClick={() => setAbout(false)}
         >
           <div

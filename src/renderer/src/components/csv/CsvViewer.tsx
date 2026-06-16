@@ -60,6 +60,8 @@ export function CsvViewer({
   onReorderColumns,
   savedHidden,
   onHiddenColumns,
+  pendingSweep,
+  onConsumePendingSweep,
   apiRef,
   onTagSummary,
   onSendToEnrichment,
@@ -72,6 +74,11 @@ export function CsvViewer({
   savedHidden?: string[]
   /** Report the hidden-column set up so it persists on the workspace source. */
   onHiddenColumns?: (names: string[]) => void
+  /** Set when an Intel-tab pivot targets THIS source — opens the Sweep dialog pre-filled. The
+   *  `token` changes per pivot so the same indicators can be sent twice. */
+  pendingSweep?: { values: string[]; token: number }
+  /** Clear the pending pivot once consumed (so it doesn't re-open on the next render). */
+  onConsumePendingSweep?: () => void
   /** Set on the ACTIVE source only — lets the sidebar drive this source's tag filter. */
   apiRef?: React.Ref<CsvViewerHandle>
   /** Set on the ACTIVE source only — reports tag counts + the active tag filter to the sidebar. */
@@ -166,7 +173,24 @@ export function CsvViewer({
   const [sightings, setSightings] = useState<Map<number, string[]>>(new Map())
   const [sightingRev, setSightingRev] = useState(0)
   const [sweepOpen, setSweepOpen] = useState(false)
+  // Seed text + a remount key for the Sweep dialog: the Intel-tab pivot opens it pre-filled, and the
+  // key forces a fresh mount so a new pivot re-seeds even if the dialog was already open.
+  const [sweepInitial, setSweepInitial] = useState('')
+  const [sweepKey, setSweepKey] = useState(0)
+  const openSweep = useCallback((initial: string): void => {
+    setSweepInitial(initial)
+    setSweepKey((k) => k + 1)
+    setSweepOpen(true)
+  }, [])
   const [sightingsPanelOpen, setSightingsPanelOpen] = useState(false)
+  // An Intel-tab pivot landed on this source → open the Sweep dialog pre-filled, then clear it.
+  const pendingToken = pendingSweep?.token
+  useEffect(() => {
+    if (!pendingSweep) return
+    openSweep(pendingSweep.values.join('\n'))
+    onConsumePendingSweep?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingToken])
   useEffect(() => {
     if (!taggable) {
       setSightings(new Map())
@@ -587,7 +611,7 @@ export function CsvViewer({
         <div className="ml-auto flex items-center gap-2">
           {taggable && (
             <button
-              onClick={() => setSweepOpen(true)}
+              onClick={() => openSweep('')}
               className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text"
               title="Sweep this source for known indicators (intel set)"
             >
@@ -798,9 +822,11 @@ export function CsvViewer({
 
       {sweepOpen && (
         <SweepDialog
+          key={sweepKey}
           tabId={doc.tabId}
           columns={doc.columns}
           sourceName={doc.sourceName}
+          initialText={sweepInitial}
           onClose={() => setSweepOpen(false)}
           existingCount={sightings.size}
           onSwept={() => setSightingRev((r) => r + 1)}

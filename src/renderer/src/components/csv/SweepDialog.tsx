@@ -20,7 +20,8 @@ export function SweepDialog({
   onClose,
   onSwept,
   onSeeSightings,
-  existingCount
+  existingCount,
+  initialText
 }: {
   tabId: string
   columns: CsvColumn[]
@@ -31,8 +32,10 @@ export function SweepDialog({
   onSeeSightings: () => void
   /** Sightings already on this source — drives the Add-vs-Replace choice (avoids silent wipes). */
   existingCount: number
+  /** Pre-fill the indicator box (used by the Intel-tab → sweep pivot). */
+  initialText?: string
 }): JSX.Element {
-  const [text, setText] = useState('')
+  const [text, setText] = useState(initialText ?? '')
   // The exact paste text of the last successful run. While it still matches, re-running would be
   // a no-op, so the primary action becomes "See sightings"; editing the list flips it back.
   const [lastRunText, setLastRunText] = useState<string | null>(null)

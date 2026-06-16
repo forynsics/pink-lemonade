@@ -19,7 +19,7 @@ import {
   type GroupingState,
   type ExpandedState
 } from '@tanstack/react-table'
-import { Check, ChevronDown, ChevronRight, Columns3, Copy, Download, Eraser, Filter, Layers, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Columns3, Copy, Crosshair, Download, Eraser, Filter, Layers, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
 import type { EnrichItem, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
 
 // The Intel results grid, built on TanStack Table (headless): TanStack owns the STATE + models —
@@ -271,7 +271,8 @@ export function IntelGrid({
   onViewState,
   onRun,
   onClearCache,
-  onRemove
+  onRemove,
+  onSweep
 }: {
   indicators: EnrichItem[]
   results: ResultMap
@@ -288,6 +289,8 @@ export function IntelGrid({
   onRun: (providerId: string, values: string[]) => void
   onClearCache: (values: string[]) => void
   onRemove: (values: string[]) => void
+  /** Pivot: sweep a workspace source for the selected indicators (target chosen upstream). */
+  onSweep: (values: string[]) => void
 }): JSX.Element {
   const providerName = (pid: string): string => providers.find((p) => p.id === pid)?.name ?? pid
 
@@ -1149,6 +1152,13 @@ export function IntelGrid({
           >
             <Copy className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
             Copy as CSV
+          </button>
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+            onClick={() => { onSweep(menu.targets); setMenu(null) }}
+          >
+            <Crosshair className="w-3.5 h-3.5 shrink-0 text-red-500 dark:text-red-400" />
+            Run Intel Sweep{menu.targets.length > 1 ? ` (${menu.targets.length})` : ''}…
           </button>
           <button
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"

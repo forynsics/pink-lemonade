@@ -28,7 +28,8 @@ export function EnrichmentView({
   defaultDbPath,
   onPatch,
   onOpenIntelDb,
-  onNewIntelDb
+  onNewIntelDb,
+  onSweep
 }: {
   doc: EnrichmentDoc
   visible: boolean
@@ -36,6 +37,8 @@ export function EnrichmentView({
   onPatch: (patch: Partial<EnrichmentDoc>) => void
   onOpenIntelDb: () => void
   onNewIntelDb: () => void
+  /** Pivot selected indicators into a workspace sweep (target chosen in App). */
+  onSweep: (values: string[]) => void
 }): JSX.Element {
   const [providers, setProviders] = useState<EnrichProviderInfo[]>([])
   const [watchlistsOpen, setWatchlistsOpen] = useState(false)
@@ -490,6 +493,7 @@ export function EnrichmentView({
         onRun={handleRun}
         onClearCache={clearCacheTargets}
         onRemove={removeTargets}
+        onSweep={onSweep}
       />
 
       <WatchlistsPanel

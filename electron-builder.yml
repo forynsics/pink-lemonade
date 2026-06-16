@@ -13,8 +13,8 @@ asarUnpack:
 win:
   icon: build/icon.ico
   target:
-    - nsis
-nsis:
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
+    - portable
+# Single double-click .exe — no install. Self-extracts the runtime to a temp dir and launches.
+portable:
+  artifactName: pink-lemonade-${version}-portable.${ext}
+  requestExecutionLevel: user

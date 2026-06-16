@@ -14,7 +14,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dist": "electron-vite build && electron-builder --win nsis",
+    "dist": "electron-vite build && electron-builder --win",
     "dist:dir": "electron-vite build && electron-builder --dir",
     "rebuild": "electron-rebuild -f -w better-sqlite3"
   },

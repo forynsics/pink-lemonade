@@ -30,6 +30,11 @@ export interface EnrichmentProvider {
   kinds: IndicatorKind[]
   /** Seconds a cached result stays fresh. Infinity = never expires (local data like MaxMind). */
   ttlSeconds: number
+  /** When true, the engine still runs this provider for non-routable/special-use IPs instead of
+   *  short-circuiting them as "private". Set for local matchers like Watchlist where matching a
+   *  private range (e.g. a Corporate 10.0.0.0/8) is the whole point. Network providers leave it off
+   *  (sending an internal IP out would leak it). */
+  matchesPrivateIps?: boolean
   /** Whether the provider is configured and ready to run (and why not, if not). Synchronous. */
   status(): ProviderStatus
   lookup(value: string, kind: IndicatorKind): Promise<EnrichmentResult>

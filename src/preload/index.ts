@@ -108,6 +108,18 @@ const api = {
       ipcRenderer.on('enrich:progress', h)
       return () => ipcRenderer.removeListener('enrich:progress', h)
     }
+  },
+
+  // Watchlists: the analyst's curated context lists (global, app-wide), edited in the Watchlists
+  // drawer and matched by the 'watchlist' enrichment provider.
+  watchlist: {
+    list: () => ipcRenderer.invoke('watchlist:list'),
+    entries: (id: number) => ipcRenderer.invoke('watchlist:entries', { id }),
+    create: (name: string, kind: string, color?: string | null) =>
+      ipcRenderer.invoke('watchlist:create', { name, kind, color }),
+    rename: (id: number, name: string) => ipcRenderer.invoke('watchlist:rename', { id, name }),
+    remove: (id: number) => ipcRenderer.invoke('watchlist:delete', { id }),
+    replace: (id: number, text: string) => ipcRenderer.invoke('watchlist:replace', { id, text })
   }
 }
 

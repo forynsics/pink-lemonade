@@ -7,6 +7,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import * as db from './db'
 import * as enrichEngine from '../enrich/engine'
 import * as enrichCache from '../enrich/cache'
+import * as watchlistStore from '../enrich/watchlistStore'
 
 const port = parentPort
 if (!port) throw new Error('worker.ts must run as a worker thread')
@@ -14,6 +15,7 @@ if (!port) throw new Error('worker.ts must run as a worker thread')
 const userDataDir = (workerData as { userDataDir: string }).userDataDir
 db.initPaths(userDataDir)
 enrichCache.initEnrichPaths(userDataDir)
+watchlistStore.initWatchlistPath(userDataDir)
 
 // Plain functions: serializable args in, serializable value out. Run synchronously in the worker.
 const FNS: Record<string, (...a: never[]) => unknown> = {
@@ -55,7 +57,15 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   enrichCacheDump: enrichCache.dump,
   enrichCacheCount: enrichCache.indicatorCount,
   enrichDefaultDb: enrichCache.defaultDbPath,
-  enrichClose: enrichCache.close
+  enrichClose: enrichCache.close,
+  // Watchlists (global context lists).
+  wlListLists: watchlistStore.listLists,
+  wlGetEntries: watchlistStore.getEntries,
+  wlCreate: watchlistStore.createList,
+  wlRename: watchlistStore.renameList,
+  wlDelete: watchlistStore.deleteList,
+  wlReplace: watchlistStore.replaceEntries,
+  wlClose: watchlistStore.close
 }
 
 // In-flight ingest aborters keyed by cancelKey (tabId for a single import, wsId for a workspace

@@ -46,3 +46,15 @@ export interface EnrichCachedRow {
   fields: Record<string, string>
   fetchedAt: number
 }
+
+// ---- Watchlists (analyst-curated context lists) ----
+export type WatchlistKind = 'ip' | 'asn' | 'domain' | 'hash'
+
+export interface WatchlistInfo {
+  id: number
+  name: string
+  kind: WatchlistKind
+  color: string | null
+  updatedAt: number | null
+  count: number
+}

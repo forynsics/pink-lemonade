@@ -223,6 +223,25 @@ export interface EnrichApi {
   onProgress: (cb: (p: EnrichProgress) => void) => () => void
 }
 
+// ---- Watchlists (analyst-curated context lists) ----
+export type WatchlistKind = 'ip' | 'asn' | 'domain' | 'hash'
+export interface WatchlistInfo {
+  id: number
+  name: string
+  kind: WatchlistKind
+  color: string | null
+  updatedAt: number | null
+  count: number
+}
+export interface WatchlistApi {
+  list: () => Promise<WatchlistInfo[]>
+  entries: (id: number) => Promise<string[]>
+  create: (name: string, kind: WatchlistKind, color?: string | null) => Promise<WatchlistInfo>
+  rename: (id: number, name: string) => Promise<null>
+  remove: (id: number) => Promise<null>
+  replace: (id: number, text: string) => Promise<{ added: number; skipped: string[] }>
+}
+
 export interface Api {
   openFile: () => Promise<{
     name: string
@@ -233,6 +252,7 @@ export interface Api {
   saveFile: (content: string, defaultName?: string) => Promise<string | null>
   csv: CsvApi
   enrich: EnrichApi
+  watchlist: WatchlistApi
 }
 
 declare global {

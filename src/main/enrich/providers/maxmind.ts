@@ -47,6 +47,20 @@ async function activeReaders(): Promise<Reader<Response>[]> {
   return out
 }
 
+/**
+ * Resolve an IP's ASN from the installed GeoLite2-ASN database, or null if not configured / no
+ * record. Reused by the Watchlist provider so ASN watchlists can match without duplicating the
+ * reader/caching logic. Returns just the number (e.g. 15169), not "AS15169".
+ */
+export async function asnForIp(value: string): Promise<number | null> {
+  if (!validate(value)) return null
+  for (const r of await activeReaders()) {
+    const rec = r.get(value) as Record<string, unknown> | null
+    if (rec && typeof rec.autonomous_system_number === 'number') return rec.autonomous_system_number
+  }
+  return null
+}
+
 /** Pull the human-interesting fields out of whatever record type we got (City/Country/ASN/ISP). */
 function extractFields(rec: Response): Record<string, string> {
   const r = rec as Record<string, unknown>

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, Copy, Database, Download, Eraser, FilePlus, FolderOpen, KeyRound, ListTree, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, Copy, Database, Download, Eraser, FilePlus, FolderOpen, KeyRound, ListChecks, ListTree, Loader2, Plus, Radar, RefreshCw, Trash2, X } from 'lucide-react'
 import { classifyIndicator } from '../../tools/ioc/classify'
+import { WatchlistsPanel } from './WatchlistsPanel'
 import type { EnrichmentDoc } from '../../state/documents'
 import type { EnrichCachedRow, EnrichItem, EnrichProgress, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
 
@@ -81,6 +82,7 @@ export function EnrichmentView({
   onNewIntelDb: () => void
 }): JSX.Element {
   const [providers, setProviders] = useState<EnrichProviderInfo[]>([])
+  const [watchlistsOpen, setWatchlistsOpen] = useState(false)
   const [results, setResults] = useState<ResultMap>({})
   const [entryCount, setEntryCount] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
@@ -598,6 +600,13 @@ export function EnrichmentView({
         ))}
         <div className="ml-auto flex items-center gap-2">
           <button
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+            onClick={() => setWatchlistsOpen(true)}
+            title="Edit the curated context lists matched by the Watchlist provider"
+          >
+            <ListChecks className="w-3 h-3" /> Watchlists
+          </button>
+          <button
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
             onClick={() => setExportOpen(true)}
             disabled={selected.size === 0}
@@ -798,7 +807,7 @@ export function EnrichmentView({
                   <th
                     key={pid}
                     colSpan={2 + fieldsByProvider[pid].length}
-                    className="px-2 py-1 font-bold text-center text-citrus-pink border-l border-citrus-border/60 dark:border-citrus-night-border/60"
+                    className="px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40"
                   >
                     {providerName(pid)}
                   </th>
@@ -808,7 +817,7 @@ export function EnrichmentView({
                 {providerIds.map((pid) => (
                   <Fragment key={pid}>
                     <th
-                      className="px-2 py-1 font-semibold border-l border-citrus-border/60 cursor-pointer select-none hover:text-citrus-pink dark:border-citrus-night-border/60"
+                      className="px-2 py-1 font-semibold border-l-[3px] border-citrus-pink/50 cursor-pointer select-none hover:text-citrus-pink dark:border-citrus-pink/40"
                       onClick={() => toggleSort(`p:${pid}:status`)}
                     >
                       Status{arrow(`p:${pid}:status`)}
@@ -872,7 +881,7 @@ export function EnrichmentView({
                       const r = results[ind.value]?.[pid]
                       return (
                         <Fragment key={pid}>
-                          <td className="px-2 py-1 border-l border-citrus-border/60 dark:border-citrus-night-border/60 whitespace-nowrap">
+                          <td className="px-2 py-1 border-l-[3px] border-citrus-pink/40 dark:border-citrus-pink/30 whitespace-nowrap">
                             {r ? (
                               <span className="inline-flex items-center gap-1.5">
                                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${STATUS_STYLE[r.status] ?? ''}`} title={r.message}>
@@ -886,9 +895,28 @@ export function EnrichmentView({
                               <span className="text-citrus-muted/50 dark:text-citrus-night-muted/50">—</span>
                             )}
                           </td>
-                          {fieldsByProvider[pid].map((f) => (
-                            <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} />
-                          ))}
+                          {fieldsByProvider[pid].map((f) =>
+                            pid === 'watchlist' && f === 'Lists' ? (
+                              <td key={f} className="px-2 py-1 align-top">
+                                {r?.fields[f] ? (
+                                  <span className="flex flex-wrap gap-1">
+                                    {r.fields[f].split(', ').map((name) => (
+                                      <span
+                                        key={name}
+                                        className="inline-block rounded-full bg-citrus-pink-light px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink dark:bg-citrus-night-elev"
+                                      >
+                                        {name}
+                                      </span>
+                                    ))}
+                                  </span>
+                                ) : (
+                                  <span className="text-citrus-muted/40 dark:text-citrus-night-muted/40">—</span>
+                                )}
+                              </td>
+                            ) : (
+                              <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} />
+                            )
+                          )}
                           <td
                             className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted whitespace-nowrap"
                             title={r?.fetchedAt ? `fetched ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
@@ -985,6 +1013,12 @@ export function EnrichmentView({
           </button>
         </div>
       )}
+
+      <WatchlistsPanel
+        open={watchlistsOpen}
+        onClose={() => setWatchlistsOpen(false)}
+        onChanged={() => void window.api.enrich.providers().then(setProviders)}
+      />
     </div>
   )
 }

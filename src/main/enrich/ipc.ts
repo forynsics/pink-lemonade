@@ -168,4 +168,19 @@ export function registerEnrichIpc(): void {
     dbw.enrichCancel()
     return null
   })
+
+  // Watchlists (global, app-wide) — the analyst's curated context lists. All forwarded to the worker
+  // (which owns watchlists.db). `now` is stamped in main so the store stays clock-free.
+  ipcMain.handle('watchlist:list', () => dbw.call('wlListLists'))
+  ipcMain.handle('watchlist:entries', (_e, { id }: { id: number }) => dbw.call('wlGetEntries', id))
+  ipcMain.handle('watchlist:create', (_e, { name, kind, color }: { name: string; kind: string; color?: string | null }) =>
+    dbw.call('wlCreate', name, kind, color ?? null, Date.now())
+  )
+  ipcMain.handle('watchlist:rename', (_e, { id, name }: { id: number; name: string }) =>
+    dbw.call('wlRename', id, name, Date.now()).then(() => null)
+  )
+  ipcMain.handle('watchlist:delete', (_e, { id }: { id: number }) => dbw.call('wlDelete', id).then(() => null))
+  ipcMain.handle('watchlist:replace', (_e, { id, text }: { id: number; text: string }) =>
+    dbw.call('wlReplace', id, text, Date.now())
+  )
 }

@@ -104,7 +104,8 @@ export async function bulkLookup(
 
     // Never enrich non-routable / special-use IPs — no meaningful data, and it would leak internal
     // addresses to network providers. Report the reason instead. (Not cached — it's deterministic.)
-    if (it.kind === 'ipv4' || it.kind === 'ipv6') {
+    // Local matchers that opt in (Watchlist) skip this: a Corporate list IS private ranges.
+    if (!provider.matchesPrivateIps && (it.kind === 'ipv4' || it.kind === 'ipv6')) {
       const reason = privateIpReason(it.value)
       if (reason) {
         rows.push({ indicator: it.value, kind: it.kind, status: 'private', fields: {}, fromCache: false, message: reason })
@@ -137,7 +138,9 @@ export async function bulkLookup(
       message: result.message
     })
     // Don't poison the cache with transient errors (bad config, network) — only persist real answers.
-    if (result.status !== 'error') fresh.push({ indicator: it.value, kind: it.kind, result })
+    // Skip volatile providers (ttl 0, e.g. Watchlist): their result can change between runs, so it's
+    // recomputed each time and never cached.
+    if (result.status !== 'error' && provider.ttlSeconds > 0) fresh.push({ indicator: it.value, kind: it.kind, result })
 
     onProgress({ done: ++done, total, current: it.value, fromCache: false })
     if (done % 200 === 0) await new Promise<void>((r) => setImmediate(r)) // yield on big batches

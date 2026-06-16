@@ -122,10 +122,12 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   void dbCall('closeAll')
   void dbCall('enrichClose')
+  void dbCall('wlClose')
 })
 
 app.on('window-all-closed', () => {
   void dbCall('closeAll')
   void dbCall('enrichClose')
+  void dbCall('wlClose')
   if (process.platform !== 'darwin') app.quit()
 })

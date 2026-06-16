@@ -695,6 +695,7 @@ export function CsvViewer({
           columns={doc.columns}
           sourceName={doc.sourceName}
           onClose={() => setSweepOpen(false)}
+          existingCount={sightings.size}
           onSwept={() => setSightingRev((r) => r + 1)}
           onSeeSightings={() => {
             setSweepOpen(false)

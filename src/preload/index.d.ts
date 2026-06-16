@@ -148,7 +148,8 @@ export interface CsvApi {
     tabId: string,
     reqId: number,
     entries: Array<{ value: string; kind: string }>,
-    columns?: string[]
+    columns?: string[],
+    mode?: 'replace' | 'add'
   ) => Promise<{ sightings: number; hits: number } | { canceled: true }>
   sweepCancel: (tabId: string) => Promise<null>
   onSweepProgress: (cb: (p: CsvSweepProgress) => void) => () => void

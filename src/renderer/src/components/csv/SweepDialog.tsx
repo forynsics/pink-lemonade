@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Crosshair, X } from 'lucide-react'
+import { AlertTriangle, Crosshair, X } from 'lucide-react'
 import type { CsvColumn } from '../../state/csvTypes'
 import { parseIntelText, type SweepKind } from '../../state/sweepIntel'
 
@@ -20,7 +20,8 @@ export function SweepDialog({
   sourceName,
   onClose,
   onSwept,
-  onSeeSightings
+  onSeeSightings,
+  existingCount
 }: {
   tabId: string
   columns: CsvColumn[]
@@ -29,11 +30,15 @@ export function SweepDialog({
   onSwept: () => void
   /** Open the Sightings panel (offered after a run, while the indicator list is unchanged). */
   onSeeSightings: () => void
+  /** Sightings already on this source — drives the Add-vs-Replace choice (avoids silent wipes). */
+  existingCount: number
 }): JSX.Element {
   const [text, setText] = useState('')
   // The exact paste text of the last successful run. While it still matches, re-running would be
   // a no-op, so the primary action becomes "See sightings"; editing the list flips it back.
   const [lastRunText, setLastRunText] = useState<string | null>(null)
+  // With prior sightings, default to keeping them (Add) so a re-sweep never silently wipes progress.
+  const [mode, setMode] = useState<'replace' | 'add'>(existingCount > 0 ? 'add' : 'replace')
   const [allColumns, setAllColumns] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(() => new Set(columns.map((c) => c.name)))
   const [running, setRunning] = useState(false)
@@ -70,7 +75,7 @@ export function SweepDialog({
     setRunning(true)
     setResult(null)
     setProgress({ scanned: 0, max: 0, sightings: 0 })
-    const res = await window.api.csv.sweep(tabId, reqId, parsed.entries, cols)
+    const res = await window.api.csv.sweep(tabId, reqId, parsed.entries, cols, existingCount > 0 ? mode : 'replace')
     setRunning(false)
     setResult(res)
     if (!('canceled' in res)) {
@@ -152,6 +157,28 @@ export function SweepDialog({
             </div>
           )}
 
+          {/* Existing sightings: keep or replace (so a re-sweep never wipes progress silently) */}
+          {existingCount > 0 && (
+            <div className="mt-3 rounded-md border border-amber-400/50 bg-amber-50 px-2.5 py-2 dark:border-amber-400/30 dark:bg-amber-900/15">
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                This source already has {existingCount.toLocaleString()} {existingCount === 1 ? 'sighting' : 'sightings'}
+              </div>
+              <label className="flex cursor-pointer items-start gap-2 py-0.5 text-[11px] text-citrus-dark dark:text-citrus-night-text">
+                <input type="radio" className="mt-0.5" checked={mode === 'add'} onChange={() => setMode('add')} />
+                <span>
+                  <strong>Add</strong> to them — keep the existing sightings and add any new matches.
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2 py-0.5 text-[11px] text-citrus-dark dark:text-citrus-night-text">
+                <input type="radio" className="mt-0.5" checked={mode === 'replace'} onChange={() => setMode('replace')} />
+                <span>
+                  <strong>Replace</strong> — clear the existing {existingCount.toLocaleString()} first, then sweep fresh.
+                </span>
+              </label>
+            </div>
+          )}
+
           {/* Column scope */}
           <div className="mt-3">
             <label className="flex cursor-pointer items-center gap-2 text-xs text-citrus-dark dark:text-citrus-night-text">
@@ -191,8 +218,8 @@ export function SweepDialog({
                 <span className="text-citrus-muted dark:text-citrus-night-muted">Sweep canceled.</span>
               ) : (
                 <span className="text-citrus-dark dark:text-citrus-night-text">
-                  Found <strong className="text-red-600 dark:text-red-400">{result.sightings.toLocaleString()}</strong>{' '}
-                  {result.sightings === 1 ? 'sighting' : 'sightings'} ({result.hits.toLocaleString()} total hits).
+                  Matched <strong className="text-red-600 dark:text-red-400">{result.sightings.toLocaleString()}</strong>{' '}
+                  {result.sightings === 1 ? 'row' : 'rows'} this sweep.
                 </span>
               )}
             </div>

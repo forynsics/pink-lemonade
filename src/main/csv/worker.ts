@@ -89,7 +89,7 @@ type Msg =
   | { t: 'distinctCancel'; tabId: string }
   | { t: 'enrich'; id: number; reqId: number; dbPath: string; providerId: string; items: unknown[]; now: number }
   | { t: 'enrichCancel' }
-  | { t: 'sweep'; id: number; tabId: string; reqId: number; entries: unknown[]; columns?: string[] }
+  | { t: 'sweep'; id: number; tabId: string; reqId: number; entries: unknown[]; columns?: string[]; mode?: 'replace' | 'add' }
   | { t: 'sweepCancel'; tabId: string }
 
 port.on('message', async (msg: Msg) => {
@@ -185,7 +185,7 @@ port.on('message', async (msg: Msg) => {
         }
       }
       const shouldAbort = (): boolean => sweepReq.get(msg.tabId) !== msg.reqId
-      const value = await db.intelSweep(msg.tabId, msg.entries as never, msg.columns, onPartial, shouldAbort)
+      const value = await db.intelSweep(msg.tabId, msg.entries as never, msg.columns, msg.mode ?? 'replace', onPartial, shouldAbort)
       port.postMessage({ t: 'result', id: msg.id, ok: true, value }) // result or null (canceled)
       return
     }

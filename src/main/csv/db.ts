@@ -590,6 +590,7 @@ export async function intelSweep(
   tabId: string,
   entries: IntelEntry[],
   columns: string[] | undefined,
+  mode: 'replace' | 'add',
   onPartial: (sightings: number, scanned: number, max: number) => void,
   shouldAbort: () => boolean
 ): Promise<{ sightings: number; hits: number } | null> {
@@ -600,7 +601,8 @@ export async function intelSweep(
   const intel = compileIntel(entries)
   const scanCols = columns && columns.length > 0 ? columns : e.meta.columns.map((c) => c.name)
   e.db.exec(INTEL_HITS_DDL) // ensure (older workspaces / first sweep)
-  e.db.prepare('DELETE FROM intel_hits WHERE source_id = ?').run(sid) // re-sweep replaces
+  // 'replace' wipes prior sightings; 'add' keeps them (INSERT OR IGNORE makes re-hits idempotent).
+  if (mode !== 'add') e.db.prepare('DELETE FROM intel_hits WHERE source_id = ?').run(sid)
   const ins = e.db.prepare(
     'INSERT OR IGNORE INTO intel_hits (source_id, rid, indicator, kind, hitset) VALUES (?, ?, ?, ?, ?)'
   )

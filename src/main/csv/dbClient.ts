@@ -173,6 +173,7 @@ export function sweep(
   reqId: number,
   entries: Array<{ value: string; kind: string }>,
   columns: string[] | undefined,
+  mode: 'replace' | 'add',
   onPartial: (p: { sightings: number; scanned: number; max: number }) => void
 ): Promise<{ sightings: number; hits: number } | null> {
   return new Promise<{ sightings: number; hits: number } | null>((resolve, reject) => {
@@ -182,7 +183,7 @@ export function sweep(
       reject,
       onProgress: (p) => onPartial(p as { sightings: number; scanned: number; max: number })
     })
-    w().postMessage({ t: 'sweep', id, tabId, reqId, entries, columns })
+    w().postMessage({ t: 'sweep', id, tabId, reqId, entries, columns, mode })
   })
 }
 

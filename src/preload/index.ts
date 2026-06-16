@@ -53,8 +53,13 @@ const api = {
       return () => ipcRenderer.removeListener('csv:distinct-progress', h)
     },
     // Intel sweep: scan a source for an intel set → sightings (intel_hits), with scan progress + cancel.
-    sweep: (tabId: string, reqId: number, entries: Array<{ value: string; kind: string }>, columns?: string[]) =>
-      ipcRenderer.invoke('csv:sweep', { tabId, reqId, entries, columns }),
+    sweep: (
+      tabId: string,
+      reqId: number,
+      entries: Array<{ value: string; kind: string }>,
+      columns?: string[],
+      mode?: 'replace' | 'add'
+    ) => ipcRenderer.invoke('csv:sweep', { tabId, reqId, entries, columns, mode }),
     sweepCancel: (tabId: string) => ipcRenderer.invoke('csv:sweepCancel', { tabId }),
     onSweepProgress: (cb: (p: unknown) => void) => {
       const h = (_e: unknown, p: unknown): void => cb(p)

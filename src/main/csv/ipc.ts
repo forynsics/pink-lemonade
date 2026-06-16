@@ -96,10 +96,17 @@ export function registerCsvIpc(): void {
         tabId,
         reqId,
         entries,
-        columns
-      }: { tabId: string; reqId: number; entries: Array<{ value: string; kind: string }>; columns?: string[] }
+        columns,
+        mode
+      }: {
+        tabId: string
+        reqId: number
+        entries: Array<{ value: string; kind: string }>
+        columns?: string[]
+        mode?: 'replace' | 'add'
+      }
     ) => {
-      const res = await dbw.sweep(tabId, reqId, entries, columns, (p) => {
+      const res = await dbw.sweep(tabId, reqId, entries, columns, mode === 'add' ? 'add' : 'replace', (p) => {
         if (!e.sender.isDestroyed()) {
           e.sender.send('csv:sweep-progress', { tabId, reqId, sightings: p.sightings, scanned: p.scanned, max: p.max })
         }

@@ -642,11 +642,34 @@ export function listSightings(wsId: string, sourceId: number): Array<{ rid: numb
     .all(sourceId) as Array<{ rid: number; indicator: string; kind: string }>
 }
 
-/** Drop all sightings for a source (re-sweep or user clear). */
-export function clearSightings(wsId: string, sourceId: number): void {
+/** Per-indicator sighting rollup: each matched indicator + kind and how many distinct rows it hit.
+ *  Drives the Sightings panel (the aggregate + "zero in" facet). */
+export function sightingSummary(
+  wsId: string,
+  sourceId: number
+): Array<{ indicator: string; kind: string; count: number }> {
+  const w = workspaces.get(wsId)
+  if (!w || !Number.isInteger(sourceId)) return []
+  w.db.exec(INTEL_HITS_DDL)
+  return w.db
+    .prepare(
+      'SELECT indicator, kind, COUNT(DISTINCT rid) AS count FROM intel_hits WHERE source_id = ? ' +
+        'GROUP BY indicator, kind ORDER BY count DESC, indicator'
+    )
+    .all(sourceId) as Array<{ indicator: string; kind: string; count: number }>
+}
+
+/** Clear sightings for a source: all of them, or just one indicator's, or just one row's. */
+export function clearSightings(wsId: string, sourceId: number, opts?: { indicator?: string; rid?: number }): void {
   const w = workspaces.get(wsId)
   if (!w || !Number.isInteger(sourceId)) return
-  w.db.prepare('DELETE FROM intel_hits WHERE source_id = ?').run(sourceId)
+  if (opts?.indicator != null) {
+    w.db.prepare('DELETE FROM intel_hits WHERE source_id = ? AND indicator = ?').run(sourceId, opts.indicator)
+  } else if (opts?.rid != null) {
+    w.db.prepare('DELETE FROM intel_hits WHERE source_id = ? AND rid = ?').run(sourceId, opts.rid)
+  } else {
+    w.db.prepare('DELETE FROM intel_hits WHERE source_id = ?').run(sourceId)
+  }
   const e = tables.get(sourceKey(wsId, sourceId))
   if (e) e.filt = undefined
 }

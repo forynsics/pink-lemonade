@@ -24,27 +24,41 @@ export interface VirtualGridHandle {
 const ROW_H = 28
 const DEFAULT_COL_W = 168
 
-/** Split a cell value on the (case-insensitive) search term, wrapping matches in <mark>. */
-function highlight(text: string, term: string): React.ReactNode {
-  if (!term || !text) return text
+const MARK_SEARCH = 'bg-citrus-pink/40 text-inherit rounded-sm dark:bg-citrus-pink/50'
+const MARK_SIGHTING = 'bg-red-400/40 text-inherit rounded-sm dark:bg-red-500/50'
+
+/** Wrap every (case-insensitive) occurrence of any term in a colored <mark>. Overlapping matches
+ *  resolve first-come (sightings are listed before search), so a cell can show both colors without
+ *  nesting. Returns the plain string when nothing matches. */
+function highlightTerms(text: string, terms: Array<{ needle: string; cls: string }>): React.ReactNode {
+  if (!text || terms.length === 0) return text
   const lower = text.toLowerCase()
-  const needle = term.toLowerCase()
+  const ranges: Array<{ start: number; end: number; cls: string }> = []
+  for (const { needle, cls } of terms) {
+    if (!needle) continue
+    const n = needle.toLowerCase()
+    let i = lower.indexOf(n)
+    while (i !== -1) {
+      ranges.push({ start: i, end: i + n.length, cls })
+      i = lower.indexOf(n, i + n.length)
+    }
+  }
+  if (ranges.length === 0) return text
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end)
   const out: React.ReactNode[] = []
-  let from = 0
-  let hit = lower.indexOf(needle, from)
-  if (hit === -1) return text
+  let pos = 0
   let key = 0
-  while (hit !== -1) {
-    if (hit > from) out.push(text.slice(from, hit))
+  for (const r of ranges) {
+    if (r.start < pos) continue // overlaps an already-emitted mark → skip
+    if (r.start > pos) out.push(text.slice(pos, r.start))
     out.push(
-      <mark key={key++} className="bg-citrus-pink/40 text-inherit rounded-sm dark:bg-citrus-pink/50">
-        {text.slice(hit, hit + needle.length)}
+      <mark key={key++} className={r.cls}>
+        {text.slice(r.start, r.end)}
       </mark>
     )
-    from = hit + needle.length
-    hit = lower.indexOf(needle, from)
+    pos = r.end
   }
-  if (from < text.length) out.push(text.slice(from))
+  if (pos < text.length) out.push(text.slice(pos))
   return out
 }
 const MIN_COL_W = 64
@@ -124,8 +138,8 @@ export function VirtualGrid({
   rids: number[]
   /** Map of rowid → tag id; drives the colored left marker. Undefined when the source is untagged. */
   tags?: Map<number, string>
-  /** Map of rowid → sighting tooltip (the matched indicators); drives the gutter sighting marker. */
-  sightings?: Map<number, string>
+  /** Map of rowid → the indicators that matched on that row; drives the gutter marker + cell highlight. */
+  sightings?: Map<number, string[]>
   /** The pivot anchor's rowid — that row gets a persistent pink ring + pin so you don't lose your spot. */
   anchorRid?: number
   baseOffset: number
@@ -510,8 +524,12 @@ export function VirtualGrid({
           const row = wi >= 0 && wi < rows.length ? rows[wi] : undefined
           const rid = row ? rids[wi] : undefined
           const tag = tags && rid != null ? tagDef(tags.get(rid)) : undefined
-          const sighting = sightings && rid != null ? sightings.get(rid) : undefined
+          const sightingVals = sightings && rid != null ? sightings.get(rid) : undefined
           const isAnchor = anchorRid != null && rid != null && rid === anchorRid
+          // Highlight terms for this row's cells: matched indicators (red) + the search term (pink).
+          const cellTerms: Array<{ needle: string; cls: string }> = []
+          if (sightingVals) for (const sv of sightingVals) cellTerms.push({ needle: sv, cls: MARK_SIGHTING })
+          if (search) cellTerms.push({ needle: search, cls: MARK_SEARCH })
           const top = vi.start - virtualizer.options.scrollMargin
           if (!row) {
             // Skeleton row: data for this index isn't in the loaded window yet.
@@ -553,8 +571,8 @@ export function VirtualGrid({
                 onMouseEnter={() => enterRow(abs)}
                 title={isAnchor ? 'Pivot anchor — the row you pivoted from' : 'Select row'}
               >
-                {sighting != null && (
-                  <span className="shrink-0 flex" title={`Sighting — ${sighting}`}>
+                {sightingVals != null && (
+                  <span className="shrink-0 flex" title={`Sighting — ${sightingVals.join(', ')}`}>
                     <Crosshair className="w-3 h-3 text-red-500 dark:text-red-400" />
                   </span>
                 )}
@@ -578,7 +596,7 @@ export function VirtualGrid({
                     onContextMenu={(e) => onContextMenu(e, abs, c)}
                     onDoubleClick={() => onCellOpen(v, `Row ${abs + 1} · ${col.original}`)}
                   >
-                    <span className="truncate">{search ? highlight(v, search) : v}</span>
+                    <span className="truncate">{cellTerms.length ? highlightTerms(v, cellTerms) : v}</span>
                   </div>
                 )
               })}

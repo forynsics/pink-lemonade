@@ -32,6 +32,7 @@ import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
 import { DistinctPanel } from './DistinctPanel'
 import { SweepDialog } from './SweepDialog'
+import { SightingsPanel } from './SightingsPanel'
 import { classifyIndicator } from '../../tools/ioc/classify'
 import { CellPopout } from './CellPopout'
 
@@ -111,9 +112,10 @@ export function CsvViewer({
 
   // Intel-sweep sightings for this source: rowid → matched-indicator tooltip. Drives the grid's
   // crosshair marker + the "show only sightings" toggle. `sightingRev` bumps to reload after a sweep.
-  const [sightings, setSightings] = useState<Map<number, string>>(new Map())
+  const [sightings, setSightings] = useState<Map<number, string[]>>(new Map())
   const [sightingRev, setSightingRev] = useState(0)
   const [sweepOpen, setSweepOpen] = useState(false)
+  const [sightingsPanelOpen, setSightingsPanelOpen] = useState(false)
   useEffect(() => {
     if (!taggable) {
       setSightings(new Map())
@@ -122,11 +124,11 @@ export function CsvViewer({
     let live = true
     void window.api.csv.sightingList(wsId, sourceId).then((rows) => {
       if (!live) return
-      const m = new Map<number, string>()
+      const m = new Map<number, string[]>()
       for (const r of rows) {
-        const label = `${r.indicator} (${r.kind})`
-        const prev = m.get(r.rid)
-        m.set(r.rid, prev ? `${prev}, ${label}` : label)
+        const arr = m.get(r.rid)
+        if (arr) arr.push(r.indicator)
+        else m.set(r.rid, [r.indicator])
       }
       setSightings(m)
     })
@@ -351,11 +353,62 @@ export function CsvViewer({
   const clearTagFilter = useCallback((): void => {
     setFilters((fs) => fs.filter((f) => f.op !== 'tag'))
   }, [])
-  // "Show only sightings" — toggle the single sighting filter on/off.
-  const hasSightingFilter = filters.some((f) => f.op === 'sighting')
-  const toggleSightingFilter = useCallback((): void => {
-    setFilters((fs) => (fs.some((f) => f.op === 'sighting') ? fs.filter((f) => f.op !== 'sighting') : [...fs, { op: 'sighting' }]))
+  // The sighting filter: absent = no filter; present with no indicators = "all sightings"; present
+  // with indicators = those specific ones ("zero in"). The Sightings panel reads/writes via these.
+  const sightingFilter = filters.find((f) => f.op === 'sighting')
+  const activeIndicators = (sightingFilter?.op === 'sighting' ? sightingFilter.indicators : undefined) ?? []
+  const allSightings = !!sightingFilter && activeIndicators.length === 0
+  const hasSightingFilter = !!sightingFilter
+
+  const toggleAllSightings = useCallback((): void => {
+    setFilters((fs) => {
+      const cur = fs.find((f) => f.op === 'sighting')
+      const isAll = cur?.op === 'sighting' && (cur.indicators?.length ?? 0) === 0
+      const without = fs.filter((f) => f.op !== 'sighting')
+      return isAll ? without : [...without, { op: 'sighting' }]
+    })
   }, [])
+  const toggleIndicatorSighting = useCallback((indicator: string): void => {
+    setFilters((fs) => {
+      const cur = fs.find((f) => f.op === 'sighting')
+      const curInds = cur?.op === 'sighting' ? cur.indicators ?? [] : []
+      const without = fs.filter((f) => f.op !== 'sighting')
+      // From "all" (no indicators) clicking one narrows to just it; otherwise add/remove from the set.
+      const next =
+        !!cur && curInds.length === 0
+          ? [indicator]
+          : curInds.includes(indicator)
+            ? curInds.filter((x) => x !== indicator)
+            : [...curInds, indicator]
+      return next.length > 0 ? [...without, { op: 'sighting', indicators: next }] : without
+    })
+  }, [])
+  const clearAllSightings = useCallback(async (): Promise<void> => {
+    await window.api.csv.sightingClear(wsId, sourceId)
+    setFilters((fs) => fs.filter((f) => f.op !== 'sighting'))
+    setSightingRev((r) => r + 1)
+  }, [wsId, sourceId])
+  const clearIndicatorSighting = useCallback(
+    async (indicator: string): Promise<void> => {
+      await window.api.csv.sightingClear(wsId, sourceId, { indicator })
+      setFilters((fs) => {
+        const cur = fs.find((f) => f.op === 'sighting')
+        if (cur?.op !== 'sighting' || !cur.indicators) return fs
+        const next = cur.indicators.filter((x) => x !== indicator)
+        const without = fs.filter((f) => f.op !== 'sighting')
+        return next.length > 0 ? [...without, { op: 'sighting', indicators: next }] : without
+      })
+      setSightingRev((r) => r + 1)
+    },
+    [wsId, sourceId]
+  )
+  const clearRowSighting = useCallback(
+    async (rid: number): Promise<void> => {
+      await window.api.csv.sightingClear(wsId, sourceId, { rid })
+      setSightingRev((r) => r + 1)
+    },
+    [wsId, sourceId]
+  )
   const activeTagFilter = filters.find((f) => f.op === 'tag')
   const activeTags = (activeTagFilter?.op === 'tag' ? activeTagFilter.tags : []) as TagId[]
   hasTagFilterRef.current = activeTags.length > 0
@@ -442,13 +495,16 @@ export function CsvViewer({
           )}
           {taggable && sightings.size > 0 && (
             <button
-              onClick={toggleSightingFilter}
+              onClick={() => {
+                setDistinctCol(null) // one side panel at a time
+                setSightingsPanelOpen((o) => !o)
+              }}
               className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-semibold transition-colors ${
-                hasSightingFilter
+                hasSightingFilter || sightingsPanelOpen
                   ? 'border-red-500/50 bg-red-500/10 text-red-600 dark:border-red-400/50 dark:text-red-400'
                   : 'border-citrus-border text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text'
               }`}
-              title={hasSightingFilter ? 'Showing only sightings — click to show all rows' : 'Show only rows with an intel sighting'}
+              title="Sightings — aggregate, filter, and clear"
             >
               <Crosshair className="w-3.5 h-3.5" />
               {sightings.size.toLocaleString()} {sightings.size === 1 ? 'sighting' : 'sightings'}
@@ -571,6 +627,21 @@ export function CsvViewer({
             sendIntelLabel={sendIntelLabel}
           />
         )}
+        {sightingsPanelOpen && taggable && (
+          <SightingsPanel
+            wsId={wsId}
+            sourceId={sourceId}
+            totalRows={sightings.size}
+            reloadKey={sightingRev}
+            activeIndicators={activeIndicators}
+            allActive={allSightings}
+            onToggleAll={toggleAllSightings}
+            onToggleIndicator={toggleIndicatorSighting}
+            onClearAll={() => void clearAllSightings()}
+            onClearIndicator={(ind) => void clearIndicatorSighting(ind)}
+            onClose={() => setSightingsPanelOpen(false)}
+          />
+        )}
       </div>
 
       {menu && (
@@ -584,7 +655,10 @@ export function CsvViewer({
           anchor={menu.anchor}
           initialShowFilter={menu.showFilter}
           onClose={() => setMenu(null)}
-          onShowDistinct={(col) => setDistinctCol(col)}
+          onShowDistinct={(col) => {
+            setSightingsPanelOpen(false) // one side panel at a time
+            setDistinctCol(col)
+          }}
           onApplyInFilter={applyInFilter}
         />
       )}
@@ -606,6 +680,11 @@ export function CsvViewer({
               : undefined
           }
           sendLabel={sendIntelLabel}
+          onClearSighting={
+            cellMenu.cell.rid != null && sightings.has(cellMenu.cell.rid)
+              ? () => void clearRowSighting(cellMenu.cell.rid!)
+              : undefined
+          }
           onClose={() => setCellMenu(null)}
         />
       )}

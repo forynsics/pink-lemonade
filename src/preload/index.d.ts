@@ -37,7 +37,7 @@ export type CsvFilter =
   | { col: string; op: 'timearound'; value: string; tkind: TimeKind; deltaSec: number }
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
   | { op: 'tag'; tags: string[] }
-  | { op: 'sighting' }
+  | { op: 'sighting'; indicators?: string[] }
 export interface CsvQueryOpts {
   sort?: CsvSort
   filters?: CsvFilter[]
@@ -153,7 +153,8 @@ export interface CsvApi {
   sweepCancel: (tabId: string) => Promise<null>
   onSweepProgress: (cb: (p: CsvSweepProgress) => void) => () => void
   sightingList: (wsId: string, sourceId: number) => Promise<Array<{ rid: number; indicator: string; kind: string }>>
-  sightingClear: (wsId: string, sourceId: number) => Promise<null>
+  sightingSummary: (wsId: string, sourceId: number) => Promise<Array<{ indicator: string; kind: string; count: number }>>
+  sightingClear: (wsId: string, sourceId: number, opts?: { indicator?: string; rid?: number }) => Promise<null>
   longest: (tabId: string, col: string) => Promise<string>
   /** 0-based ordinal of a row (by rowid) in the current unsorted filtered view, or -1. */
   locate: (tabId: string, rid: number, filters: CsvFilter[] | undefined, search: string | undefined) => Promise<number>

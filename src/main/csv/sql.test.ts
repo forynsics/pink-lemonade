@@ -329,6 +329,18 @@ describe('sighting filter + sweep scan', () => {
     expect(params).toEqual([7, 10, 0])
   })
 
+  it('narrows a sighting filter to specific indicators ("zero in")', () => {
+    const { sql, params } = buildQueryRowsSql(
+      cols,
+      { limit: 10, offset: 0, filters: [{ op: 'sighting', indicators: ['8.8.8.8', 'evil.com'] }] },
+      'data_7'
+    )
+    expect(sql).toBe(
+      'SELECT c0, c1 FROM data_7 WHERE rowid IN (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (?, ?)) LIMIT ? OFFSET ?'
+    )
+    expect(params).toEqual([7, '8.8.8.8', 'evil.com', 10, 0])
+  })
+
   it('a sighting filter on the legacy single-file table matches nothing', () => {
     const { sql } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'sighting' }] }, 'data')
     expect(sql).toBe('SELECT c0, c1 FROM data WHERE 0 LIMIT ? OFFSET ?')

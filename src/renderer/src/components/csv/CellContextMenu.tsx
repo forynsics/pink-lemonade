@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Ban, Clock, Filter, Radar, Tag, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Ban, Clock, Crosshair, Filter, Radar, Tag, X } from 'lucide-react'
 import type { CellRef } from './VirtualGrid'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -30,6 +30,7 @@ export function CellContextMenu({
   onTag,
   onSend,
   sendLabel = 'Intel',
+  onClearSighting,
   onClose
 }: {
   cell: CellRef
@@ -49,6 +50,8 @@ export function CellContextMenu({
   onSend?: () => void
   /** Label for the destination intel ("Global Intel" / "Workspace Intel"). */
   sendLabel?: string
+  /** Set only when the clicked row is a sighting → show "Clear sighting" (drops its intel_hits). */
+  onClearSighting?: () => void
   onClose: () => void
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
@@ -120,6 +123,12 @@ export function CellContextMenu({
             <button className={item} onClick={() => { onSend(); onClose() }}>
               <Radar className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
               Send to {sendLabel}
+            </button>
+          )}
+          {onClearSighting && (
+            <button className={item} onClick={() => { onClearSighting(); onClose() }}>
+              <Crosshair className="w-3.5 h-3.5 shrink-0 text-red-500 dark:text-red-400" />
+              Clear sighting
             </button>
           )}
         </>

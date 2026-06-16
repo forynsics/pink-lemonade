@@ -42,9 +42,10 @@ export type Filter =
   // Row-tag membership: rows whose (source_id, rowid) carry ANY of these tags in the `tags` table
   // (OR across the set — a row has one tag, so AND would match nothing).
   | { op: 'tag'; tags: string[] }
-  // Intel-sweep sightings: rows that carry at least one hit in the `intel_hits` table (a "show only
-  // sightings" toggle). Like the tag op, it isn't tied to a column — resolved against the source id.
-  | { op: 'sighting' }
+  // Intel-sweep sightings: rows that carry at least one hit in the `intel_hits` table. With no
+  // `indicators`, it's a "show only sightings" toggle; with them, it narrows to rows that hit ANY of
+  // those specific indicators (the "zero in" facet). Like the tag op, it resolves by source id.
+  | { op: 'sighting'; indicators?: string[] }
 
 /** The source id of a workspace data table (`data_<id>` → id), or null for the legacy `data` table. */
 function tableSourceId(table: string): number | null {
@@ -135,8 +136,13 @@ function buildWhere(
       }
       if (f.op === 'sighting') {
         const sid = tableSourceId(table)
-        if (sid == null) clauses.push('0') // legacy single-file table has no sightings → match nothing
-        else {
+        if (sid == null) {
+          clauses.push('0') // legacy single-file table has no sightings → match nothing
+        } else if (f.indicators && f.indicators.length > 0) {
+          const ph = f.indicators.map(() => '?').join(', ')
+          clauses.push(`rowid IN (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (${ph}))`)
+          params.push(sid, ...f.indicators)
+        } else {
           clauses.push('rowid IN (SELECT rid FROM intel_hits WHERE source_id = ?)')
           params.push(sid)
         }

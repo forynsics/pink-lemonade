@@ -114,8 +114,13 @@ export function registerCsvIpc(): void {
   ipcMain.handle('csv:sightingList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
     dbw.call('listSightings', wsId, sourceId)
   )
-  ipcMain.handle('csv:sightingClear', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
-    dbw.call('clearSightings', wsId, sourceId).then(() => null)
+  ipcMain.handle('csv:sightingSummary', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    dbw.call('sightingSummary', wsId, sourceId)
+  )
+  ipcMain.handle(
+    'csv:sightingClear',
+    (_e, { wsId, sourceId, indicator, rid }: { wsId: string; sourceId: number; indicator?: string; rid?: number }) =>
+      dbw.call('clearSightings', wsId, sourceId, { indicator, rid }).then(() => null)
   )
 
   ipcMain.handle('csv:longest', (_e, { tabId, col }: { tabId: string; col: string }) =>
@@ -347,7 +352,8 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
       continue
     }
     if (f.op === 'sighting') {
-      out.push({ op: 'sighting' })
+      const inds = Array.isArray(f.indicators) ? f.indicators.filter((s) => typeof s === 'string' && s) : undefined
+      out.push(inds && inds.length > 0 ? { op: 'sighting', indicators: inds } : { op: 'sighting' })
       continue
     }
     if (typeof f.col !== 'string') continue

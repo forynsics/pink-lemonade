@@ -18,7 +18,8 @@ function fmtDelta(sec: number): string {
 
 function chipText(f: CsvFilter, label: (n: string) => string): string {
   if (f.op === 'tag') return `tagged ${f.tags.map((t) => tagDef(t)?.label ?? t).join(' / ')}`
-  if (f.op === 'sighting') return 'intel sightings'
+  if (f.op === 'sighting')
+    return f.indicators?.length ? `sightings: ${f.indicators.length} indicator${f.indicators.length > 1 ? 's' : ''}` : 'all sightings'
   if (f.op === 'in') return `${label(f.col)} ∈ ${f.values.join(', ')}`
   if (f.op === 'timearound') return `${label(f.col)} ≈ ${f.value} ±${fmtDelta(f.deltaSec)}`
   if (f.op === 'timerange') {

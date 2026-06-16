@@ -34,6 +34,7 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   tagByFilter: db.tagByFilter,
   getTagCounts: db.getTagCounts,
   listSightings: db.listSightings,
+  sightingSummary: db.sightingSummary,
   clearSightings: db.clearSightings,
   locateRow: db.locateRow,
   queryRows: db.queryRows,

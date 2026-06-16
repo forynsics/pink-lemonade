@@ -62,7 +62,9 @@ const api = {
       return () => ipcRenderer.removeListener('csv:sweep-progress', h)
     },
     sightingList: (wsId: string, sourceId: number) => ipcRenderer.invoke('csv:sightingList', { wsId, sourceId }),
-    sightingClear: (wsId: string, sourceId: number) => ipcRenderer.invoke('csv:sightingClear', { wsId, sourceId }),
+    sightingSummary: (wsId: string, sourceId: number) => ipcRenderer.invoke('csv:sightingSummary', { wsId, sourceId }),
+    sightingClear: (wsId: string, sourceId: number, opts?: { indicator?: string; rid?: number }) =>
+      ipcRenderer.invoke('csv:sightingClear', { wsId, sourceId, indicator: opts?.indicator, rid: opts?.rid }),
     longest: (tabId: string, col: string) => ipcRenderer.invoke('csv:longest', { tabId, col }),
     locate: (tabId: string, rid: number, filters: unknown, search: string | undefined) =>
       ipcRenderer.invoke('csv:locate', { tabId, rid, filters, search }),

@@ -1,65 +1,109 @@
-# 🍋 pink-lemonade
+<p align="center">
+  <img src="docs/assets/logo.png" alt="pink-lemonade" width="112" />
+</p>
 
-**A desktop toolkit for cybersecurity investigation and data wrangling.**
+<h1 align="center">pink-lemonade</h1>
+
+<p align="center"><strong>A desktop toolkit for cybersecurity investigation and data wrangling.</strong></p>
 
 pink-lemonade handles the messy middle of an investigation — the parsing, cleanup, and
-pivoting you do between your bigger tools: pull indicators out of text, clean up exports, and
-work through big CSV/TSV timelines (Splunk exports, plaso timelines, EVTX dumps, firewall
-logs), all in one place instead of juggling Notepad++ and a stack of single-purpose tools.
+pivoting you do between your bigger tools: pull indicators out of text, clean up exports, work
+through big CSV/TSV timelines (Splunk exports, plaso timelines, EVTX dumps, firewall logs), and
+hunt them for known indicators — all in one place instead of juggling Notepad++ and a stack of
+single-purpose tools.
 
-Built with **Electron + React + TypeScript**. Online enrichment (threat-intel lookups, an
-AI assistant) is on the roadmap.
+Built with **Electron + React + TypeScript**. The database runs in a worker thread, so even
+multi-GB files and full-column scans never freeze the UI.
+
+<p align="center">
+  <img src="docs/assets/workspace.png" alt="Workspace CSV grid" width="880" />
+</p>
 
 ---
 
 ## What it does
 
-**📝 Notepad — text transforms.** Paste text and run it through a chain of small tools:
-Base64/hex decode, IPv4 & IOC extraction, defang/refang, dedupe lines, whitespace/case
-cleanup. Each tool feeds the next, so you build a pipeline and watch the output update live.
-Per-pane find (Ctrl+F) with highlight-and-step.
+### 📝 Notepad — text transforms
+Paste text and run it through a chain of small tools: Base64/hex decode, IPv4 & IOC extraction,
+defang/refang, dedupe lines, whitespace/case cleanup, and **query builders** (CQL / KQL / SPL).
+Each tool feeds the next, so you build a pipeline and watch the output update live; steps can be
+toggled on/off. Per-pane find (Ctrl+F) with highlight-and-step.
 
-**🗂️ Workspaces — data investigation.** Import one or more CSV/TSV files into a workspace
-and explore them in a fast, virtualized grid that scales to millions of rows / multi-GB files:
+<p align="center">
+  <img src="docs/assets/notepad.png" alt="Notepad text transforms" width="820" />
+</p>
 
-- **Sort, resize, reorder columns**; search with highlight + step.
-- **Filters**: contains / not-contains / equals / ≠, multi-value (`∈`), and time ranges.
+### 🗂️ Workspaces — data investigation
+Import one or more CSV/TSV files into a workspace and explore them in a fast, virtualized grid
+that scales to millions of rows / multi-GB files:
+
+- **Sort, resize, reorder, and show/hide columns**; search with highlight + step.
+- **Filters**: contains / not-contains / equals / ≠, multi-value (`∈`), inclusive **and exclusive**
+  facets, and time ranges.
 - **Distinct values** panel with live progress + cancel; export values to a notepad.
 - **Time pivots** — right-click a timestamp → ±N window, keeping your anchor row in view.
 - **Tagging** — mark rows Malicious / Suspicious / Unknown / Benign (single, multi-row, or
-  bulk-by-filter), see colored markers, and filter by one or more tags. Tags persist in the
-  workspace file across restarts.
+  bulk-by-filter), see colored markers, and filter by tag (include or exclude). Tags persist in
+  the workspace file.
+- **Export** the current view (filters/search/sort, visible columns) back out to CSV.
 
-The database runs in a worker thread, so even heavy operations never freeze the UI.
+### 🎯 Intel Sweep — hunt for known indicators
+Sweep a source for a known intel set (paste a list, load a **watchlist**, or open a `.txt`/`.csv`)
+and mark every matching row as a **sighting**. Matching is case-insensitive containment —
+whole-token for IPs / hashes / file names, substring for domains — so `8.8.8.8` is found inside
+`explorer.exe connected to 8.8.8.8`. Sightings get a crosshair marker and a highlighted cell; the
+**Sightings panel** rolls them up by indicator so you can zero in, exclude, or clear false positives.
+
+### 🌐 Intel / Enrichment — context lookups
+A provider-agnostic enrichment surface over an app-wide cache (a lookup is never repeated). Ships
+with **MaxMind GeoIP** (a local `.mmdb`); results land in a sortable Intel grid. Curate
+**watchlists** (IP / CIDR / ASN / domain / hash) for context, and pivot in both directions —
+**send a cell or column to Intel**, or right-click indicators in the Intel grid to **run a sweep**
+against any open workspace source. *(Online providers like VirusTotal + an AI assistant are on the
+roadmap.)*
 
 → **User guide:** [`docs/`](docs/README.md)
 
 ---
 
-## Quick start
+## Download
+
+Grab the latest **portable `.exe`** from the [Releases](../../releases) page — double-click to
+run, no installation. (It's currently **unsigned**, so Windows SmartScreen shows a *"More info →
+Run anyway"* prompt the first time.) Your workspaces and settings are stored under
+`%APPDATA%\pink-lemonade` and persist across runs.
+
+---
+
+## Develop
 
 Requirements: **Node.js 18+** and npm.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/forynsics/pink-lemonade.git
 cd pink-lemonade
 npm install
 npm run dev          # launch the app with hot reload
 ```
 
-## Scripts
+### Scripts
 
 ```bash
 npm run dev          # dev server + Electron window (HMR)
 npm test             # unit tests (Vitest)
 npm run typecheck    # type-check main/preload + renderer
 npm run build        # production bundle to out/
-npm run dist         # build + package a Windows NSIS installer (.exe) into dist/
+npm run dist         # build + package the portable Windows .exe into dist/
 ```
 
-> Packaging (`npm run dist`) targets Windows (NSIS). Run it on Windows (or a suitable
-> cross-build environment). The installer is written to `dist/` and is **not** committed —
-> distribute it via a GitHub Release rather than the repo.
+### Releasing
+
+Pushing a `v*` tag (e.g. `v0.1.0`, matching `package.json` `version`) triggers
+[`.github/workflows/release.yml`](.github/workflows/release.yml): a Windows runner type-checks,
+tests, builds, and **publishes the portable `.exe` to a GitHub Release**. You can also run the
+workflow manually to build it and download it from the run's artifacts.
+
+> The portable build is **not** committed; distribute it via a Release.
 
 ---
 
@@ -68,15 +112,16 @@ npm run dist         # build + package a Windows NSIS installer (.exe) into dist
 ```
 src/
   main/        Electron main process — window + IPC; the DB runs in a worker thread
-    csv/       SQLite-backed CSV/workspace engine (db.ts, worker.ts, sql.ts, …)
+    csv/       SQLite-backed CSV/workspace engine + Intel Sweep (db.ts, worker.ts, sql.ts, sweep.ts)
+    enrich/    enrichment engine + cache, MaxMind provider, watchlists
   preload/     contextBridge surface exposed to the renderer (window.api)
-  renderer/    React UI (tools palette, notepad, CSV grid, workspace sidebar)
+  renderer/    React UI (tools palette, notepad, CSV grid, Intel grid, sidebars)
     src/tools/ the text-transform tool registry (pure functions)
-docs/          user guide
+docs/          user guide + screenshots
 ```
 
-The renderer is sandboxed (no Node access); all file/DB work happens in the main process
-over a small IPC surface.
+The renderer is sandboxed (no Node access); all file/DB and network work happens in the main
+process over a small IPC surface.
 
 ---
 

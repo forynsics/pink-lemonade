@@ -11,6 +11,9 @@ grid built for big timelines — it stays smooth on millions of rows. Here’s h
 - **Resize a column** by dragging its right edge; **double-click** the edge to auto-fit it to the
   widest value.
 - **Reorder columns** by dragging a header left or right. The order is remembered.
+- **Show or hide columns** with the **Columns** button in the header (or a header’s ▾ →
+  **Hide column**) — handy for taming wide timelines. Your choice is remembered, and hidden columns
+  are left out of exports.
 - **Time columns** are detected automatically and marked with a 🕐 clock icon.
 - **Copy** a selection of cells (click-drag to select, or click a row number for the whole row)
   with **Ctrl+C** — it copies as tab-separated values, ready to paste into a spreadsheet.
@@ -62,6 +65,14 @@ and the grid re-centers on it, so you can immediately see what happened just bef
 You can also set one-sided time bounds (on/after, on/before) from the same menu; combine them for a
 custom “between” window.
 
+## Exporting the view
+
+The **Export CSV** button writes the **current view** — every row under your active
+filters / search / sort, and only the **visible columns** in their on-screen order — to a CSV file.
+The confirm dialog shows how many rows will be written, and the whole match set is streamed to disk,
+not just the rows on screen.
+
 ## Next
 
-→ [Tagging rows](tagging.md) to mark what you find as you go.
+→ [Tagging rows](tagging.md) to mark what you find, then [Intel Sweep](intel-sweep.md) to hunt for
+known indicators across the source.

@@ -2,8 +2,10 @@
 
 ## Launching
 
-Open pink-lemonade like any desktop app. It opens on the **Home screen** with no tabs — you
-choose what to do first.
+pink-lemonade ships as a **portable `.exe`** — download it from the Releases page and double-click
+to run, no installation. (It’s unsigned, so Windows SmartScreen may ask you to confirm with
+*More info → Run anyway* the first time.) It opens on the **Home screen** with no tabs — you choose
+what to do first. Your work is saved under `%APPDATA%\pink-lemonade` and comes back next launch.
 
 ## The Home screen
 
@@ -13,6 +15,8 @@ Home is your launchpad. From here you can:
 - **New workspace** — start an empty workspace and import files into it later.
 - **Open workspace…** — reopen a `.workspace` file you saved before.
 - **New notepad** — a blank text scratchpad for transforms.
+- **Global Intel** — the [Intel tab](intel.md): bulk-look-up IPs / domains / hashes and keep
+  watchlists.
 
 Below the actions, **Recent workspaces** lists what you’ve opened lately — click one to jump
 straight back in (tags and all).

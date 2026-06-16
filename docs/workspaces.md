@@ -1,9 +1,9 @@
 # Workspaces
 
 A **workspace** is a self-contained investigation. It holds one or more imported CSV/TSV files
-(called **sources**) plus any tags you’ve applied — all in a single `.workspace` file on disk.
-Think of it as “the case I’m working on,” which you can close and reopen later exactly where you
-left off.
+(called **sources**) plus any tags and [sightings](intel-sweep.md) you’ve added — all in a single
+`.workspace` file on disk. Think of it as “the case I’m working on,” which you can close and reopen
+later exactly where you left off.
 
 ## Creating a workspace
 
@@ -50,3 +50,4 @@ Workspaces persist automatically. When you relaunch the app, your workspace tabs
 
 → [Exploring the data](exploring-data.md) in a source
 → [Tagging rows](tagging.md) as you triage
+→ [Intel Sweep](intel-sweep.md) to hunt a source for known indicators

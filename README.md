@@ -62,7 +62,7 @@ with **MaxMind GeoIP** (a local `.mmdb`); results land in a sortable Intel grid.
 against any open workspace source. *(Online providers like VirusTotal + an AI assistant are on the
 roadmap.)*
 
-→ **User guide:** [`docs/`](docs/README.md)
+→ **User guide:** [forynsics.github.io/pink-lemonade](https://forynsics.github.io/pink-lemonade/) (or the [`docs/`](docs/README.md) source)
 
 ---
 

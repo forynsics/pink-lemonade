@@ -820,17 +820,27 @@ export function queryRows(tabId: string, opts: QueryOpts): { rows: string[][]; r
  */
 export function exportRows(
   tabId: string,
-  opts: { filters?: Filter[]; search?: string; sort?: Sort },
+  opts: { filters?: Filter[]; search?: string; sort?: Sort; columns?: string[] },
   outPath: string
 ): { rows: number } {
   const e = get(tabId)
   // A big sorted export benefits from the same on-demand column index the grid uses.
   if (opts.sort) ensureSortIndex(tabId, opts.sort.col, !!opts.sort.numeric)
-  const q = buildExportSql(e.meta.columns, opts, e.table)
+  // Honor the grid's visible columns (in their display order) when a subset is given; an
+  // empty/absent list exports every column in original order. Unknown names are dropped.
+  const byName = new Map(e.meta.columns.map((c) => [c.name, c]))
+  const picked = opts.columns?.length
+    ? opts.columns.flatMap((n) => {
+        const c = byName.get(n)
+        return c ? [c] : []
+      })
+    : e.meta.columns
+  const cols = picked.length > 0 ? picked : e.meta.columns
+  const q = buildExportSql(cols, opts, e.table)
   const stmt = e.db.prepare(q.sql).raw(true)
   const fd = openSync(outPath, 'w')
   try {
-    let buf = csvRow(e.meta.columns.map((c) => c.original)) + '\n'
+    let buf = csvRow(cols.map((c) => c.original)) + '\n'
     let n = 0
     for (const row of stmt.iterate(...q.params) as Iterable<unknown[]>) {
       buf += csvRow(row.map((v) => (v == null ? '' : String(v)))) + '\n'

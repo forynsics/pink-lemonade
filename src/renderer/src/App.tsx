@@ -347,9 +347,29 @@ export default function App(): JSX.Element {
     reopeningRef.current.add(doc.id)
     try {
       const info = await window.api.csv.wsOpen(doc.wsId, doc.dbPath)
+      // The DB is authoritative for the column SET; the persisted doc holds display-only state
+      // (column order + hidden columns). Re-apply that per source so a reload keeps the user's view.
+      const sources = info.sources.map((f) => {
+        const prior = doc.sources.find((s) => s.sourceId === f.sourceId)
+        if (!prior) return f
+        const fByName = new Map(f.columns.map((c) => [c.name, c]))
+        const valid = new Set(f.columns.map((c) => c.name))
+        const seen = new Set<string>()
+        const ordered = [] as typeof f.columns
+        for (const pc of prior.columns) {
+          const fc = fByName.get(pc.name)
+          if (fc) {
+            ordered.push(fc)
+            seen.add(fc.name)
+          }
+        }
+        for (const fc of f.columns) if (!seen.has(fc.name)) ordered.push(fc)
+        const hiddenColumns = (prior.hiddenColumns ?? []).filter((n) => valid.has(n))
+        return { ...f, columns: ordered, hiddenColumns: hiddenColumns.length ? hiddenColumns : undefined }
+      })
       patchWorkspaceById(doc.id, {
         name: info.name,
-        sources: info.sources,
+        sources,
         activeSourceId: doc.activeSourceId ?? info.sources[0]?.sourceId ?? null,
         intelMode: info.intelMode,
         needsReopen: false,
@@ -391,6 +411,22 @@ export default function App(): JSX.Element {
             cols.splice(to, 0, moved)
             return { ...src, columns: cols }
           })
+        }
+      })
+    }))
+  }
+
+  /** Persist a source's hidden-column set (display-only; survives reload via the merge on reopen). */
+  function setSourceHiddenColumns(docId: string, sourceId: number, hiddenColumns: string[]): void {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId || d.kind !== 'workspace') return d
+        return {
+          ...d,
+          sources: d.sources.map((src) =>
+            src.sourceId === sourceId ? { ...src, hiddenColumns: hiddenColumns.length ? hiddenColumns : undefined } : src
+          )
         }
       })
     }))
@@ -653,6 +689,8 @@ export default function App(): JSX.Element {
                           }}
                           onPivot={pivotToScratch}
                           onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
+                          savedHidden={src.hiddenColumns}
+                          onHiddenColumns={(names) => setSourceHiddenColumns(d.id, src.sourceId, names)}
                           apiRef={isActiveSource ? tagApiRef : undefined}
                           onTagSummary={isActiveSource ? setTagSummary : undefined}
                           onSendToEnrichment={(vals) =>

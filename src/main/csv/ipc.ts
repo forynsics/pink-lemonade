@@ -164,7 +164,11 @@ export function registerCsvIpc(): void {
         tabId,
         defaultName,
         opts
-      }: { tabId: string; defaultName?: string; opts: { filters?: Filter[]; search?: string; sort?: Sort } }
+      }: {
+        tabId: string
+        defaultName?: string
+        opts: { filters?: Filter[]; search?: string; sort?: Sort; columns?: string[] }
+      }
     ): Promise<{ canceled: true } | { path: string; rows: number }> => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const name = defaultName && defaultName.toLowerCase().endsWith('.csv') ? defaultName : `${defaultName || 'export'}.csv`
@@ -180,7 +184,9 @@ export function registerCsvIpc(): void {
       const o = {
         filters: normalizeFilters(opts?.filters),
         search: normalizeSearch(opts?.search),
-        sort: normalizeSort(opts?.sort)
+        sort: normalizeSort(opts?.sort),
+        // Keep only well-formed c-names (SQL-injection boundary); exportRows maps them to columns.
+        columns: Array.isArray(opts?.columns) ? opts.columns.filter((c) => /^c\d+$/.test(c)) : undefined
       }
       const res = await dbw.call<{ rows: number }>('exportRows', tabId, o, result.filePath)
       return { path: result.filePath, rows: res.rows }

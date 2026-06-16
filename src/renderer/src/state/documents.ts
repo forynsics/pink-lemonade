@@ -22,6 +22,8 @@ export interface WorkspaceSource {
   name: string
   columns: CsvColumn[]
   rowCount: number
+  /** Column names (`c<n>`) hidden from the grid — display-only, persisted so it survives a reload. */
+  hiddenColumns?: string[]
 }
 
 /** A workspace: one persistent .workspace SQLite db holding many sources. */

@@ -58,6 +58,8 @@ export function CsvViewer({
   doc,
   onPivot,
   onReorderColumns,
+  savedHidden,
+  onHiddenColumns,
   apiRef,
   onTagSummary,
   onSendToEnrichment,
@@ -66,6 +68,10 @@ export function CsvViewer({
   doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
   onReorderColumns: (from: number, to: number) => void
+  /** Persisted hidden-column names for this source (restored on mount). */
+  savedHidden?: string[]
+  /** Report the hidden-column set up so it persists on the workspace source. */
+  onHiddenColumns?: (names: string[]) => void
   /** Set on the ACTIVE source only — lets the sidebar drive this source's tag filter. */
   apiRef?: React.Ref<CsvViewerHandle>
   /** Set on the ACTIVE source only — reports tag counts + the active tag filter to the sidebar. */
@@ -84,9 +90,20 @@ export function CsvViewer({
   } | null>(null)
   const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
   // Columns the user has hidden, keyed by stable `c<n>` name (so reorder doesn't disturb them).
-  // Pure display state — the query still selects every column; this only gates rendering. Session-
-  // local (this viewer stays mounted per source), reset if the source's column set changes.
-  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  // Pure display state — the query still selects every column; this only gates rendering. Seeded
+  // from the persisted set and reported back up on change; pruned if the column set changes.
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set(savedHidden ?? []))
+  // Persist the hidden set whenever it changes (skip the initial seed — already persisted).
+  const onHiddenRef = useRef(onHiddenColumns)
+  onHiddenRef.current = onHiddenColumns
+  const hiddenMounted = useRef(false)
+  useEffect(() => {
+    if (!hiddenMounted.current) {
+      hiddenMounted.current = true
+      return
+    }
+    onHiddenRef.current?.([...hidden])
+  }, [hidden])
   useEffect(() => {
     setHidden((prev) => {
       const valid = new Set(doc.columns.map((c) => c.name))
@@ -232,7 +249,9 @@ export function CsvViewer({
     try {
       const base = doc.sourceName.replace(/\.(csv|tsv|txt)$/i, '')
       const name = `${base}${hasPredicate ? '-filtered' : ''}.csv`
-      const res = await window.api.csv.export(doc.tabId, name, { filters, search, sort })
+      // Export the columns you can see, in the order you see them (visible-only, display order).
+      const columns = doc.columns.filter((c) => !hidden.has(c.name)).map((c) => c.name)
+      const res = await window.api.csv.export(doc.tabId, name, { filters, search, sort, columns })
       if (!('canceled' in res)) setExportDone({ rows: res.rows, path: res.path })
     } finally {
       setExporting(false)

@@ -169,7 +169,7 @@ export interface CsvApi {
   export: (
     tabId: string,
     defaultName: string | undefined,
-    opts: { filters?: CsvFilter[]; search?: string; sort?: CsvSort }
+    opts: { filters?: CsvFilter[]; search?: string; sort?: CsvSort; columns?: string[] }
   ) => Promise<{ canceled: true } | { path: string; rows: number }>
   close: (tabId: string) => Promise<null>
   onProgress: (cb: (p: CsvProgress) => void) => () => void

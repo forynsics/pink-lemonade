@@ -341,6 +341,29 @@ describe('sighting filter + sweep scan', () => {
     expect(params).toEqual([7, '8.8.8.8', 'evil.com', 10, 0])
   })
 
+  it('excludes specific indicators (right-click → NOT IN)', () => {
+    const { sql, params } = buildQueryRowsSql(
+      cols,
+      { limit: 10, offset: 0, filters: [{ op: 'sighting', indicators: ['evil.com'], exclude: true }] },
+      'data_7'
+    )
+    expect(sql).toBe(
+      'SELECT c0, c1 FROM data_7 WHERE rowid NOT IN (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (?)) LIMIT ? OFFSET ?'
+    )
+    expect(params).toEqual([7, 'evil.com', 10, 0])
+  })
+
+  it('excludes a tag (right-click a tag facet → NOT IN)', () => {
+    const { sql } = buildQueryRowsSql(
+      cols,
+      { limit: 10, offset: 0, filters: [{ op: 'tag', tags: ['benign'], exclude: true }] },
+      'data_3'
+    )
+    expect(sql).toBe(
+      'SELECT c0, c1 FROM data_3 WHERE rowid NOT IN (SELECT rid FROM tags WHERE source_id = ? AND tag IN (?)) LIMIT ? OFFSET ?'
+    )
+  })
+
   it('a sighting filter on the legacy single-file table matches nothing', () => {
     const { sql } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'sighting' }] }, 'data')
     expect(sql).toBe('SELECT c0, c1 FROM data WHERE 0 LIMIT ? OFFSET ?')

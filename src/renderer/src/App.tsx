@@ -552,6 +552,7 @@ export default function App(): JSX.Element {
             onRenameSource={(sid, name) => void renameSourceName(active.id, active.wsId, sid, name)}
             tagSummary={tagSummary}
             onToggleTagFilter={(tag) => tagApiRef.current?.toggleTagFilter(tag)}
+            onExcludeTagFilter={(tag) => tagApiRef.current?.excludeTagFilter(tag)}
             onClearTagFilter={() => tagApiRef.current?.clearTagFilter()}
             intelMode={active.intelMode}
             onSetIntelMode={(mode) => void changeWorkspaceIntelMode(active.id, active.wsId, mode)}

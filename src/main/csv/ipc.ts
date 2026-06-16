@@ -355,12 +355,16 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
     if (!f) continue
     if (f.op === 'tag') {
       const tags = Array.isArray(f.tags) ? f.tags.filter((t) => typeof t === 'string' && t) : []
-      if (tags.length > 0) out.push({ op: 'tag', tags })
+      if (tags.length > 0) out.push({ op: 'tag', tags, ...(f.exclude ? { exclude: true } : {}) })
       continue
     }
     if (f.op === 'sighting') {
       const inds = Array.isArray(f.indicators) ? f.indicators.filter((s) => typeof s === 'string' && s) : undefined
-      out.push(inds && inds.length > 0 ? { op: 'sighting', indicators: inds } : { op: 'sighting' })
+      out.push({
+        op: 'sighting',
+        ...(inds && inds.length > 0 ? { indicators: inds } : {}),
+        ...(f.exclude ? { exclude: true } : {})
+      })
       continue
     }
     if (typeof f.col !== 'string') continue

@@ -40,12 +40,14 @@ export type Filter =
   // Open/closed range on a time column in epoch seconds: from→`>=`, to→`<=`, both→between.
   | { col: string; op: 'timerange'; tkind: TimeKind; from?: number; to?: number }
   // Row-tag membership: rows whose (source_id, rowid) carry ANY of these tags in the `tags` table
-  // (OR across the set — a row has one tag, so AND would match nothing).
-  | { op: 'tag'; tags: string[] }
+  // (OR across the set — a row has one tag, so AND would match nothing). `exclude` flips it to
+  // "rows that have NONE of these tags" (right-click a tag facet).
+  | { op: 'tag'; tags: string[]; exclude?: boolean }
   // Intel-sweep sightings: rows that carry at least one hit in the `intel_hits` table. With no
   // `indicators`, it's a "show only sightings" toggle; with them, it narrows to rows that hit ANY of
-  // those specific indicators (the "zero in" facet). Like the tag op, it resolves by source id.
-  | { op: 'sighting'; indicators?: string[] }
+  // those specific indicators (the "zero in" facet). `exclude` flips it to "rows that do NOT hit
+  // (any of) these" (right-click an indicator). Like the tag op, it resolves by source id.
+  | { op: 'sighting'; indicators?: string[]; exclude?: boolean }
 
 /** The source id of a workspace data table (`data_<id>` → id), or null for the legacy `data` table. */
 function tableSourceId(table: string): number | null {
@@ -126,24 +128,27 @@ function buildWhere(
         if (f.tags.length === 0) continue // empty set → no constraint
         const sid = tableSourceId(table)
         if (sid == null) {
-          clauses.push('0') // legacy single-file table has no tags → match nothing
-        } else {
-          const placeholders = f.tags.map(() => '?').join(', ')
-          clauses.push(`rowid IN (SELECT rid FROM tags WHERE source_id = ? AND tag IN (${placeholders}))`)
-          params.push(sid, ...f.tags)
+          if (!f.exclude) clauses.push('0') // legacy table has no tags → include matches nothing; exclude matches all
+          continue
         }
+        const placeholders = f.tags.map(() => '?').join(', ')
+        clauses.push(`rowid ${f.exclude ? 'NOT IN' : 'IN'} (SELECT rid FROM tags WHERE source_id = ? AND tag IN (${placeholders}))`)
+        params.push(sid, ...f.tags)
         continue
       }
       if (f.op === 'sighting') {
         const sid = tableSourceId(table)
         if (sid == null) {
-          clauses.push('0') // legacy single-file table has no sightings → match nothing
-        } else if (f.indicators && f.indicators.length > 0) {
+          if (!f.exclude) clauses.push('0') // legacy table has no sightings → include matches nothing
+          continue
+        }
+        const op = f.exclude ? 'NOT IN' : 'IN'
+        if (f.indicators && f.indicators.length > 0) {
           const ph = f.indicators.map(() => '?').join(', ')
-          clauses.push(`rowid IN (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (${ph}))`)
+          clauses.push(`rowid ${op} (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (${ph}))`)
           params.push(sid, ...f.indicators)
         } else {
-          clauses.push('rowid IN (SELECT rid FROM intel_hits WHERE source_id = ?)')
+          clauses.push(`rowid ${op} (SELECT rid FROM intel_hits WHERE source_id = ?)`)
           params.push(sid)
         }
         continue

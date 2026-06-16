@@ -6,12 +6,15 @@ import { TAG_DEFS, type TagId } from '../../state/tags'
 /** Per-source tag rollup the viewer reports up so the sidebar can show + filter by tag. */
 export interface TagSummary {
   counts: Partial<Record<TagId, number>>
-  /** Tags currently in the OR filter set (empty = no tag filter). */
+  /** Tags currently in the include (OR) filter set — left-click facets (empty = none). */
   activeTags: TagId[]
+  /** Tags currently excluded — right-click facets (empty = none). */
+  excludedTags: TagId[]
 }
 /** Imperative surface the sidebar drives (the active source's tag-filter toggles). */
 export interface CsvViewerHandle {
   toggleTagFilter: (tag: TagId) => void
+  excludeTagFilter: (tag: TagId) => void
   clearTagFilter: () => void
 }
 
@@ -338,49 +341,92 @@ export function CsvViewer({
     })
   }
 
-  // Toggle a tag in the "show only rows tagged …" set (from the sidebar Tags facets). Tags OR
-  // together, so you can show e.g. Malicious + Suspicious at once. Removing the last tag drops the
-  // filter entirely.
+  // Tag facets, like the sightings panel: left-click includes (show only these tags, OR'd),
+  // right-click excludes (hide these tags). Include and exclude are separate filter slots; a tag
+  // sits in at most one. Removing the last tag from a slot drops that slot.
+  const rebuildTags = (fs: CsvFilter[], incTags: string[], excTags: string[]): CsvFilter[] => {
+    const out: CsvFilter[] = fs.filter((f) => f.op !== 'tag')
+    if (incTags.length > 0) out.push({ op: 'tag', tags: incTags })
+    if (excTags.length > 0) out.push({ op: 'tag', tags: excTags, exclude: true })
+    return out
+  }
   const toggleTagFilter = useCallback((tag: TagId): void => {
     setFilters((fs) => {
-      const cur = fs.find((f) => f.op === 'tag')
-      const curTags = cur && cur.op === 'tag' ? cur.tags : []
-      const nextTags = curTags.includes(tag) ? curTags.filter((t) => t !== tag) : [...curTags, tag]
-      const without = fs.filter((f) => f.op !== 'tag')
-      return nextTags.length > 0 ? [...without, { op: 'tag', tags: nextTags }] : without
+      const inc = fs.find((f) => f.op === 'tag' && !f.exclude)
+      const incTags = inc?.op === 'tag' ? inc.tags : []
+      const exc = fs.find((f) => f.op === 'tag' && f.exclude)
+      const excTags = (exc?.op === 'tag' ? exc.tags : []).filter((t) => t !== tag)
+      const nextInc = incTags.includes(tag) ? incTags.filter((t) => t !== tag) : [...incTags, tag]
+      return rebuildTags(fs, nextInc, excTags)
+    })
+  }, [])
+  const excludeTagFilter = useCallback((tag: TagId): void => {
+    setFilters((fs) => {
+      const inc = fs.find((f) => f.op === 'tag' && !f.exclude)
+      const incTags = (inc?.op === 'tag' ? inc.tags : []).filter((t) => t !== tag)
+      const exc = fs.find((f) => f.op === 'tag' && f.exclude)
+      const excTags = exc?.op === 'tag' ? exc.tags : []
+      const nextExc = excTags.includes(tag) ? excTags.filter((t) => t !== tag) : [...excTags, tag]
+      return rebuildTags(fs, incTags, nextExc)
     })
   }, [])
   const clearTagFilter = useCallback((): void => {
     setFilters((fs) => fs.filter((f) => f.op !== 'tag'))
   }, [])
-  // The sighting filter: absent = no filter; present with no indicators = "all sightings"; present
-  // with indicators = those specific ones ("zero in"). The Sightings panel reads/writes via these.
-  const sightingFilter = filters.find((f) => f.op === 'sighting')
-  const activeIndicators = (sightingFilter?.op === 'sighting' ? sightingFilter.indicators : undefined) ?? []
-  const allSightings = !!sightingFilter && activeIndicators.length === 0
-  const hasSightingFilter = !!sightingFilter
+  // Two sighting-filter slots can coexist: an INCLUDE one (no `exclude`) and an EXCLUDE one. Include
+  // with no indicators = "all sightings"; include with indicators = "zero in"; exclude = hide those.
+  // Left-click an indicator drives include, right-click drives exclude; a value sits in at most one.
+  const incSighting = filters.find((f) => f.op === 'sighting' && !f.exclude)
+  const excSighting = filters.find((f) => f.op === 'sighting' && f.exclude)
+  const activeIndicators = (incSighting?.op === 'sighting' ? incSighting.indicators : undefined) ?? []
+  const excludedIndicators = (excSighting?.op === 'sighting' ? excSighting.indicators : undefined) ?? []
+  const allSightings = !!incSighting && activeIndicators.length === 0
+  const hasSightingFilter = !!incSighting || !!excSighting
+
+  // Rebuild the (≤2) sighting filter entries from the desired include/exclude sets.
+  const rebuildSightings = (fs: CsvFilter[], incInds: string[], excInds: string[], incAll: boolean): CsvFilter[] => {
+    const out: CsvFilter[] = fs.filter((f) => f.op !== 'sighting')
+    if (incAll) out.push({ op: 'sighting' })
+    else if (incInds.length > 0) out.push({ op: 'sighting', indicators: incInds })
+    if (excInds.length > 0) out.push({ op: 'sighting', indicators: excInds, exclude: true })
+    return out
+  }
 
   const toggleAllSightings = useCallback((): void => {
     setFilters((fs) => {
-      const cur = fs.find((f) => f.op === 'sighting')
-      const isAll = cur?.op === 'sighting' && (cur.indicators?.length ?? 0) === 0
-      const without = fs.filter((f) => f.op !== 'sighting')
-      return isAll ? without : [...without, { op: 'sighting' }]
+      const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
+      const isAll = inc?.op === 'sighting' && (inc.indicators?.length ?? 0) === 0
+      const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
+      const excInds = exc?.op === 'sighting' ? exc.indicators ?? [] : []
+      return rebuildSightings(fs, [], excInds, !isAll)
     })
   }, [])
   const toggleIndicatorSighting = useCallback((indicator: string): void => {
     setFilters((fs) => {
-      const cur = fs.find((f) => f.op === 'sighting')
-      const curInds = cur?.op === 'sighting' ? cur.indicators ?? [] : []
-      const without = fs.filter((f) => f.op !== 'sighting')
-      // From "all" (no indicators) clicking one narrows to just it; otherwise add/remove from the set.
-      const next =
-        !!cur && curInds.length === 0
-          ? [indicator]
-          : curInds.includes(indicator)
-            ? curInds.filter((x) => x !== indicator)
-            : [...curInds, indicator]
-      return next.length > 0 ? [...without, { op: 'sighting', indicators: next }] : without
+      const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
+      const incInds = inc?.op === 'sighting' ? inc.indicators ?? [] : []
+      const isAll = !!inc && incInds.length === 0
+      const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
+      const excInds = (exc?.op === 'sighting' ? exc.indicators ?? [] : []).filter((x) => x !== indicator)
+      // From "all" clicking one narrows to just it; otherwise add/remove from the include set.
+      const nextInc = isAll
+        ? [indicator]
+        : incInds.includes(indicator)
+          ? incInds.filter((x) => x !== indicator)
+          : [...incInds, indicator]
+      return rebuildSightings(fs, nextInc, excInds, false)
+    })
+  }, [])
+  const excludeIndicatorSighting = useCallback((indicator: string): void => {
+    setFilters((fs) => {
+      const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
+      const incInds0 = inc?.op === 'sighting' ? inc.indicators ?? [] : []
+      const isAll = !!inc && incInds0.length === 0
+      const incInds = incInds0.filter((x) => x !== indicator) // a value can't be both included and excluded
+      const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
+      const excInds = exc?.op === 'sighting' ? exc.indicators ?? [] : []
+      const nextExc = excInds.includes(indicator) ? excInds.filter((x) => x !== indicator) : [...excInds, indicator]
+      return rebuildSightings(fs, incInds, nextExc, isAll)
     })
   }, [])
   const clearAllSightings = useCallback(async (): Promise<void> => {
@@ -392,11 +438,12 @@ export function CsvViewer({
     async (indicator: string): Promise<void> => {
       await window.api.csv.sightingClear(wsId, sourceId, { indicator })
       setFilters((fs) => {
-        const cur = fs.find((f) => f.op === 'sighting')
-        if (cur?.op !== 'sighting' || !cur.indicators) return fs
-        const next = cur.indicators.filter((x) => x !== indicator)
-        const without = fs.filter((f) => f.op !== 'sighting')
-        return next.length > 0 ? [...without, { op: 'sighting', indicators: next }] : without
+        const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
+        const incInds = (inc?.op === 'sighting' ? inc.indicators ?? [] : []).filter((x) => x !== indicator)
+        const isAll = inc?.op === 'sighting' && (inc.indicators?.length ?? 0) === 0
+        const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
+        const excInds = (exc?.op === 'sighting' ? exc.indicators ?? [] : []).filter((x) => x !== indicator)
+        return rebuildSightings(fs, incInds, excInds, isAll)
       })
       setSightingRev((r) => r + 1)
     },
@@ -409,13 +456,19 @@ export function CsvViewer({
     },
     [wsId, sourceId]
   )
-  const activeTagFilter = filters.find((f) => f.op === 'tag')
-  const activeTags = (activeTagFilter?.op === 'tag' ? activeTagFilter.tags : []) as TagId[]
-  hasTagFilterRef.current = activeTags.length > 0
+  const incTagFilter = filters.find((f) => f.op === 'tag' && !f.exclude)
+  const excTagFilter = filters.find((f) => f.op === 'tag' && f.exclude)
+  const activeTags = (incTagFilter?.op === 'tag' ? incTagFilter.tags : []) as TagId[]
+  const excludedTags = (excTagFilter?.op === 'tag' ? excTagFilter.tags : []) as TagId[]
+  hasTagFilterRef.current = activeTags.length > 0 || excludedTags.length > 0
 
   // The active source exposes its tag-filter controls and reports its tag rollup to the sidebar.
-  useImperativeHandle(apiRef, () => ({ toggleTagFilter, clearTagFilter }), [toggleTagFilter, clearTagFilter])
-  const activeTagsKey = activeTags.join(',')
+  useImperativeHandle(
+    apiRef,
+    () => ({ toggleTagFilter, excludeTagFilter, clearTagFilter }),
+    [toggleTagFilter, excludeTagFilter, clearTagFilter]
+  )
+  const activeTagsKey = `${activeTags.join(',')}|${excludedTags.join(',')}`
   // The rollup must reflect the *view* predicate (column filters + search) but NOT the tag filter —
   // a tag facet shouldn't zero out its siblings, so you can still see and switch to other tags.
   const hasViewPredicate = filters.some((f) => f.op !== 'tag') || search !== ''
@@ -425,13 +478,12 @@ export function CsvViewer({
       onTagSummary(null)
       return
     }
-    const active = activeTagsKey ? (activeTagsKey.split(',') as TagId[]) : []
     // No view predicate → the whole-source map is already the right answer; count it in memory
     // (instant, no flicker, no IPC round-trip).
     if (!hasViewPredicate) {
       const counts: Partial<Record<TagId, number>> = {}
       for (const t of tags.values()) counts[t as TagId] = (counts[t as TagId] ?? 0) + 1
-      onTagSummary({ counts, activeTags: active })
+      onTagSummary({ counts, activeTags, excludedTags })
       return
     }
     // A filter/search is active: count tagged rows that survive it, in SQL. The worker handles
@@ -441,7 +493,7 @@ export function CsvViewer({
       if (!live) return
       const counts: Partial<Record<TagId, number>> = {}
       for (const r of rows) counts[r.tag as TagId] = r.cnt
-      onTagSummary({ counts, activeTags: active })
+      onTagSummary({ counts, activeTags, excludedTags })
     })
     return () => {
       live = false
@@ -634,9 +686,11 @@ export function CsvViewer({
             totalRows={sightings.size}
             reloadKey={sightingRev}
             activeIndicators={activeIndicators}
+            excludedIndicators={excludedIndicators}
             allActive={allSightings}
             onToggleAll={toggleAllSightings}
             onToggleIndicator={toggleIndicatorSighting}
+            onExcludeIndicator={excludeIndicatorSighting}
             onClearAll={() => void clearAllSightings()}
             onClearIndicator={(ind) => void clearIndicatorSighting(ind)}
             onClose={() => setSightingsPanelOpen(false)}

@@ -23,6 +23,7 @@ export function WorkspaceSidebar({
   onRenameSource,
   tagSummary,
   onToggleTagFilter,
+  onExcludeTagFilter,
   onClearTagFilter,
   intelMode,
   onSetIntelMode,
@@ -40,14 +41,20 @@ export function WorkspaceSidebar({
   /** Tag rollup for the active source (counts + the active tag filter set), reported by its viewer. */
   tagSummary?: TagSummary | null
   onToggleTagFilter?: (tag: TagId) => void
+  onExcludeTagFilter?: (tag: TagId) => void
   onClearTagFilter?: () => void
   /** Which intel this workspace uses + controls to switch / open it. */
   intelMode: 'global' | 'workspace'
   onSetIntelMode: (mode: 'global' | 'workspace') => void
   onOpenIntel: () => void
 }): JSX.Element {
-  const tagRows = TAG_DEFS.filter((d) => tagSummary?.counts[d.id])
   const activeTags = tagSummary?.activeTags ?? []
+  const excludedTags = tagSummary?.excludedTags ?? []
+  // Show a facet if it has matches OR is currently part of a filter (so an excluded tag stays visible
+  // even when the predicate drops its visible count to 0).
+  const tagRows = TAG_DEFS.filter(
+    (d) => tagSummary?.counts[d.id] || activeTags.includes(d.id) || excludedTags.includes(d.id)
+  )
 
   // Inline rename: 'ws' = the workspace name, a number = that source id, null = not editing.
   const [editing, setEditing] = useState<'ws' | number | null>(null)
@@ -176,41 +183,54 @@ export function WorkspaceSidebar({
           <div className="px-1 mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
             Tags
             <span className="font-normal normal-case tracking-normal text-citrus-muted/70 dark:text-citrus-night-muted/70">
-              · click to filter
+              · click filter · right-click exclude
             </span>
           </div>
           <div className="flex flex-col gap-0.5">
             {tagRows.map((d) => {
               const active = activeTags.includes(d.id)
+              const excluded = excludedTags.includes(d.id)
               return (
                 <button
                   key={d.id}
                   onClick={() => onToggleTagFilter?.(d.id)}
-                  title={active ? `Showing ${d.label} only — click to clear` : `Show only ${d.label}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    onExcludeTagFilter?.(d.id)
+                  }}
+                  title={
+                    excluded
+                      ? `Excluding ${d.label} — right-click to clear`
+                      : active
+                        ? `Showing ${d.label} — left-click to clear`
+                        : `Left-click to show only ${d.label} · right-click to exclude it`
+                  }
                   className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
                     active
                       ? 'bg-citrus-pink-light font-bold text-citrus-pink'
-                      : 'text-citrus-dark hover:bg-citrus-card/70 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
+                      : excluded
+                        ? 'bg-citrus-sand/60 text-citrus-muted dark:bg-citrus-night-elev/60 dark:text-citrus-night-muted'
+                        : 'text-citrus-dark hover:bg-citrus-card/70 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
                   }`}
                 >
                   <span className={`inline-block w-2.5 h-2.5 rounded-sm shrink-0 ${d.dot}`} />
-                  <span className="flex-1 text-left truncate">{d.label}</span>
+                  <span className={`flex-1 text-left truncate ${excluded ? 'line-through' : ''}`}>{d.label}</span>
                   <span className={`font-mono ${active ? 'text-citrus-pink' : 'text-citrus-muted dark:text-citrus-night-muted'}`}>
-                    {tagSummary?.counts[d.id]}
+                    {tagSummary?.counts[d.id] ?? 0}
                   </span>
                   <Filter
-                    className={`w-3 h-3 shrink-0 ${active ? 'text-citrus-pink' : 'text-citrus-muted/0 group-hover:text-citrus-muted dark:group-hover:text-citrus-night-muted'}`}
+                    className={`w-3 h-3 shrink-0 ${active || excluded ? 'text-citrus-pink' : 'text-citrus-muted/0 group-hover:text-citrus-muted dark:group-hover:text-citrus-night-muted'}`}
                   />
                 </button>
               )
             })}
           </div>
-          {activeTags.length > 0 && (
+          {(activeTags.length > 0 || excludedTags.length > 0) && (
             <button
               onClick={() => onClearTagFilter?.()}
               className="mt-1 px-2 text-[11px] text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
             >
-              ✕ Clear tag filter{activeTags.length > 1 ? 's' : ''}
+              ✕ Clear tag filter{activeTags.length + excludedTags.length > 1 ? 's' : ''}
             </button>
           )}
         </div>

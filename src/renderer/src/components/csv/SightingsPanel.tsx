@@ -27,9 +27,11 @@ export function SightingsPanel({
   totalRows,
   reloadKey,
   activeIndicators,
+  excludedIndicators,
   allActive,
   onToggleAll,
   onToggleIndicator,
+  onExcludeIndicator,
   onClearAll,
   onClearIndicator,
   onClose
@@ -40,9 +42,11 @@ export function SightingsPanel({
   totalRows: number
   reloadKey: number
   activeIndicators: string[]
+  excludedIndicators: string[]
   allActive: boolean
   onToggleAll: () => void
   onToggleIndicator: (indicator: string) => void
+  onExcludeIndicator: (indicator: string) => void
   onClearAll: () => void
   onClearIndicator: (indicator: string) => void
   onClose: () => void
@@ -71,6 +75,7 @@ export function SightingsPanel({
   }, [rows, needle])
 
   const active = new Set(activeIndicators)
+  const excluded = new Set(excludedIndicators)
 
   const startResize = (e: React.MouseEvent): void => {
     e.preventDefault()
@@ -136,8 +141,11 @@ export function SightingsPanel({
         value={needle}
         onChange={(e) => setNeedle(e.target.value)}
         placeholder="find an indicator…"
-        className="mx-3 my-2 rounded border border-citrus-border bg-citrus-cream px-2 py-1 text-[11px] text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
+        className="mx-3 mt-2 rounded border border-citrus-border bg-citrus-cream px-2 py-1 text-[11px] text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
       />
+      <div className="mx-3 mb-1.5 mt-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+        left-click to filter · right-click to exclude
+      </div>
 
       <div className="flex-1 overflow-auto scrollbar-none">
         {loading ? (
@@ -151,20 +159,43 @@ export function SightingsPanel({
         ) : (
           shown.map((r) => {
             const on = !allActive && active.has(r.indicator)
+            const off = excluded.has(r.indicator)
             return (
               <div
                 key={`${r.kind}:${r.indicator}`}
                 className={`group flex items-center gap-2 px-3 py-1 text-[11px] font-mono ${
-                  on ? 'bg-red-500/10' : 'hover:bg-citrus-pink-light/40 dark:hover:bg-citrus-night-elev/50'
+                  on
+                    ? 'bg-red-500/10'
+                    : off
+                      ? 'bg-citrus-sand/50 dark:bg-citrus-night-elev/40'
+                      : 'hover:bg-citrus-pink-light/40 dark:hover:bg-citrus-night-elev/50'
                 }`}
               >
                 <button
                   onClick={() => onToggleIndicator(r.indicator)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    onExcludeIndicator(r.indicator)
+                  }}
                   className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  title={on ? `Showing ${r.indicator} — click to remove from filter` : `Zero in on ${r.indicator}`}
+                  title={
+                    off
+                      ? `Excluding ${r.indicator} — right-click to remove`
+                      : on
+                        ? `Showing ${r.indicator} — left-click to remove`
+                        : `Left-click to filter to ${r.indicator} · right-click to exclude it`
+                  }
                 >
                   <span className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${KIND_CHIP[r.kind] ?? ''}`}>{r.kind}</span>
-                  <span className={`truncate ${on ? 'font-bold text-red-600 dark:text-red-400' : 'text-citrus-dark dark:text-citrus-night-text'}`}>
+                  <span
+                    className={`truncate ${
+                      on
+                        ? 'font-bold text-red-600 dark:text-red-400'
+                        : off
+                          ? 'text-citrus-muted line-through dark:text-citrus-night-muted'
+                          : 'text-citrus-dark dark:text-citrus-night-text'
+                    }`}
+                  >
                     {r.indicator}
                   </span>
                   <span className="ml-auto shrink-0 text-citrus-muted dark:text-citrus-night-muted">{r.count.toLocaleString()}</span>

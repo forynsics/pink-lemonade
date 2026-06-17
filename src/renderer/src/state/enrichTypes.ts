@@ -33,6 +33,8 @@ export interface EnrichProgress {
   total: number
   current: string
   fromCache: boolean
+  /** The row that just finished — present so the grid can render results live as they land. */
+  row?: EnrichResultRow
 }
 
 /** A cached result row across providers (cache READ only — no provider was run). */

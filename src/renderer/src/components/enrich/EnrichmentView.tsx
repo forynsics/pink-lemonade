@@ -54,6 +54,8 @@ export function EnrichmentView({
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null)
   const reqRef = useRef(0)
+  // Provider id of the in-flight run, so streamed progress rows merge into the right bucket.
+  const runProviderRef = useRef('')
   const [addNote, setAddNote] = useState<string | null>(null)
 
   // Resizable paste box (full-width bottom drag bar).
@@ -94,7 +96,15 @@ export function EnrichmentView({
   useEffect(() => {
     return window.api.enrich.onProgress((p) => {
       const ev = p as EnrichProgress
-      if (ev.reqId === reqRef.current) setProgress({ done: ev.done, total: ev.total, current: ev.current })
+      if (ev.reqId !== reqRef.current) return
+      setProgress({ done: ev.done, total: ev.total, current: ev.current })
+      // Live render: merge each finished row into its provider bucket as it streams in (the run's
+      // final .then still re-merges the full set, idempotently).
+      const row = ev.row
+      const pid = runProviderRef.current
+      if (row && pid) {
+        setResults((prev) => ({ ...prev, [row.indicator]: { ...(prev[row.indicator] ?? {}), [pid]: row } }))
+      }
     })
   }, [])
 
@@ -106,6 +116,7 @@ export function EnrichmentView({
     if (items.length === 0 || !doc.dbPath) return
     const reqId = ++lookupCounter
     reqRef.current = reqId
+    runProviderRef.current = providerId
     setBusy(true)
     setProgress({ done: 0, total: items.length, current: '' })
     window.api.enrich

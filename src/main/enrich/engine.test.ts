@@ -109,6 +109,47 @@ describe('engine.bulkLookup', () => {
     expect(entries.map((e) => e.indicator)).toEqual(['8.8.8.8']) // the error one was not persisted
   })
 
+  it('persists each ok result immediately (incremental writes, not one batch at the end)', async () => {
+    cacheGet.mockReturnValue(new Map())
+    lookup.mockResolvedValue({ status: 'ok', fields: { Country: 'US' } } as EnrichmentResult)
+    await bulkLookup(
+      'db',
+      'fake',
+      [
+        { value: '8.8.8.8', kind: 'ipv4' },
+        { value: '1.1.1.1', kind: 'ipv4' }
+      ],
+      1000,
+      noProgress,
+      noAbort
+    )
+    // Two single-entry puts (one per result), so closing the app mid-run keeps completed lookups —
+    // not one batched put at the end that a crash would lose.
+    expect(cachePut).toHaveBeenCalledTimes(2)
+    expect((cachePut.mock.calls[0][2] as Array<{ indicator: string }>).map((e) => e.indicator)).toEqual(['8.8.8.8'])
+    expect((cachePut.mock.calls[1][2] as Array<{ indicator: string }>).map((e) => e.indicator)).toEqual(['1.1.1.1'])
+  })
+
+  it('streams each finished row through onProgress (live render)', async () => {
+    cacheGet.mockReturnValue(new Map())
+    lookup.mockResolvedValue({ status: 'ok', fields: { Country: 'US' } } as EnrichmentResult)
+    const streamed: string[] = []
+    await bulkLookup(
+      'db',
+      'fake',
+      [
+        { value: '8.8.8.8', kind: 'ipv4' },
+        { value: '1.1.1.1', kind: 'ipv4' }
+      ],
+      1000,
+      (p) => {
+        if (p.row) streamed.push(p.row.indicator)
+      },
+      noAbort
+    )
+    expect(streamed).toEqual(['8.8.8.8', '1.1.1.1'])
+  })
+
   it('aborts mid-batch when shouldAbort() flips, returning canceled', async () => {
     cacheGet.mockReturnValue(new Map())
     lookup.mockResolvedValue({ status: 'ok', fields: {} } as EnrichmentResult)

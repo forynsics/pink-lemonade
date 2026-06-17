@@ -42,6 +42,8 @@ export interface BulkProgress {
   total: number
   current: string
   fromCache: boolean
+  /** The row that just finished — streamed so the grid can render results live as they land. */
+  row?: EnrichResultRow
 }
 
 /** In-memory run counters (not persisted) — handy for debugging throughput / quota burn. */
@@ -123,7 +125,6 @@ export async function bulkLookup(
   const cached = cache.get(dbPath, providerId, lookupable)
 
   const rows: EnrichResultRow[] = []
-  const fresh: cache.PutEntry[] = []
   const total = unique.length
   let done = 0
 
@@ -132,8 +133,15 @@ export async function bulkLookup(
   // Rolling window of recent real-request timestamps, used only when rpm > 0.
   const recent: number[] = []
 
+  // Record a finished row and stream it out: pushed to the result set, counted, and handed to
+  // onProgress so the renderer can render it live. (Cache writes happen at the call site — only for
+  // network results worth persisting — so they land the instant a lookup returns, not at the end.)
+  const emit = (row: EnrichResultRow): void => {
+    rows.push(row)
+    onProgress({ done: ++done, total, current: row.indicator, fromCache: row.fromCache, row })
+  }
+
   const flush = (extra?: Partial<BulkResult>): BulkResult => {
-    if (fresh.length > 0) cache.put(dbPath, providerId, fresh, now)
     stats.avgLatencyMs = stats.networkLookups > 0 ? Math.round(totalLatency / stats.networkLookups) : 0
     return { rows, stats, ...extra }
   }
@@ -142,7 +150,7 @@ export async function bulkLookup(
     if (shouldAbort()) return flush({ canceled: true })
 
     if (!supported.has(it.kind)) {
-      rows.push({
+      emit({
         indicator: it.value,
         kind: it.kind,
         status: 'skipped',
@@ -150,7 +158,6 @@ export async function bulkLookup(
         fromCache: false,
         message: `${provider.name} doesn't support ${it.kind}`
       })
-      onProgress({ done: ++done, total, current: it.value, fromCache: false })
       continue
     }
 
@@ -160,8 +167,7 @@ export async function bulkLookup(
     if (!provider.matchesPrivateIps && (it.kind === 'ipv4' || it.kind === 'ipv6')) {
       const reason = privateIpReason(it.value)
       if (reason) {
-        rows.push({ indicator: it.value, kind: it.kind, status: 'private', fields: {}, fromCache: false, message: reason })
-        onProgress({ done: ++done, total, current: it.value, fromCache: false })
+        emit({ indicator: it.value, kind: it.kind, status: 'private', fields: {}, fromCache: false, message: reason })
         continue
       }
     }
@@ -170,8 +176,7 @@ export async function bulkLookup(
     const isFresh = hit && (provider.ttlSeconds === Infinity || (now - hit.fetchedAt) / 1000 < provider.ttlSeconds)
     if (hit && isFresh) {
       stats.cacheHits++
-      rows.push({ indicator: it.value, kind: it.kind, status: hit.status, fields: hit.fields, fromCache: true, fetchedAt: hit.fetchedAt })
-      onProgress({ done: ++done, total, current: it.value, fromCache: true })
+      emit({ indicator: it.value, kind: it.kind, status: hit.status, fields: hit.fields, fromCache: true, fetchedAt: hit.fetchedAt })
       continue
     }
     stats.cacheMisses++
@@ -211,7 +216,14 @@ export async function bulkLookup(
     stats.networkLookups++
     totalLatency += Date.now() - t0
 
-    rows.push({
+    // Persist immediately — write each result to the cache the instant it returns, not batched at the
+    // end. So closing the app (or a crash) mid-run keeps every completed, quota-spent lookup. Don't
+    // poison the cache with transient errors (bad config, network); skip volatile providers (ttl 0,
+    // e.g. Watchlist) whose result can change between runs.
+    if (result.status !== 'error' && provider.ttlSeconds > 0) {
+      cache.put(dbPath, providerId, [{ indicator: it.value, kind: it.kind, result }], now)
+    }
+    emit({
       indicator: it.value,
       kind: it.kind,
       status: result.status,
@@ -220,12 +232,6 @@ export async function bulkLookup(
       fetchedAt: now,
       message: result.message
     })
-    // Don't poison the cache with transient errors (bad config, network) — only persist real answers.
-    // Skip volatile providers (ttl 0, e.g. Watchlist): their result can change between runs, so it's
-    // recomputed each time and never cached.
-    if (result.status !== 'error' && provider.ttlSeconds > 0) fresh.push({ indicator: it.value, kind: it.kind, result })
-
-    onProgress({ done: ++done, total, current: it.value, fromCache: false })
     if (done % 200 === 0) await new Promise<void>((r) => setImmediate(r)) // yield on big batches
   }
 

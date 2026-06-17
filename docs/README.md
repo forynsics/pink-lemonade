@@ -48,10 +48,11 @@ indicator, zero in, exclude, or clear false positives.
 → [Intel Sweep guide](intel-sweep.md)
 
 ### 🌐 Intel / Enrichment — context lookups
-Look up indicators (IPs / domains / hashes) against providers — starting with **MaxMind GeoIP**
-(a local database) — into a sortable Intel grid backed by an app-wide cache, and curate
-**watchlists** for context. Send values to Intel from anywhere, and pivot the other way: sweep a
-workspace for the indicators you're looking at.
+Look up indicators (IPs / domains / hashes) against providers — **MaxMind GeoIP** (a local database)
+and **VirusTotal** (your own key, with a colored malicious/clean verdict) — into a sortable Intel
+grid backed by an app-wide cache, and curate **watchlists** for context. Send values to Intel from
+anywhere, and pivot the other way: sweep a workspace for the indicators you're looking at — or for
+everything VirusTotal flagged malicious.
 
 → [Intel & watchlists guide](intel.md)
 

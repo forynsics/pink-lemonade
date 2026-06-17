@@ -25,6 +25,22 @@ grid built for big timelines — it stays smooth on millions of rows. Here’s h
 
 The header shows the column count and the live row count, e.g. `3 cols · 1,204,377 rows`.
 
+### Keyboard
+
+Click into the grid to focus it, then:
+
+| Key | Does |
+|---|---|
+| **Ctrl+A** | select the whole grid |
+| **Ctrl+C** | copy the selection (TSV) |
+| **Ctrl+F** | jump to the search box |
+| **Esc** | clear the selection |
+| **↑ / ↓**, **Shift+↑ / ↓** | move / extend the row selection |
+
+The [Intel grid](intel.md) shares the same keys (and adds **Ctrl+Shift+C** to copy just the
+indicator values and **Delete** to remove selected rows from the list). On a multi-million-row grid,
+**Ctrl+A → Ctrl+C** copies the loaded rows — use [Export](#exporting-the-view) for the full set.
+
 ## Search
 
 The search box filters the grid to rows that contain your term, highlights the matches, and shows

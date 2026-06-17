@@ -56,11 +56,12 @@ whole-token for IPs / hashes / file names, substring for domains — so `8.8.8.8
 
 ### 🌐 Intel / Enrichment — context lookups
 A provider-agnostic enrichment surface over an app-wide cache (a lookup is never repeated). Ships
-with **MaxMind GeoIP** (a local `.mmdb`); results land in a sortable Intel grid. Curate
-**watchlists** (IP / CIDR / ASN / domain / hash) for context, and pivot in both directions —
-**send a cell or column to Intel**, or right-click indicators in the Intel grid to **run a sweep**
-against any open workspace source. *(Online providers like VirusTotal + an AI assistant are on the
-roadmap.)*
+with **MaxMind GeoIP** (a local `.mmdb`) and **VirusTotal** (bring your own key) — IP / domain /
+hash reputation with a colored **Malicious / Suspicious / Clean / Unknown** verdict, quota-aware
+pacing, and protected re-lookups (your key is stored encrypted, never in plaintext). Results land in
+a sortable Intel grid. Curate **watchlists** (IP / CIDR / ASN / domain / hash) for context, and pivot
+both ways — **send a cell or column to Intel**, or right-click indicators in the Intel grid to **run
+a sweep** against any open workspace source. *(An AI assistant is still on the roadmap.)*
 
 → **User guide:** [forynsics.github.io/pink-lemonade](https://forynsics.github.io/pink-lemonade/) (or the [`docs/`](docs/README.md) source)
 

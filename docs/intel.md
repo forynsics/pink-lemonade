@@ -13,7 +13,10 @@ workspaces, opened from **Global Intel** on the Home screen (or a workspace’s 
 
 Paste or send indicators into the Intel tab and run them against a **provider**. Results land in a
 sortable **Intel grid** — one row per indicator, a column per provider field — which you can sort,
-resize, reorder, hide columns on, and export.
+resize, reorder, hide columns on, search, and export. Right-click selected rows to **copy the
+indicator values**, **copy as CSV**, run a provider, or send them to a sweep; the grid shares the
+[workspace grid keyboard shortcuts](exploring-data.md#keyboard), and adds **Ctrl+Shift+C** to copy
+just the indicators and **Delete** to remove selected rows from the list.
 
 Every lookup is cached in an **app-wide store**, keyed by `(provider, indicator)`. So a result is
 **never fetched twice** — look the same IP up in another workspace or next week and it comes straight
@@ -24,8 +27,17 @@ from the cache. (Clear a cached result from the row’s right-click menu to forc
 - **MaxMind GeoIP** *(included)* — geolocation/ASN from a local MaxMind database file. The first
   time, point it at your `.mmdb`, or let pink-lemonade download **GeoLite2** for you with your free
   MaxMind license key. It’s a local file, so lookups are instant and offline.
-- **VirusTotal** and an **AI assistant** are on the roadmap — the engine, cache, and grid are already
-  provider-agnostic.
+- **VirusTotal** *(bring your own key)* — IP / domain / file-hash reputation from the VirusTotal v3
+  API. Paste your free API key once — it’s validated, your tier is auto-detected, and it’s stored
+  **encrypted** on your machine (never in plaintext, never logged). The grid then shows a colored
+  **verdict** chip — 🔴 Malicious / 🟠 Suspicious / 🟢 Clean, or ⚪ **Unknown** for something
+  VirusTotal has never seen (≠ clean) — plus the `N/total` detection count and a link to the full
+  report. To protect a limited free-tier quota (4/min, 500/day), requests are **paced** automatically,
+  results **never auto-expire**, and re-looking-up an already-cached indicator takes an explicit,
+  warned confirm. *(An AI assistant is still on the roadmap.)*
+
+Already-configured providers can be changed: click the **🔑 key icon** on a provider’s pill in the
+**Providers** strip to re-enter or **remove** its key.
 
 ### Global vs. workspace Intel
 

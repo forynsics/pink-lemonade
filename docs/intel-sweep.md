@@ -27,11 +27,14 @@ message, a command line), which is exactly where IOCs hide.
 
 Open a workspace source and click **Intel Sweep** in the header. In the dialog:
 
-1. **Give it indicators.** Three sources, and you can stack them:
+1. **Give it indicators.** Several sources, and you can stack them:
    - **Paste** a list (one per line). URLs are reduced to their domain; defanged values like
      `1[.]2[.]3[.]4` are refanged automatically.
    - **Watchlist ▾** — load a saved IP / domain / hash [watchlist](intel.md#watchlists).
    - **File** — open a `.txt` / `.csv` of indicators.
+   - **🛡 Flagged** — load every indicator [VirusTotal flagged **Malicious**](intel.md) in this
+     workspace’s Intel DB. It reads the stored verdict, so there’s no re-lookup and no quota cost —
+     point a fresh timeline straight at what you already know is bad.
 
    As you add them, each line shows a live verdict: a kind chip (IP / domain / hash), a note if it
    was normalized, or a *skip* reason (e.g. IPv6 isn’t swept yet).

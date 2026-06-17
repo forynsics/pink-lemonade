@@ -408,6 +408,14 @@ export function VirtualGrid({
         if (total > 0) setSel({ anchor: { r: 0, c: 0 }, focus: { r: total - 1, c: lastCol } })
         return
       }
+      // Ctrl/Cmd+F → focus this viewer's search box (it lives in CsvViewer, same .csv-viewer subtree).
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        const input = scrollRef.current?.closest('.csv-viewer')?.querySelector('.csv-search') as HTMLInputElement | null
+        input?.focus()
+        input?.select()
+        return
+      }
       if (e.key === 'Escape') {
         setSel(null)
         return

@@ -597,6 +597,7 @@ export function IntelGrid({
   const dragRef = useRef(false)
   const gridRef = useRef<HTMLDivElement>(null)
   const headerBoxRef = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   // Row virtualization: only the on-screen rows of the (already filtered/sorted/grouped) row model
   // are mounted. The virtualizer operates over `rows` — the OUTPUT of TanStack's models — so it
@@ -681,7 +682,21 @@ export function IntelGrid({
       void navigator.clipboard.writeText(buildCsv(selectedValues))
       return
     }
+    // Ctrl/Cmd+F — jump to the search box.
+    if (mod && (e.key === 'f' || e.key === 'F')) {
+      e.preventDefault()
+      searchRef.current?.focus()
+      searchRef.current?.select()
+      return
+    }
     if (e.key === 'Escape' && selectedValues.length > 0) {
+      setRowSelection({})
+      return
+    }
+    // Delete / Backspace — remove the selected indicators from the list (cache untouched).
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedValues.length > 0) {
+      e.preventDefault()
+      onRemove(selectedValues)
       setRowSelection({})
       return
     }
@@ -899,6 +914,7 @@ export function IntelGrid({
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-citrus-muted dark:text-citrus-night-muted" />
           <input
+            ref={searchRef}
             value={globalFilter}
             onChange={(e) => setGlobalFilter(e.target.value)}
             placeholder="Search all columns…"

@@ -656,6 +656,35 @@ export function IntelGrid({
     focusRef.current = index
   }
   function onGridKeyDown(e: React.KeyboardEvent): void {
+    const mod = e.ctrlKey || e.metaKey
+    // Ctrl/Cmd+A — select every (filtered) row.
+    if (mod && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault()
+      const next: RowSelectionState = {}
+      for (const v of visibleValues) next[v] = true
+      setRowSelection(next)
+      anchorRef.current = 0
+      focusRef.current = visibleValues.length - 1
+      return
+    }
+    // Ctrl/Cmd+C — copy selected rows as CSV; Ctrl/Cmd+Shift+C — copy just the indicator values.
+    if (mod && (e.key === 'c' || e.key === 'C')) {
+      if (selectedValues.length === 0) return
+      if (e.shiftKey) {
+        e.preventDefault()
+        void navigator.clipboard.writeText(selectedIndicators(selectedValues))
+        return
+      }
+      // Plain Ctrl+C copies whole rows — unless text is highlighted in a cell (let the native copy win).
+      if ((window.getSelection()?.toString() ?? '') !== '') return
+      e.preventDefault()
+      void navigator.clipboard.writeText(buildCsv(selectedValues))
+      return
+    }
+    if (e.key === 'Escape' && selectedValues.length > 0) {
+      setRowSelection({})
+      return
+    }
     if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || visibleValues.length === 0) return
     e.preventDefault()
     const delta = e.key === 'ArrowDown' ? 1 : -1
@@ -713,6 +742,11 @@ export function IntelGrid({
       lines.push(cols.map((l) => csvEsc(r.cells[l.colId] ?? '')).join(','))
     }
     return lines.join('\n')
+  }
+  // Just the indicator values for a set, in display order (the "copy indicator only" action).
+  function selectedIndicators(values: string[]): string {
+    const set = new Set(values)
+    return data.filter((r) => set.has(r.value)).map((r) => r.value).join('\n')
   }
   const [exportOpen, setExportOpen] = useState(false)
   async function exportCsv(): Promise<void> {
@@ -1240,10 +1274,19 @@ export function IntelGrid({
           ))}
           <button
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 border-t border-citrus-border/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev dark:border-citrus-night-border/60"
+            onClick={() => { void navigator.clipboard.writeText(selectedIndicators(menu.targets)); setMenu(null) }}
+          >
+            <Copy className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+            Copy indicator{menu.targets.length > 1 ? 's' : ''}
+            <span className="ml-auto text-[10px] text-citrus-muted dark:text-citrus-night-muted">Ctrl+Shift+C</span>
+          </button>
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
             onClick={() => { void navigator.clipboard.writeText(buildCsv(menu.targets)); setMenu(null) }}
           >
             <Copy className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
             Copy as CSV
+            <span className="ml-auto text-[10px] text-citrus-muted dark:text-citrus-night-muted">Ctrl+C</span>
           </button>
           <button
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-citrus-dark hover:bg-citrus-pink-light/60 dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"

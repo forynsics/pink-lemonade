@@ -355,6 +355,7 @@ export function VirtualGrid({
       const lines: string[] = []
       for (let r = minR; r <= maxR; r++) {
         const row = rows[r - baseOffset]
+        if (!row) continue // skip rows not paged into the window (e.g. after Ctrl+A on a huge grid)
         const cells: string[] = []
         for (let c = minC; c <= maxC; c++) {
           if (hidden?.has(columns[c]?.name)) continue // a hidden column isn't visible → not copied
@@ -398,10 +399,19 @@ export function VirtualGrid({
     [columns, dataIdx, widths, virtualizer, hidden]
   )
 
-  // ArrowUp/Down move the selected row; Shift+ArrowUp/Down extend it (full-width rows). Other keys
-  // (Ctrl/Cmd+C) fall through to the copy handler.
+  // ArrowUp/Down move the selected row; Shift+ArrowUp/Down extend it (full-width rows). Ctrl/Cmd+A
+  // selects the whole grid, Esc clears, and other keys (Ctrl/Cmd+C) fall through to the copy handler.
   const onGridKey = useCallback(
     (e: React.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault()
+        if (total > 0) setSel({ anchor: { r: 0, c: 0 }, focus: { r: total - 1, c: lastCol } })
+        return
+      }
+      if (e.key === 'Escape') {
+        setSel(null)
+        return
+      }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') {
         onCopy(e)
         return

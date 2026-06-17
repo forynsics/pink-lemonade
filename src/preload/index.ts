@@ -102,6 +102,11 @@ const api = {
     hasKey: () => ipcRenderer.invoke('enrich:hasKey'),
     maxmindSetup: (key: string | undefined, editions?: string[]) =>
       ipcRenderer.invoke('enrich:maxmindSetup', { key, editions }),
+    // VirusTotal: paste a key — main validates it + auto-detects the tier/quota, then stores it
+    // encrypted. The key never comes back to the renderer (only the detected tier does).
+    vtHasKey: () => ipcRenderer.invoke('enrich:vtHasKey'),
+    vtSetKey: (key: string) => ipcRenderer.invoke('enrich:vtSetKey', { key }),
+    vtGetSettings: () => ipcRenderer.invoke('enrich:vtGetSettings'),
     onSetupProgress: (cb: (p: unknown) => void) => {
       const h = (_e: unknown, p: unknown): void => cb(p)
       ipcRenderer.on('enrich:setup-progress', h)
@@ -122,7 +127,9 @@ const api = {
       const h = (_e: unknown, p: unknown): void => cb(p)
       ipcRenderer.on('enrich:progress', h)
       return () => ipcRenderer.removeListener('enrich:progress', h)
-    }
+    },
+    // Open a URL in the default browser (e.g. "View on VirusTotal").
+    openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', { url })
   },
 
   // Watchlists: the analyst's curated context lists (global, app-wide), edited in the Watchlists

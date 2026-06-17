@@ -77,8 +77,10 @@ const countReq = new Map<string, number>()
 const distinctReq = new Map<string, number>()
 const sweepReq = new Map<string, number>()
 // Latest enrichment bulk reqId (one Enrichment tab runs at a time). A newer run — or a cancel
-// (sets -1, which no positive reqId matches) — supersedes the running one.
+// (sets -1, which no positive reqId matches) — supersedes the running one. The AbortController lets
+// a cancel/supersede also abort an in-flight network request (e.g. a VirusTotal fetch).
 let enrichReq = 0
+let enrichAbort: AbortController | null = null
 
 type Msg =
   | { t: 'call'; id: number; fn: string; args: unknown[] }
@@ -87,7 +89,16 @@ type Msg =
   | { t: 'count'; id: number; tabId: string; reqId: number; filters?: unknown; search?: string }
   | { t: 'distinct'; id: number; tabId: string; reqId: number; col: string; filters?: unknown; limit: number }
   | { t: 'distinctCancel'; tabId: string }
-  | { t: 'enrich'; id: number; reqId: number; dbPath: string; providerId: string; items: unknown[]; now: number }
+  | {
+      t: 'enrich'
+      id: number
+      reqId: number
+      dbPath: string
+      providerId: string
+      items: unknown[]
+      now: number
+      secrets?: { apiKey?: string; requestsPerMinute?: number }
+    }
   | { t: 'enrichCancel' }
   | { t: 'sweep'; id: number; tabId: string; reqId: number; entries: unknown[]; columns?: string[]; mode?: 'replace' | 'add' }
   | { t: 'sweepCancel'; tabId: string }
@@ -154,23 +165,32 @@ port.on('message', async (msg: Msg) => {
     }
     if (msg.t === 'enrichCancel') {
       enrichReq = -1 // no positive reqId matches → the running bulk lookup aborts
+      enrichAbort?.abort() // and cancel any in-flight network request immediately
       return
     }
     if (msg.t === 'enrich') {
       enrichReq = msg.reqId
+      const ctrl = new AbortController()
+      enrichAbort = ctrl
       const onProgress = (p: enrichEngine.BulkProgress): void => {
         if (enrichReq === msg.reqId) port.postMessage({ t: 'progress', id: msg.id, payload: p })
       }
       const shouldAbort = (): boolean => enrichReq !== msg.reqId
-      const value = await enrichEngine.bulkLookup(
-        msg.dbPath,
-        msg.providerId,
-        msg.items as enrichEngine.EnrichItem[],
-        msg.now,
-        onProgress,
-        shouldAbort
-      )
-      port.postMessage({ t: 'result', id: msg.id, ok: true, value })
+      try {
+        const value = await enrichEngine.bulkLookup(
+          msg.dbPath,
+          msg.providerId,
+          msg.items as enrichEngine.EnrichItem[],
+          msg.now,
+          onProgress,
+          shouldAbort,
+          msg.secrets,
+          ctrl.signal
+        )
+        port.postMessage({ t: 'result', id: msg.id, ok: true, value })
+      } finally {
+        if (enrichAbort === ctrl) enrichAbort = null
+      }
       return
     }
     if (msg.t === 'sweepCancel') {

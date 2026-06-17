@@ -23,6 +23,14 @@ export interface ProviderStatus {
   detail: string
 }
 
+/** Per-run context handed to lookup(). Carries secrets the worker can't derive itself (the API key
+ *  is decrypted in main, since safeStorage is main-only, and injected per run) plus an abort signal
+ *  so an in-flight request is canceled when the run is superseded/canceled. */
+export interface LookupContext {
+  apiKey?: string
+  signal?: AbortSignal
+}
+
 export interface EnrichmentProvider {
   id: string
   name: string
@@ -35,7 +43,14 @@ export interface EnrichmentProvider {
    *  private range (e.g. a Corporate 10.0.0.0/8) is the whole point. Network providers leave it off
    *  (sending an internal IP out would leak it). */
   matchesPrivateIps?: boolean
+  /** Default client-side pacing for network providers (requests/min). The engine treats a per-run
+   *  override or 0/undefined as "unthrottled" and just fires, relying on the provider's own
+   *  rate-limit (429) handling. Local providers omit it. */
+  requestsPerMinute?: number
+  /** Canonical form of an indicator for dedupe / cache key / lookup (e.g. VirusTotal lowercases
+   *  hashes so case variants share one cache entry). Omitted = value used as-is. */
+  normalizeValue?(value: string, kind: IndicatorKind): string
   /** Whether the provider is configured and ready to run (and why not, if not). Synchronous. */
   status(): ProviderStatus
-  lookup(value: string, kind: IndicatorKind): Promise<EnrichmentResult>
+  lookup(value: string, kind: IndicatorKind, ctx?: LookupContext): Promise<EnrichmentResult>
 }

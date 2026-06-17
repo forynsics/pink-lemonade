@@ -309,8 +309,10 @@ export function setWorkspaceDir(dir: string): string {
 }
 
 // ---- Enrichment config (lives under the `enrich` key in the same settings.json) ----
-// e.g. { maxmindDbPath: '…/GeoLite2-City.mmdb' }. No secrets today (MaxMind needs none); when a
-// network provider with an API key arrives, the key should go through Electron safeStorage, not here.
+// e.g. { maxmindCityPath: '…/GeoLite2-City.mmdb' } plus provider settings. API keys are stored
+// encrypted via Electron safeStorage and decrypted only in main (never here / never in the worker):
+// `maxmindKeyEnc` (MaxMind license) and `vtKeyEnc` (VirusTotal). VirusTotal also stores its
+// auto-detected pace/quota here (non-secret): `vtRequestsPerMinute`, `vtDailyQuota`.
 export function getEnrichConfig(): Record<string, unknown> {
   const s = readSettings()
   return s.enrich && typeof s.enrich === 'object' ? (s.enrich as Record<string, unknown>) : {}

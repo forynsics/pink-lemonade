@@ -19,7 +19,7 @@ import {
   type GroupingState,
   type ExpandedState
 } from '@tanstack/react-table'
-import { Check, ChevronDown, ChevronRight, Columns3, Copy, Crosshair, Download, Eraser, Filter, Layers, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Columns3, Copy, Crosshair, Download, Eraser, ExternalLink, Filter, Layers, MoreVertical, Radar, Search, Trash2, X } from 'lucide-react'
 import type { EnrichItem, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
 
 // The Intel results grid, built on TanStack Table (headless): TanStack owns the STATE + models —
@@ -40,6 +40,59 @@ const STATUS_STYLE: Record<string, string> = {
   error: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
   skipped: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
   private: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
+}
+
+// VirusTotal verdict colors (red/amber/green) + the grey "Unknown" for a 404 (no record ≠ clean).
+const VT_VERDICT_STYLE: Record<string, string> = {
+  Malicious: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  Suspicious: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  Clean: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  Unknown: 'bg-citrus-sand text-citrus-muted dark:bg-citrus-night-elev dark:text-citrus-night-muted'
+}
+
+/** Status/verdict cell content. VirusTotal shows a colored verdict chip (from the worker-computed
+ *  `VT Verdict` field) + an N/total detections count; 404 → grey "Unknown". Everything else (and all
+ *  other providers) shows the raw status chip with its message. */
+function StatusCell({ pid, r }: { pid: string; r: EnrichResultRow }): JSX.Element {
+  if (pid === 'virustotal') {
+    if (r.status === 'ok') {
+      const verdict = r.fields['VT Verdict'] || 'Clean'
+      const mal = r.fields['VT Malicious']
+      const total = r.fields['VT Total']
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${VT_VERDICT_STYLE[verdict] ?? ''}`}>{verdict}</span>
+          {mal !== undefined && total !== undefined && (
+            <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+              {mal}/{total}
+            </span>
+          )}
+        </span>
+      )
+    }
+    if (r.status === 'notfound') {
+      return (
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${VT_VERDICT_STYLE.Unknown}`} title={r.message}>
+          Unknown
+        </span>
+      )
+    }
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${STATUS_STYLE[r.status] ?? ''}`} title={r.message}>
+        {r.status}
+      </span>
+      {r.status !== 'ok' && r.message && <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">{r.message}</span>}
+    </span>
+  )
+}
+
+/** "today" / "Nd ago" from an epoch-ms timestamp — VirusTotal verdicts never auto-expire, so the grid
+ *  surfaces how stale a cached row is. */
+function agoLabel(ts: number): string {
+  const days = Math.floor((Date.now() - ts) / 86_400_000)
+  return days <= 0 ? 'today' : days === 1 ? '1d ago' : `${days}d ago`
 }
 
 const SELECT_W = 34
@@ -74,7 +127,18 @@ function defaultSize(ckind: Leaf['ckind']): number {
   }
 }
 
-const FIELD_ORDER = ['Country', 'Region', 'City', 'Continent', 'Lat/Lon', 'ASN', 'Org']
+const FIELD_ORDER = [
+  // VirusTotal headline (verdict + counts lead the bucket)
+  'VT Verdict', 'VT Malicious', 'VT Suspicious', 'VT Total', 'Reputation',
+  // Geo / network (shared by MaxMind + VirusTotal)
+  'Country', 'Region', 'City', 'Continent', 'Lat/Lon', 'ASN', 'AS Owner', 'Org', 'Network',
+  // Domain
+  'Registrar', 'Categories', 'Created',
+  // File
+  'Name', 'Type', 'Size',
+  // External link last
+  'VT Link'
+]
 function orderFields(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
     const ia = FIELD_ORDER.indexOf(a)
@@ -1061,12 +1125,7 @@ export function IntelGrid({
                           {b.showStatus && (
                             <td style={{ width: sw, minWidth: sw, maxWidth: sw }} className="px-2 py-1 border-l-[3px] border-citrus-pink/40 dark:border-citrus-pink/30 overflow-hidden whitespace-nowrap">
                               {r ? (
-                                <span className="inline-flex items-center gap-1.5">
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${STATUS_STYLE[r.status] ?? ''}`} title={r.message}>
-                                    {r.status}
-                                  </span>
-                                  {r.status !== 'ok' && r.message && <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">{r.message}</span>}
-                                </span>
+                                <StatusCell pid={b.pid} r={r} />
                               ) : (
                                 <span className="text-citrus-muted/50 dark:text-citrus-night-muted/50">—</span>
                               )}
@@ -1074,28 +1133,48 @@ export function IntelGrid({
                           )}
                           {b.fields.map((f) => {
                             const fw = widthOf(`p:${b.pid}:f:${f}`)
-                            return b.pid === 'watchlist' && f === 'Lists' ? (
-                              <td key={f} style={{ width: fw, minWidth: fw, maxWidth: fw }} className="px-2 py-1 align-top overflow-hidden">
-                                {r?.fields[f] ? (
-                                  <span className="flex flex-wrap gap-1">
-                                    {r.fields[f].split(', ').map((name) => (
-                                      <button
-                                        key={name}
-                                        onClick={() => setGlobalFilter(name)}
-                                        title={`Filter to “${name}”`}
-                                        className="inline-block rounded-full bg-citrus-pink-light px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink hover:bg-citrus-pink hover:text-white dark:bg-citrus-night-elev"
-                                      >
-                                        {name}
-                                      </button>
-                                    ))}
-                                  </span>
-                                ) : (
-                                  <span className="text-citrus-muted/40 dark:text-citrus-night-muted/40">—</span>
-                                )}
-                              </td>
-                            ) : (
-                              <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} style={{ width: fw, minWidth: fw, maxWidth: fw }} />
-                            )
+                            const style = { width: fw, minWidth: fw, maxWidth: fw }
+                            if (b.pid === 'watchlist' && f === 'Lists') {
+                              return (
+                                <td key={f} style={style} className="px-2 py-1 align-top overflow-hidden">
+                                  {r?.fields[f] ? (
+                                    <span className="flex flex-wrap gap-1">
+                                      {r.fields[f].split(', ').map((name) => (
+                                        <button
+                                          key={name}
+                                          onClick={() => setGlobalFilter(name)}
+                                          title={`Filter to “${name}”`}
+                                          className="inline-block rounded-full bg-citrus-pink-light px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink hover:bg-citrus-pink hover:text-white dark:bg-citrus-night-elev"
+                                        >
+                                          {name}
+                                        </button>
+                                      ))}
+                                    </span>
+                                  ) : (
+                                    <span className="text-citrus-muted/40 dark:text-citrus-night-muted/40">—</span>
+                                  )}
+                                </td>
+                              )
+                            }
+                            if (b.pid === 'virustotal' && f === 'VT Link') {
+                              const url = r?.fields[f]
+                              return (
+                                <td key={f} style={style} className="px-2 py-1 overflow-hidden whitespace-nowrap">
+                                  {url ? (
+                                    <button
+                                      onClick={() => void window.api.enrich.openExternal(url)}
+                                      title={url}
+                                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-citrus-pink hover:underline"
+                                    >
+                                      View <ExternalLink className="w-3 h-3" />
+                                    </button>
+                                  ) : (
+                                    <span className="text-citrus-muted/40 dark:text-citrus-night-muted/40">—</span>
+                                  )}
+                                </td>
+                              )
+                            }
+                            return <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} style={style} />
                           })}
                           {b.showSource && (
                             <td
@@ -1103,7 +1182,8 @@ export function IntelGrid({
                               className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted overflow-hidden whitespace-nowrap"
                               title={r?.fetchedAt ? `fetched ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
                             >
-                              {r ? (r.fromCache ? 'cached ✓' : 'fresh') : ''}
+                              {/* VirusTotal verdicts never auto-expire — show how stale the cached row is. */}
+                              {r ? (b.pid === 'virustotal' && r.fetchedAt ? agoLabel(r.fetchedAt) : r.fromCache ? 'cached ✓' : 'fresh') : ''}
                             </td>
                           )}
                         </Fragment>

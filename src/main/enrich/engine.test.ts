@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EnrichmentResult } from './providers/types'
+import { RateLimitError } from './providers/errors'
 
 // Mock the two modules that pull the native better-sqlite3 binding (which won't load under vitest's
 // node runtime): the cache and the provider registry. We drive bulkLookup with a fake provider and
@@ -129,5 +130,70 @@ describe('engine.bulkLookup', () => {
 
   it('throws on an unknown provider', async () => {
     await expect(bulkLookup('db', 'nope', [], 1000, noProgress, noAbort)).rejects.toThrow(/unknown/)
+  })
+
+  it('backs off and retries once on a per-minute rate limit, then succeeds', async () => {
+    cacheGet.mockReturnValue(new Map())
+    lookup
+      .mockRejectedValueOnce(new RateLimitError('429', { retryAfter: 0 })) // retryAfter 0 → no real wait
+      .mockResolvedValueOnce({ status: 'ok', fields: { Country: 'US' } } as EnrichmentResult)
+    const res = await bulkLookup('db', 'fake', [{ value: '8.8.8.8', kind: 'ipv4' }], 1000, noProgress, noAbort)
+    expect(lookup).toHaveBeenCalledTimes(2)
+    expect(res.rows[0].status).toBe('ok')
+    expect(res.stats?.retryCount).toBe(1)
+    expect(res.stats?.count429).toBe(1)
+  })
+
+  it('aborts the whole run on a daily-quota error (no per-row error spam)', async () => {
+    cacheGet.mockReturnValue(new Map())
+    lookup.mockRejectedValue(new RateLimitError('daily quota', { daily: true }))
+    const res = await bulkLookup(
+      'db',
+      'fake',
+      [
+        { value: '8.8.8.8', kind: 'ipv4' },
+        { value: '1.1.1.1', kind: 'ipv4' }
+      ],
+      1000,
+      noProgress,
+      noAbort
+    )
+    expect(res.aborted).toBe('quota')
+    expect(res.canceled).toBe(true)
+    expect(lookup).toHaveBeenCalledTimes(1) // stopped immediately; second indicator never attempted
+    expect(res.rows).toHaveLength(0) // not marked as errors
+  })
+
+  it('treats a persistent rate limit (429 again after backoff) as fatal', async () => {
+    cacheGet.mockReturnValue(new Map())
+    lookup
+      .mockRejectedValueOnce(new RateLimitError('429', { retryAfter: 0 }))
+      .mockRejectedValueOnce(new RateLimitError('429 again', { retryAfter: 0 }))
+    const res = await bulkLookup('db', 'fake', [{ value: '8.8.8.8', kind: 'ipv4' }], 1000, noProgress, noAbort)
+    expect(lookup).toHaveBeenCalledTimes(2)
+    expect(res.aborted).toBe('quota')
+  })
+
+  it('paces real lookups to the configured rolling-window rate', async () => {
+    vi.useFakeTimers()
+    try {
+      cacheGet.mockReturnValue(new Map())
+      lookup.mockResolvedValue({ status: 'ok', fields: {} } as EnrichmentResult)
+      const items = [
+        { value: '8.8.8.8', kind: 'ipv4' as const },
+        { value: '1.1.1.1', kind: 'ipv4' as const },
+        { value: '9.9.9.9', kind: 'ipv4' as const }
+      ]
+      // rpm=2: the first two fire immediately, the third must wait out the 60s window.
+      const p = bulkLookup('db', 'fake', items, Date.now(), noProgress, noAbort, { requestsPerMinute: 2 })
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(60_000)
+      const res = await p
+      expect(res.rows).toHaveLength(3)
+      expect(res.stats?.rateLimitSleeps).toBeGreaterThanOrEqual(1)
+      expect(res.stats?.networkLookups).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

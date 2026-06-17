@@ -1,8 +1,9 @@
-import { ipcMain, dialog, BrowserWindow, app, safeStorage } from 'electron'
+import { ipcMain, dialog, BrowserWindow, app, safeStorage, shell } from 'electron'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
 import * as dbw from '../csv/dbClient'
 import { downloadEdition, DEFAULT_EDITIONS } from './maxmindSetup'
+import { VT_API_BASE, deriveTier } from './providers/vtShared'
 
 // Registers the enrich:* IPC surface. Like csv:*, every op is forwarded to the worker thread
 // (which owns the cache DB and runs the providers) so a slow lookup never blocks the main process.
@@ -93,6 +94,70 @@ export function registerEnrichIpc(): void {
     return (typeof c.maxmindKeyEnc === 'string' && c.maxmindKeyEnc !== '') || typeof c.maxmindKeyPlain === 'string'
   })
 
+  // --- VirusTotal key handling (safeStorage-only; the key never reaches the renderer/worker plaintext) ---
+
+  // Whether a VirusTotal API key is stored.
+  ipcMain.handle('enrich:vtHasKey', async () => {
+    const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
+    return typeof c.vtKeyEnc === 'string' && c.vtKeyEnc !== ''
+  })
+
+  // The auto-detected pace/quota (read-only) for the renderer's run estimate.
+  ipcMain.handle('enrich:vtGetSettings', async () => {
+    const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
+    return {
+      requestsPerMinute: typeof c.vtRequestsPerMinute === 'number' ? c.vtRequestsPerMinute : 4,
+      dailyQuota: typeof c.vtDailyQuota === 'number' ? c.vtDailyQuota : null
+    }
+  })
+
+  // Save (or clear) the VirusTotal key. The user just pastes their key — we validate it AND detect
+  // its tier/quotas in one authenticated request (GET /users/{key}), then store the key encrypted and
+  // the detected pace. No plaintext fallback: if safeStorage is unavailable we refuse to store.
+  ipcMain.handle('enrich:vtSetKey', async (_e, { key }: { key?: string }) => {
+    const k = (key ?? '').trim()
+    if (!k) {
+      await dbw.call('enrichSetConfig', { vtKeyEnc: '', vtRequestsPerMinute: undefined, vtDailyQuota: undefined })
+      return { ok: true }
+    }
+    // Validate + detect quotas. The key is the user's own id for the users endpoint.
+    let res: Response
+    try {
+      res = await fetch(`${VT_API_BASE}/users/${encodeURIComponent(k)}`, {
+        headers: { 'x-apikey': k, accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000)
+      })
+    } catch {
+      return { ok: false, error: 'Could not verify key (network error)' }
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, error: 'Invalid API key' }
+    if (res.status === 429) return { ok: false, error: 'Could not verify key (rate limited) — try again shortly' }
+    if (!res.ok) return { ok: false, error: `Could not verify key (HTTP ${res.status})` }
+
+    let tier: ReturnType<typeof deriveTier>
+    try {
+      const body = (await res.json()) as { data?: { attributes?: Record<string, unknown> } }
+      tier = deriveTier(body?.data?.attributes)
+    } catch {
+      tier = deriveTier(undefined) // safe free-tier default
+    }
+
+    const enc = encryptKey(k)
+    if (!enc) return { ok: false, error: 'Secure storage unavailable' }
+    await dbw.call('enrichSetConfig', {
+      vtKeyEnc: enc,
+      vtRequestsPerMinute: tier.requestsPerMinute,
+      vtDailyQuota: tier.dailyQuota ?? undefined
+    })
+    return { ok: true, tier: tier.tier, dailyQuota: tier.dailyQuota, requestsPerMinute: tier.requestsPerMinute }
+  })
+
+  // Open a URL in the user's default browser (e.g. "View on VirusTotal").
+  ipcMain.handle('shell:openExternal', async (_e, { url }: { url: string }) => {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) await shell.openExternal(url)
+    return null
+  })
+
   // The "set it up for me" helper: download + install GeoLite2 (City + ASN) with the user's free
   // license key. Persists the key encrypted; streams per-edition progress over 'enrich:setup-progress'.
   ipcMain.handle(
@@ -145,11 +210,27 @@ export function registerEnrichIpc(): void {
       e,
       { reqId, dbPath, providerId, items }: { reqId: number; dbPath: string; providerId: string; items: Array<{ value: string; kind: string }> }
     ) => {
-      return dbw.enrichBulk(reqId, dbPath, providerId, items ?? [], Date.now(), (p) => {
-        if (!e.sender.isDestroyed()) {
-          e.sender.send('enrich:progress', { reqId, ...p })
-        }
-      })
+      // Network providers (VirusTotal) need their secret decrypted here in main and injected per run —
+      // the worker has no safeStorage. The key stays a local var: never logged, never returned.
+      let secrets: { apiKey?: string; requestsPerMinute?: number } | undefined
+      if (providerId === 'virustotal') {
+        const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
+        const apiKey = typeof c.vtKeyEnc === 'string' && c.vtKeyEnc ? (decryptKey(c.vtKeyEnc) ?? undefined) : undefined
+        secrets = { apiKey, requestsPerMinute: typeof c.vtRequestsPerMinute === 'number' ? c.vtRequestsPerMinute : 4 }
+      }
+      return dbw.enrichBulk(
+        reqId,
+        dbPath,
+        providerId,
+        items ?? [],
+        Date.now(),
+        (p) => {
+          if (!e.sender.isDestroyed()) {
+            e.sender.send('enrich:progress', { reqId, ...p })
+          }
+        },
+        secrets
+      )
     }
   )
 

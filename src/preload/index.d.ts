@@ -205,7 +205,29 @@ export interface EnrichProgress {
   current: string
   fromCache: boolean
 }
-export type EnrichBulkResult = { rows: EnrichResultRow[]; canceled?: boolean }
+export interface EnrichBulkStats {
+  cacheHits: number
+  cacheMisses: number
+  networkLookups: number
+  rateLimitSleeps: number
+  retryCount: number
+  count429: number
+  avgLatencyMs: number
+}
+export type EnrichBulkResult = {
+  rows: EnrichResultRow[]
+  canceled?: boolean
+  aborted?: 'quota'
+  message?: string
+  stats?: EnrichBulkStats
+}
+export type VtSetKeyResult =
+  | { ok: true; tier?: 'free' | 'premium'; dailyQuota?: number | null; requestsPerMinute?: number }
+  | { ok: false; error: string }
+export interface VtSettings {
+  requestsPerMinute: number
+  dailyQuota: number | null
+}
 export interface EnrichCachedRow {
   provider: string
   indicator: string
@@ -229,6 +251,9 @@ export interface EnrichApi {
   pickMmdb: () => Promise<string | null>
   hasKey: () => Promise<boolean>
   maxmindSetup: (key: string | undefined, editions?: string[]) => Promise<MaxmindSetupResult>
+  vtHasKey: () => Promise<boolean>
+  vtSetKey: (key: string) => Promise<VtSetKeyResult>
+  vtGetSettings: () => Promise<VtSettings>
   onSetupProgress: (cb: (p: EnrichSetupProgress) => void) => () => void
   defaultDb: () => Promise<string>
   openDb: () => Promise<string | null>
@@ -240,6 +265,7 @@ export interface EnrichApi {
   cacheDump: (dbPath: string, limit?: number) => Promise<EnrichCachedRow[]>
   cacheDelete: (dbPath: string, indicators: string[]) => Promise<null>
   onProgress: (cb: (p: EnrichProgress) => void) => () => void
+  openExternal: (url: string) => Promise<null>
 }
 
 // ---- Watchlists (analyst-curated context lists) ----

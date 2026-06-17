@@ -22,6 +22,13 @@ const LOAD_CAP = 50000
 
 let lookupCounter = 1
 
+// Canonical indicator form, mirroring the VirusTotal provider's normalizeValue: hashes are lowercased
+// so case variants share one list row / cache entry / result (the engine stores the normalized value,
+// so the list value must match it). IPs and domains are left as-is.
+function canonicalIndicator(value: string, kind: EnrichItem['kind']): string {
+  return kind === 'md5' || kind === 'sha1' || kind === 'sha256' ? value.toLowerCase() : value
+}
+
 export function EnrichmentView({
   doc,
   visible,
@@ -59,12 +66,24 @@ export function EnrichmentView({
   const [setupErr, setSetupErr] = useState<string | null>(null)
   const setupBusy = setup !== null
 
+  // VirusTotal key state — the user only pastes a key; main validates it + auto-detects the tier/pace.
+  const [vtKeyDraft, setVtKeyDraft] = useState('')
+  const [vtHasKey, setVtHasKey] = useState(false)
+  const [vtBusy, setVtBusy] = useState(false)
+  const [vtErr, setVtErr] = useState<string | null>(null)
+  const [vtSettings, setVtSettings] = useState<{ requestsPerMinute: number; dailyQuota: number | null } | null>(null)
+  // VirusTotal re-check confirmation (some targets already cached) and run-level (quota) banner.
+  const [vtConfirm, setVtConfirm] = useState<{ newItems: EnrichItem[]; cachedItems: EnrichItem[] } | null>(null)
+  const [runErr, setRunErr] = useState<string | null>(null)
+
   const refreshProviders = useCallback(() => {
     void window.api.enrich.providers().then(setProviders)
   }, [])
   useEffect(refreshProviders, [refreshProviders])
   useEffect(() => {
     void window.api.enrich.hasKey().then(setHasKey)
+    void window.api.enrich.vtHasKey().then(setVtHasKey)
+    void window.api.enrich.vtGetSettings().then(setVtSettings)
   }, [])
   useEffect(() => {
     return window.api.enrich.onSetupProgress((p) => {
@@ -80,6 +99,7 @@ export function EnrichmentView({
   }, [])
 
   const maxmind = providers.find((p) => p.id === 'maxmind')
+  const virustotal = providers.find((p) => p.id === 'virustotal')
 
   // Look up `items` against one provider, writing to this tab's intel DB and merging results.
   const runLookup = useCallback((providerId: string, items: EnrichItem[]) => {
@@ -91,7 +111,11 @@ export function EnrichmentView({
     window.api.enrich
       .bulk(reqId, doc.dbPath, providerId, items)
       .then((res) => {
-        if (reqRef.current !== reqId || res.canceled) return
+        if (reqRef.current !== reqId) return
+        // A plain user cancel/supersede discards partial rows; a quota abort keeps what completed and
+        // surfaces a banner (so we don't silently drop the work already spent against the quota).
+        if (res.canceled && res.aborted !== 'quota') return
+        if (res.aborted === 'quota') setRunErr(res.message ?? 'VirusTotal daily quota reached — run stopped early.')
         setResults((prev) => {
           const next: ResultMap = { ...prev }
           for (const row of res.rows) next[row.indicator] = { ...(next[row.indicator] ?? {}), [providerId]: row }
@@ -168,12 +192,13 @@ export function EnrichmentView({
         if (!unrecognized.includes(t)) unrecognized.push(t)
         continue
       }
-      if (have.has(t)) {
+      const v = canonicalIndicator(t, kind)
+      if (have.has(v)) {
         dupes++
         continue
       }
-      have.add(t)
-      added.push({ value: t, kind })
+      have.add(v)
+      added.push({ value: v, kind })
     }
     // Recognized + new go to the list; dupes are dropped (already listed); unrecognized stay in the box.
     onPatch({ draft: unrecognized.join('\n'), ...(added.length > 0 ? { indicators: [...doc.indicators, ...added] } : {}) })
@@ -272,9 +297,60 @@ export function EnrichmentView({
     }
   }
 
+  async function saveVtKey(): Promise<void> {
+    setVtErr(null)
+    setVtBusy(true)
+    const res = await window.api.enrich.vtSetKey(vtKeyDraft.trim())
+    setVtBusy(false)
+    if (res.ok) {
+      setVtKeyDraft('')
+      setVtHasKey(true)
+      void window.api.enrich.vtGetSettings().then(setVtSettings)
+      refreshProviders()
+    } else {
+      setVtErr(res.error)
+    }
+  }
+
+  // Run VirusTotal; on a forced re-check, drop the cached rows first so they're re-fetched.
+  function runVt(items: EnrichItem[], forceRecheck: boolean): void {
+    if (items.length === 0 || !doc.dbPath) return
+    if (forceRecheck) {
+      void window.api.enrich.cacheDelete(doc.dbPath, items.map((i) => i.value)).then(() => {
+        if (doc.dbPath) void window.api.enrich.cacheCount(doc.dbPath).then(setEntryCount)
+        runLookup('virustotal', items)
+      })
+    } else {
+      runLookup('virustotal', items)
+    }
+  }
+
   // The grid (IntelGrid) owns sort/filter/selection/reorder UI; this is the run action it calls back.
   function handleRun(providerId: string, values: string[]): void {
-    runLookup(providerId, doc.indicators.filter((i) => values.includes(i.value)))
+    setRunErr(null)
+    const items = doc.indicators.filter((i) => values.includes(i.value))
+    // VirusTotal never auto-expires, so a re-run would re-spend quota on already-known indicators.
+    // Split cached vs new: run only the new ones by default, and require a confirm to force re-checks.
+    if (providerId !== 'virustotal' || !doc.dbPath) {
+      runLookup(providerId, items)
+      return
+    }
+    void window.api.enrich.cacheGet(doc.dbPath, values).then((rows) => {
+      const cached = new Set(rows.filter((r) => r.provider === 'virustotal').map((r) => r.indicator))
+      const newItems = items.filter((i) => !cached.has(i.value))
+      const cachedItems = items.filter((i) => cached.has(i.value))
+      if (cachedItems.length === 0) runLookup('virustotal', newItems)
+      else setVtConfirm({ newItems, cachedItems })
+    })
+  }
+
+  // VirusTotal request estimate: count, share of the (detected) daily quota, and time at the pace.
+  function vtEstimate(n: number): string {
+    const parts = [`≈ ${n} request${n === 1 ? '' : 's'}`]
+    if (vtSettings?.dailyQuota) parts.push(`~${Math.max(1, Math.round((n / vtSettings.dailyQuota) * 100))}% of ${vtSettings.dailyQuota}/day`)
+    const rpm = vtSettings?.requestsPerMinute ?? 0
+    if (rpm > 0 && n > 0) parts.push(`≈ ${Math.ceil(n / rpm)} min`)
+    return parts.join(' · ')
   }
 
   const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
@@ -333,7 +409,16 @@ export function EnrichmentView({
           >
             <span className={`w-1.5 h-1.5 rounded-full ${p.ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
             <span className="font-semibold text-citrus-dark dark:text-citrus-night-text">{p.name}</span>
-            <span className="text-citrus-muted dark:text-citrus-night-muted">· {p.ready ? p.detail : 'needs key'}</span>
+            <span className="text-citrus-muted dark:text-citrus-night-muted">
+              ·{' '}
+              {!p.ready
+                ? 'needs key'
+                : p.id === 'virustotal' && vtSettings
+                  ? vtSettings.requestsPerMinute > 0
+                    ? `${vtSettings.dailyQuota ? 'free' : 'paced'} · ${vtSettings.requestsPerMinute}/min`
+                    : 'premium · unthrottled'
+                  : p.detail}
+            </span>
             {p.ready && p.id === 'maxmind' && (
               <button
                 className="ml-0.5 text-citrus-muted hover:text-citrus-pink disabled:opacity-50 dark:text-citrus-night-muted"
@@ -419,6 +504,45 @@ export function EnrichmentView({
         </div>
       )}
 
+      {/* VirusTotal setup card — shown until a key is stored. Paste a key; we validate + auto-detect tier. */}
+      {virustotal && !virustotal.ready && (
+        <div className="mx-4 my-2 rounded-lg border border-citrus-border bg-citrus-card px-3 py-2.5 dark:border-citrus-night-border dark:bg-citrus-night-card">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-citrus-dark dark:text-citrus-night-text">
+            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> Connect VirusTotal
+          </div>
+          <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+            Paste your VirusTotal API key (free at <span className="font-mono">virustotal.com</span> → your profile → API key).
+            It's stored encrypted on this machine and never leaves it in plaintext. We detect your tier automatically and
+            pace requests to fit — no setup needed.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="password"
+              value={vtKeyDraft}
+              onChange={(e) => setVtKeyDraft(e.target.value)}
+              placeholder={vtHasKey ? 'Key saved — paste a new one to replace' : 'Paste VirusTotal API key'}
+              className="w-72 px-2 py-1 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && vtKeyDraft.trim()) void saveVtKey()
+              }}
+            />
+            <button
+              className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors disabled:opacity-40"
+              onClick={() => void saveVtKey()}
+              disabled={vtBusy || !vtKeyDraft.trim()}
+            >
+              {vtBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
+              Validate &amp; save key
+            </button>
+          </div>
+          {vtErr && (
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-400">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {vtErr}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Paste box — drag the bottom bar to resize; scrolls when full. Add only appends to the list. */}
       <div className="flex items-start gap-2 px-4 py-2 border-b border-citrus-border dark:border-citrus-night-border">
         <div className="flex-1 min-w-0 flex flex-col">
@@ -466,6 +590,17 @@ export function EnrichmentView({
         <div className="px-4 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">{addNote}</div>
       )}
 
+      {/* Run-level error (e.g. VirusTotal daily quota exhausted — run stopped). One banner, not per-row. */}
+      {runErr && (
+        <div className="mx-4 my-1 flex items-center gap-1.5 rounded border border-red-300 bg-red-50 px-2 py-1 text-[11px] text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span className="flex-1">{runErr}</span>
+          <button className="text-red-500 hover:text-red-700 dark:hover:text-red-200" onClick={() => setRunErr(null)} title="Dismiss">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
       {/* Progress */}
       {busy && progress && (
         <div className="flex items-center gap-2 px-4 py-1.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
@@ -501,6 +636,56 @@ export function EnrichmentView({
         onClose={() => setWatchlistsOpen(false)}
         onChanged={() => void window.api.enrich.providers().then(setProviders)}
       />
+
+      {/* VirusTotal re-check confirm: some targets are already cached (VT never auto-expires). Look up
+          only the new ones by default, or force a re-check that re-spends quota on the cached ones. */}
+      {vtConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onMouseDown={() => setVtConfirm(null)}>
+          <div
+            className="w-[26rem] max-w-[90vw] rounded-lg border border-citrus-border bg-citrus-card p-4 shadow-xl dark:border-citrus-night-border dark:bg-citrus-night-card"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-1.5 text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
+              <AlertTriangle className="w-4 h-4 text-citrus-pink" /> VirusTotal re-check
+            </div>
+            <p className="mt-2 text-[12px] text-citrus-muted dark:text-citrus-night-muted">
+              <strong className="text-citrus-dark dark:text-citrus-night-text">{vtConfirm.cachedItems.length}</strong> of these are
+              already cached and <strong className="text-citrus-dark dark:text-citrus-night-text">{vtConfirm.newItems.length}</strong>{' '}
+              {vtConfirm.newItems.length === 1 ? 'is' : 'are'} new. VirusTotal results don't expire, so re-checking the cached ones
+              re-spends your quota.
+            </p>
+            <div className="mt-3 flex flex-col gap-2">
+              <button
+                className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors disabled:opacity-40"
+                disabled={vtConfirm.newItems.length === 0}
+                onClick={() => {
+                  runLookup('virustotal', vtConfirm.newItems)
+                  setVtConfirm(null)
+                }}
+                title={vtConfirm.newItems.length === 0 ? 'Nothing new to look up' : undefined}
+              >
+                Look up {vtConfirm.newItems.length} new ({vtEstimate(vtConfirm.newItems.length)})
+              </button>
+              <button
+                className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-bold border border-red-300 text-red-700 hover:bg-red-50 transition-colors dark:border-red-900/50 dark:text-red-300 dark:hover:bg-red-900/20"
+                onClick={() => {
+                  runVt([...vtConfirm.newItems, ...vtConfirm.cachedItems], true)
+                  setVtConfirm(null)
+                }}
+              >
+                Force re-check all {vtConfirm.newItems.length + vtConfirm.cachedItems.length} (
+                {vtEstimate(vtConfirm.newItems.length + vtConfirm.cachedItems.length)})
+              </button>
+              <button
+                className="px-3 py-1 rounded-md text-[12px] font-semibold text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted"
+                onClick={() => setVtConfirm(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

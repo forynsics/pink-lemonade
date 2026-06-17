@@ -139,17 +139,31 @@ interface EnrichBulkResult {
     message?: string
   }>
   canceled?: boolean
+  /** Set when the run stopped early for a non-cancel reason (e.g. VirusTotal daily quota exhausted). */
+  aborted?: 'quota'
+  message?: string
+  stats?: {
+    cacheHits: number
+    cacheMisses: number
+    networkLookups: number
+    rateLimitSleeps: number
+    retryCount: number
+    count429: number
+    avgLatencyMs: number
+  }
 }
 
 /** Bulk-enrich indicators against a provider, writing results to the intel DB at `dbPath`; streams
- *  per-indicator progress via `onPartial`. */
+ *  per-indicator progress via `onPartial`. `secrets` (decrypted in main — the worker can't) carries
+ *  the per-run API key and detected pace for network providers like VirusTotal. */
 export function enrichBulk(
   reqId: number,
   dbPath: string,
   providerId: string,
   items: Array<{ value: string; kind: string }>,
   now: number,
-  onPartial: (p: { done: number; total: number; current: string; fromCache: boolean }) => void
+  onPartial: (p: { done: number; total: number; current: string; fromCache: boolean }) => void,
+  secrets?: { apiKey?: string; requestsPerMinute?: number }
 ): Promise<EnrichBulkResult> {
   return new Promise<EnrichBulkResult>((resolve, reject) => {
     const id = nextId++
@@ -158,7 +172,7 @@ export function enrichBulk(
       reject,
       onProgress: (p) => onPartial(p as { done: number; total: number; current: string; fromCache: boolean })
     })
-    w().postMessage({ t: 'enrich', id, reqId, dbPath, providerId, items, now })
+    w().postMessage({ t: 'enrich', id, reqId, dbPath, providerId, items, now, secrets })
   })
 }
 

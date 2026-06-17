@@ -77,6 +77,9 @@ export function EnrichmentView({
   // VirusTotal re-check confirmation (some targets already cached) and run-level (quota) banner.
   const [vtConfirm, setVtConfirm] = useState<{ newItems: EnrichItem[]; cachedItems: EnrichItem[] } | null>(null)
   const [runErr, setRunErr] = useState<string | null>(null)
+  // Which already-configured provider's setup card is open for editing (re-key / remove). The cards
+  // otherwise only show until the provider is ready, so this re-opens one to change it afterward.
+  const [manageProvider, setManageProvider] = useState<string | null>(null)
 
   const refreshProviders = useCallback(() => {
     void window.api.enrich.providers().then(setProviders)
@@ -302,6 +305,7 @@ export function EnrichmentView({
     if (res.ok) {
       setHasKey(true)
       setKeyDraft('')
+      setManageProvider(null)
       refreshProviders()
     } else {
       setSetupErr(res.error)
@@ -316,11 +320,25 @@ export function EnrichmentView({
     if (res.ok) {
       setVtKeyDraft('')
       setVtHasKey(true)
+      setManageProvider(null)
       void window.api.enrich.vtGetSettings().then(setVtSettings)
       refreshProviders()
     } else {
       setVtErr(res.error)
     }
+  }
+
+  // Remove the stored VirusTotal key (clears the encrypted blob + detected pace in main).
+  async function removeVtKey(): Promise<void> {
+    setVtErr(null)
+    setVtBusy(true)
+    await window.api.enrich.vtSetKey('')
+    setVtBusy(false)
+    setVtKeyDraft('')
+    setVtHasKey(false)
+    setVtSettings(null)
+    setManageProvider(null)
+    refreshProviders()
   }
 
   // Run VirusTotal; on a forced re-check, drop the cached rows first so they're re-fetched.
@@ -440,6 +458,15 @@ export function EnrichmentView({
                 <RefreshCw className={`w-3 h-3 ${setupBusy ? 'animate-spin' : ''}`} />
               </button>
             )}
+            {p.ready && (p.id === 'maxmind' || p.id === 'virustotal') && (
+              <button
+                className={`ml-0.5 hover:text-citrus-pink dark:text-citrus-night-muted ${manageProvider === p.id ? 'text-citrus-pink' : 'text-citrus-muted'}`}
+                onClick={() => setManageProvider((m) => (m === p.id ? null : p.id))}
+                title={`Edit ${p.name} key`}
+              >
+                <KeyRound className="w-3 h-3" />
+              </button>
+            )}
           </span>
         ))}
         <div className="ml-auto flex items-center gap-2">
@@ -464,11 +491,16 @@ export function EnrichmentView({
         </div>
       </div>
 
-      {/* MaxMind setup card — shown until a database is installed. "Set it up for me" via a free key. */}
-      {maxmind && !maxmind.ready && (
+      {/* MaxMind setup card — shown until a database is installed, or re-opened via the pill's edit button. */}
+      {maxmind && (!maxmind.ready || manageProvider === 'maxmind') && (
         <div className="mx-4 my-2 rounded-lg border border-citrus-border bg-citrus-card px-3 py-2.5 dark:border-citrus-night-border dark:bg-citrus-night-card">
           <div className="flex items-center gap-1.5 text-xs font-bold text-citrus-dark dark:text-citrus-night-text">
-            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> Set up GeoLite2 (free)
+            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> {maxmind.ready ? 'GeoLite2 settings' : 'Set up GeoLite2 (free)'}
+            {manageProvider === 'maxmind' && (
+              <button className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted" onClick={() => setManageProvider(null)} title="Close">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
           <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
             MaxMind GeoLite2 is free but needs a one-time license key (their rule since 2019). Create a free
@@ -515,11 +547,16 @@ export function EnrichmentView({
         </div>
       )}
 
-      {/* VirusTotal setup card — shown until a key is stored. Paste a key; we validate + auto-detect tier. */}
-      {virustotal && !virustotal.ready && (
+      {/* VirusTotal setup card — shown until a key is stored, or re-opened via the pill's edit button. */}
+      {virustotal && (!virustotal.ready || manageProvider === 'virustotal') && (
         <div className="mx-4 my-2 rounded-lg border border-citrus-border bg-citrus-card px-3 py-2.5 dark:border-citrus-night-border dark:bg-citrus-night-card">
           <div className="flex items-center gap-1.5 text-xs font-bold text-citrus-dark dark:text-citrus-night-text">
-            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> Connect VirusTotal
+            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> {virustotal.ready ? 'VirusTotal key' : 'Connect VirusTotal'}
+            {manageProvider === 'virustotal' && (
+              <button className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted" onClick={() => setManageProvider(null)} title="Close">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
           <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
             Paste your VirusTotal API key (free at <span className="font-mono">virustotal.com</span> → your profile → API key).
@@ -545,6 +582,16 @@ export function EnrichmentView({
               {vtBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
               Validate &amp; save key
             </button>
+            {vtHasKey && (
+              <button
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold border border-citrus-border text-citrus-muted hover:text-red-600 hover:border-red-500/40 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-muted"
+                onClick={() => void removeVtKey()}
+                disabled={vtBusy}
+                title="Remove the stored VirusTotal key from this machine"
+              >
+                <Trash2 className="w-3 h-3" /> Remove key
+              </button>
+            )}
           </div>
           {vtErr && (
             <div className="mt-2 flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-400">

@@ -39,7 +39,6 @@ from the cache. (Clear a cached result from the row’s right-click menu to forc
   **unthrottled** — no client-side limit, so the app uses your tier’s higher quota and only backs off
   on the API’s own rate-limit (429). Either way, to avoid burning lookups, results **never
   auto-expire** and re-looking-up an already-cached indicator takes an explicit, warned confirm.
-  *(An AI assistant is still on the roadmap.)*
 
 Already-configured providers can be changed: click the **🔑 key icon** on a provider’s pill in the
 **Providers** strip to re-enter or **remove** its key.

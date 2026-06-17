@@ -61,7 +61,7 @@ hash reputation with a colored **Malicious / Suspicious / Clean / Unknown** verd
 pacing, and protected re-lookups (your key is stored encrypted, never in plaintext). Results land in
 a sortable Intel grid. Curate **watchlists** (IP / CIDR / ASN / domain / hash) for context, and pivot
 both ways — **send a cell or column to Intel**, or right-click indicators in the Intel grid to **run
-a sweep** against any open workspace source. *(An AI assistant is still on the roadmap.)*
+a sweep** against any open workspace source.
 
 → **User guide:** [forynsics.github.io/pink-lemonade](https://forynsics.github.io/pink-lemonade/) (or the [`docs/`](docs/README.md) source)
 

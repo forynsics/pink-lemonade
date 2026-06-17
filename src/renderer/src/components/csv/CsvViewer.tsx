@@ -65,7 +65,8 @@ export function CsvViewer({
   apiRef,
   onTagSummary,
   onSendToEnrichment,
-  sendIntelLabel = 'Intel'
+  sendIntelLabel = 'Intel',
+  intelDbPath
 }: {
   doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
@@ -87,6 +88,8 @@ export function CsvViewer({
   onSendToEnrichment?: (values: string[]) => void
   /** Label for the send-to-intel action ("Global Intel" or "Workspace Intel"). */
   sendIntelLabel?: string
+  /** This workspace's Intel DB path — enables the Sweep dialog's "Flagged" (VT-malicious) source. */
+  intelDbPath?: string
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
@@ -827,6 +830,7 @@ export function CsvViewer({
           columns={doc.columns}
           sourceName={doc.sourceName}
           initialText={sweepInitial}
+          intelDbPath={intelDbPath}
           onClose={() => setSweepOpen(false)}
           existingCount={sightings.size}
           onSwept={() => setSightingRev((r) => r + 1)}

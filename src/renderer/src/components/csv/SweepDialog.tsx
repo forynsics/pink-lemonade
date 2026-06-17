@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ChevronDown, Crosshair, FileUp, ListChecks, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Crosshair, FileUp, ListChecks, ShieldAlert, X } from 'lucide-react'
 import type { CsvColumn } from '../../state/csvTypes'
 import type { WatchlistInfo } from '../../state/enrichTypes'
 import { parseIntelText } from '../../state/sweepIntel'
@@ -21,7 +21,8 @@ export function SweepDialog({
   onSwept,
   onSeeSightings,
   existingCount,
-  initialText
+  initialText,
+  intelDbPath
 }: {
   tabId: string
   columns: CsvColumn[]
@@ -34,6 +35,8 @@ export function SweepDialog({
   existingCount: number
   /** Pre-fill the indicator box (used by the Intel-tab → sweep pivot). */
   initialText?: string
+  /** This workspace's Intel DB — enables the "Flagged" source (indicators VT marked Malicious). */
+  intelDbPath?: string
 }): JSX.Element {
   const [text, setText] = useState(initialText ?? '')
   // The exact paste text of the last successful run. While it still matches, re-running would be
@@ -94,6 +97,21 @@ export function SweepDialog({
     }
     // Files are often CSV/space-delimited — tokenize any separator to one indicator per line.
     appendIntel(f.content.split(/[\s,;]+/).filter(Boolean).join('\n'))
+  }
+  // Pull every indicator VirusTotal flagged Malicious from this workspace's Intel DB (the provider
+  // stores the verdict, so it's a straight filter — no re-lookup, no quota).
+  async function loadFlagged(): Promise<void> {
+    if (!intelDbPath) {
+      setLoadNote('No Intel DB linked to this workspace')
+      return
+    }
+    const rows = await window.api.enrich.cacheDump(intelDbPath)
+    const flagged = [...new Set(rows.filter((r) => r.fields?.['VT Verdict'] === 'Malicious').map((r) => r.indicator))]
+    if (flagged.length === 0) {
+      setLoadNote('No VirusTotal-flagged (Malicious) indicators in this Intel DB yet')
+      return
+    }
+    appendIntel(flagged.join('\n'))
   }
 
   const parsed = useMemo(() => parseIntelText(text, filenameMode ? 'filename' : 'classify'), [text, filenameMode])
@@ -202,6 +220,15 @@ export function SweepDialog({
               >
                 <FileUp className="h-3 w-3" /> File
               </button>
+              {intelDbPath && (
+                <button
+                  onClick={() => void loadFlagged()}
+                  className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[10px] font-semibold text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text"
+                  title="Load indicators VirusTotal flagged Malicious from this workspace's Intel DB"
+                >
+                  <ShieldAlert className="h-3 w-3" /> Flagged
+                </button>
+              )}
             </div>
           </div>
           <textarea

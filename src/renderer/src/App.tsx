@@ -754,6 +754,7 @@ export default function App(): JSX.Element {
                             )
                           }
                           sendIntelLabel={d.intelMode === 'workspace' ? 'Workspace Intel' : 'Global Intel'}
+                          intelDbPath={d.intelMode === 'workspace' ? workspaceIntelPath(d.dbPath) : enrichDefault}
                         />
                       </div>
                     )

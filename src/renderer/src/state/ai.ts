@@ -6,6 +6,9 @@ const STORAGE_KEY = 'pink-lemonade:ai'
 export interface AiPrefs {
   open: boolean
   width: number
+  /** The model the last run actually resolved to. Remembered so Settings can show what's running
+   *  before you've sent anything — we often send no model at all and let Claude Code decide. */
+  lastModel?: string
 }
 
 const DEFAULT: AiPrefs = { open: false, width: 400 }
@@ -17,7 +20,8 @@ export function loadAiPrefs(): AiPrefs {
       const p = JSON.parse(raw) as Partial<AiPrefs>
       return {
         open: typeof p.open === 'boolean' ? p.open : DEFAULT.open,
-        width: typeof p.width === 'number' ? Math.min(720, Math.max(320, p.width)) : DEFAULT.width
+        width: typeof p.width === 'number' ? Math.min(720, Math.max(320, p.width)) : DEFAULT.width,
+        ...(typeof p.lastModel === 'string' && p.lastModel ? { lastModel: p.lastModel } : {})
       }
     }
   } catch {

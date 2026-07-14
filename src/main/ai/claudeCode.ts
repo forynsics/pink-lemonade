@@ -68,8 +68,63 @@ function findClaudeExecutable(): string | null {
   return candidates.find((c) => existsSync(c)) ?? null
 }
 
-// Editable in the UI; the user's Claude login decides which of these their plan can serve.
-export const CLAUDE_CODE_MODELS = ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5']
+/** A model choice offered in the UI. */
+export interface ClaudeModelOption {
+  id: string
+  label: string
+  hint: string
+}
+
+// Aliases, not pinned snapshot ids: Claude Code resolves an alias to the current model in that
+// family, so these never go stale. The empty id means "send no model at all" — the SDK option is
+// omitted and the user's own Claude Code setting decides, which is the right default when we're
+// riding their subscription. (Note '' is NOT the same as the 'default' alias: passing 'default'
+// would be an explicit override that beats the model they picked with /model.)
+export const CLAUDE_CODE_MODELS: ClaudeModelOption[] = [
+  { id: '', label: 'Default', hint: 'Use the model your Claude Code is set to' },
+  { id: 'fable', label: 'Fable', hint: 'Newest generation' },
+  { id: 'opus', label: 'Opus', hint: 'High capability' },
+  { id: 'sonnet', label: 'Sonnet', hint: 'Balanced speed and capability' },
+  { id: 'haiku', label: 'Haiku', hint: 'Fastest' }
+]
+
+/** True for a model id we offer as a preset (so the UI knows to fall back to its custom field). */
+export function isPresetModel(id: string): boolean {
+  return CLAUDE_CODE_MODELS.some((m) => m.id === id)
+}
+
+// Phrases Claude Code uses when the requested model is unusable — a plan that can't serve it, a
+// retired snapshot id, a typo. Matched as substrings because the surrounding wording varies; note
+// the plan-level message never says "model", so keying off that word alone misses it.
+const MODEL_ERROR_SIGNS = ['issue with the selected model', 'is not available with the claude', 'may not exist or you may not have access', 'unknown model', 'invalid model']
+
+/** Name the model in play for a user-facing message. '' means we sent none and let their own
+ *  Claude Code decide, so naming a model of ours would mislead. */
+function whichModel(model: string): string {
+  return model ? `"${model}"` : 'your Claude Code default model'
+}
+
+/** An unusable model surfaces as an ordinary run failure. Recognize that case and point at the
+ *  setting that fixes it instead of surfacing raw SDK text. */
+export function explainRunError(message: string, model: string): string {
+  const m = message.toLowerCase()
+  if (!MODEL_ERROR_SIGNS.some((sign) => m.includes(sign))) return message
+  return `${message}\n\nThe Assistant asked for ${whichModel(model)}. Pick a different one under Settings → Model, or run \`claude\` and use /model to change your default.`
+}
+
+/** True when the finished run actually invoked a model. The SDK reports an unusable model as a
+ *  SUCCESS with no usage recorded rather than as an error, so this is the only way to tell a real
+ *  (if terse) answer from a run that silently did nothing. Verified against the SDK: every valid
+ *  model populates modelUsage; only a bogus id leaves it empty. */
+export function modelWasUsed(result: unknown): boolean {
+  const usage = (result as { modelUsage?: Record<string, unknown> } | null)?.modelUsage
+  return !!usage && Object.keys(usage).length > 0
+}
+
+/** The message for a run that completed without ever calling a model. */
+export function noModelRanMessage(model: string): string {
+  return `The run finished without calling a model — ${whichModel(model)} may not exist, or may not be available on your plan. Pick a different one under Settings → Model.`
+}
 
 export interface ClaudeCodeRunArgs {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
@@ -223,12 +278,22 @@ export async function runClaudeCodeAgent(args: ClaudeCodeRunArgs, emit: (ev: Age
     const q: AnySdk = query({ prompt, options: { ...baseOptions, ...(resume ? { resume } : {}) } })
     for await (const msg of q) {
       if (signal.aborted) return null
-      if (msg.type === 'stream_event') {
+      if (msg.type === 'system' && msg.subtype === 'init') {
+        // The one place the SDK tells us which model this session actually resolved to — the user
+        // can't otherwise know (we may have sent no model at all and let their Claude Code decide).
+        if (typeof msg.model === 'string' && msg.model) emit({ type: 'model', model: msg.model })
+      } else if (msg.type === 'stream_event') {
         const delta = textDeltaFromStreamEvent(msg.event)
         if (delta) emit({ type: 'token', delta })
       } else if (msg.type === 'result') {
         const sessionId = typeof msg.session_id === 'string' ? msg.session_id : undefined
-        if (msg.subtype === 'success' && !msg.is_error) return { kind: 'done', sessionId }
+        if (msg.subtype === 'success' && !msg.is_error) {
+          // A model the plan can't serve — or a typo'd custom id — does NOT come back as an error:
+          // the run reports success having invoked nothing, and the user just sees an empty reply.
+          // Empty modelUsage is the only signal that happened, so treat it as the failure it is.
+          if (!modelWasUsed(msg)) return { kind: 'error', message: noModelRanMessage(args.model ?? ''), sessionId }
+          return { kind: 'done', sessionId }
+        }
         if (typeof msg.subtype === 'string' && msg.subtype.includes('max_turns')) return { kind: 'truncated', sessionId }
         return { kind: 'error', message: typeof msg.result === 'string' && msg.result ? msg.result : `Claude Code run ended: ${msg.subtype ?? 'error'}`, sessionId }
       }

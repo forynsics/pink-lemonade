@@ -99,6 +99,9 @@ export type AgentEvent =
   | { type: 'token'; delta: string }
   | { type: 'tool'; phase: 'start' | 'done' | 'error'; id: string; name: string; args?: unknown; card?: string; result?: unknown; message?: string }
   | { type: 'action'; actionId: string; kind: string; summary: string; detail?: string; tag?: string; count?: number; sourceId?: number; group?: string | null }
+  /** The model this run resolved to, from the SDK's init message — the only reliable way to know
+   *  what's actually serving the run, since we usually send no model and let Claude Code decide. */
+  | { type: 'model'; model: string }
   | { type: 'done'; truncated?: boolean }
   | { type: 'error'; message?: string }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, Check, Download, ExternalLink, History, Loader2, Pencil, Plus, Send, Settings, Square, Trash2, Wrench, X } from 'lucide-react'
-import type { AiConfig, AiEventPayload, AiWsCtx } from '../../state/enrichTypes'
+import type { AiConfig, AiEventPayload, AiWsCtx, ClaudeModelOption } from '../../state/enrichTypes'
 import { loadAiPrefs, saveAiPrefs } from '../../state/ai'
 import * as chat from '../../state/aiChat'
 
@@ -82,6 +82,7 @@ export function AiPanel({
   onPivot?: (value: string, source?: string) => void
 }): JSX.Element | null {
   const [width, setWidth] = useState(() => loadAiPrefs().width)
+  const [lastModel, setLastModel] = useState<string | null>(() => loadAiPrefs().lastModel ?? null)
   const [cfg, setCfg] = useState<AiConfig | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [turns, setTurns] = useState<Turn[]>([])
@@ -187,6 +188,13 @@ export function AiPanel({
     const dispose = window.api.ai.onEvent((raw) => {
       const ev = raw as AiEventPayload
       if (ev.reqId !== reqIdRef.current) return
+      // Not a turn update — it's session metadata, and the only place we learn which model is
+      // actually serving this run. Remember it so Settings can report it even before the next run.
+      if (ev.type === 'model') {
+        setLastModel(ev.model)
+        saveAiPrefs({ ...loadAiPrefs(), lastModel: ev.model })
+        return
+      }
       setTurns((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
@@ -507,7 +515,7 @@ export function AiPanel({
           </>
         )}
 
-        {showSettings && <SettingsPane cfg={cfg} onSaved={refreshConfig} />}
+        {showSettings && <SettingsPane cfg={cfg} lastModel={lastModel} onSaved={refreshConfig} />}
 
         {/* Conversation */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
@@ -723,24 +731,34 @@ function MessageBubble({
   )
 }
 
-function SettingsPane({ cfg, onSaved }: { cfg: AiConfig | null; onSaved: () => Promise<void> }): JSX.Element {
+const CUSTOM = '__custom__' // sentinel select value; can't collide with a real model id
+
+function SettingsPane({ cfg, lastModel, onSaved }: { cfg: AiConfig | null; lastModel: string | null; onSaved: () => Promise<void> }): JSX.Element {
   const [model, setModel] = useState(cfg?.model ?? '')
-  const [models, setModels] = useState<string[]>([])
+  const [models, setModels] = useState<ClaudeModelOption[]>([])
+  const [custom, setCustom] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
+  // A saved model that isn't one of the presets (a pinned id like claude-sonnet-4-6) belongs in the
+  // custom field — otherwise the select would silently misreport what's actually configured.
   useEffect(() => {
-    setModel(cfg?.model ?? '')
-  }, [cfg])
+    const saved = cfg?.model ?? ''
+    setModel(saved)
+    setCustom(saved !== '' && models.length > 0 && !models.some((m) => m.id === saved))
+  }, [cfg, models])
 
   useEffect(() => {
     void window.api.ai.listModels().then(setModels)
   }, [])
 
   async function saveSettings(): Promise<void> {
-    await window.api.ai.setConfig({ model: model.trim() })
+    const next = model.trim()
+    await window.api.ai.setConfig({ model: next })
     setMsg('Saved.')
     await onSaved()
   }
+
+  const hint = custom ? 'Pinned to this exact model.' : models.find((m) => m.id === model)?.hint
 
   return (
     <div className="border-b border-citrus-border bg-citrus-bg/60 px-4 py-3 space-y-2.5 dark:border-citrus-night-border dark:bg-citrus-night-bg/40">
@@ -752,18 +770,45 @@ function SettingsPane({ cfg, onSaved }: { cfg: AiConfig | null; onSaved: () => P
 
       <div>
         <label className="text-[11px] text-citrus-muted dark:text-citrus-night-muted">Model</label>
-        <input
-          className="mt-0.5 w-full rounded-md border border-citrus-border bg-citrus-card px-2 py-1.5 text-[12px] font-mono text-citrus-dark dark:border-citrus-night-border dark:bg-citrus-night-card dark:text-citrus-night-text"
-          list="ai-models"
-          placeholder="e.g. claude-sonnet-4-6"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-        />
-        <datalist id="ai-models">
+        <select
+          className="mt-0.5 w-full rounded-md border border-citrus-border bg-citrus-card px-2 py-1.5 text-[12px] text-citrus-dark dark:border-citrus-night-border dark:bg-citrus-night-card dark:text-citrus-night-text"
+          value={custom ? CUSTOM : model}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v === CUSTOM) {
+              setCustom(true)
+              setModel('')
+            } else {
+              setCustom(false)
+              setModel(v)
+            }
+          }}
+        >
           {models.map((m) => (
-            <option key={m} value={m} />
+            <option key={m.id || 'default'} value={m.id}>
+              {m.label}
+            </option>
           ))}
-        </datalist>
+          <option value={CUSTOM}>Custom…</option>
+        </select>
+        {custom && (
+          <input
+            className="mt-1.5 w-full rounded-md border border-citrus-border bg-citrus-card px-2 py-1.5 text-[12px] font-mono text-citrus-dark dark:border-citrus-night-border dark:bg-citrus-night-card dark:text-citrus-night-text"
+            placeholder="e.g. claude-opus-4-8"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+        )}
+        {hint && <div className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">{hint}</div>}
+      </div>
+
+      <div className="rounded-md border border-citrus-border bg-citrus-card px-2.5 py-2 dark:border-citrus-night-border dark:bg-citrus-night-card">
+        <div className="text-[11px] text-citrus-muted dark:text-citrus-night-muted">Last run used</div>
+        {lastModel ? (
+          <div className="mt-0.5 font-mono text-[12px] text-citrus-dark dark:text-citrus-night-text">{lastModel}</div>
+        ) : (
+          <div className="mt-0.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">Send a message to find out.</div>
+        )}
       </div>
 
       <div className="flex items-center justify-between pt-1">

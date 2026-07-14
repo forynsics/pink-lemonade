@@ -5,7 +5,7 @@
 
 import { ipcMain } from 'electron'
 import * as dbw from '../csv/dbClient'
-import { CLAUDE_CODE_MODELS, claudeCodeStatus, runClaudeCodeAgent } from './claudeCode'
+import { CLAUDE_CODE_MODELS, claudeCodeStatus, explainRunError, runClaudeCodeAgent } from './claudeCode'
 import type { ChatRequest, PendingAction } from './types'
 
 // In-flight runs by reqId, so ai:cancel can abort one without touching others.
@@ -81,7 +81,7 @@ export function registerAiIpc(): void {
       }, [])
       await runClaudeCodeAgent({ messages: ccMessages, wsCtx: req.wsCtx, providerNotes, model: model || undefined, deps }, emit, ac.signal)
     } catch (err) {
-      emit({ type: 'error', message: err instanceof Error ? err.message : String(err) })
+      emit({ type: 'error', message: explainRunError(err instanceof Error ? err.message : String(err), model) })
     } finally {
       runs.delete(req.reqId)
     }

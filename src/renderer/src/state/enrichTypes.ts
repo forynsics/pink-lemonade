@@ -59,6 +59,12 @@ export interface AiConfig {
   model: string
   providers: AiProviderInfo[]
 }
+/** A model choice offered in Settings. An empty id means "use the Claude Code default". */
+export interface ClaudeModelOption {
+  id: string
+  label: string
+  hint: string
+}
 export interface AiWsColumn {
   name: string
   original: string
@@ -103,6 +109,8 @@ export type AiEventPayload =
       message?: string
     }
   | { reqId: number; type: 'action'; actionId: string; kind: string; summary: string; detail?: string; tag?: string; count?: number; sourceId?: number; group?: string | null }
+  /** The model this run actually resolved to — the only reliable way to see what's running. */
+  | { reqId: number; type: 'model'; model: string }
   | { reqId: number; type: 'done'; truncated?: boolean }
   | { reqId: number; type: 'error'; message?: string }
 

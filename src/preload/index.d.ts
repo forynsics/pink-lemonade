@@ -476,6 +476,12 @@ export interface AiConfig {
   model: string
   providers: AiProviderInfo[]
 }
+/** A model choice offered in Settings. An empty id means "use the Claude Code default". */
+export interface ClaudeModelOption {
+  id: string
+  label: string
+  hint: string
+}
 /** One column of the active workspace source, as the agent context sends it. */
 export interface AiWsColumn {
   name: string
@@ -517,6 +523,7 @@ export type AiEventPayload =
       message?: string
     }
   | { reqId: number; type: 'action'; actionId: string; kind: string; summary: string; detail?: string; tag?: string; count?: number }
+  | { reqId: number; type: 'model'; model: string }
   | { reqId: number; type: 'done'; truncated?: boolean }
   | { reqId: number; type: 'error'; message?: string }
 export interface AiChatRequest {
@@ -529,7 +536,7 @@ export interface AiChatRequest {
 export interface AiApi {
   getConfig: () => Promise<AiConfig>
   setConfig: (cfg: { model?: string }) => Promise<{ ok: boolean }>
-  listModels: () => Promise<string[]>
+  listModels: () => Promise<ClaudeModelOption[]>
   chat: (req: AiChatRequest) => Promise<{ ok: boolean }>
   cancel: (reqId: number) => Promise<null>
   actionResult: (actionId: string, approved: boolean) => Promise<null>

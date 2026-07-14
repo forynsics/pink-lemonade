@@ -7,8 +7,8 @@ const run = (input: string, opts = {}): string =>
 
 describe('CrowdStrike CQL builder', () => {
   it('renders an in() clause with the field= form', () => {
-    expect(run('1.2.3.4\n5.6.7.8', { field: 'source.ip' })).toBe(
-      'in(field=source.ip, values=["1.2.3.4", "5.6.7.8"])'
+    expect(run('192.0.2.10\n192.0.2.20', { field: 'source.ip' })).toBe(
+      'in(field=source.ip, values=["192.0.2.10", "192.0.2.20"])'
     )
   })
 
@@ -21,14 +21,14 @@ describe('CrowdStrike CQL builder', () => {
   })
 
   it('wraps values per wildcard mode', () => {
-    expect(run('evil.com', { field: 'd', wildcard: 'contains' })).toBe(
-      'in(field=d, values=["*evil.com*"])'
+    expect(run('sample.example', { field: 'd', wildcard: 'contains' })).toBe(
+      'in(field=d, values=["*sample.example*"])'
     )
-    expect(run('evil.com', { field: 'd', wildcard: 'prefix' })).toBe(
-      'in(field=d, values=["*evil.com"])'
+    expect(run('sample.example', { field: 'd', wildcard: 'prefix' })).toBe(
+      'in(field=d, values=["*sample.example"])'
     )
-    expect(run('evil.com', { field: 'd', wildcard: 'suffix' })).toBe(
-      'in(field=d, values=["evil.com*"])'
+    expect(run('sample.example', { field: 'd', wildcard: 'suffix' })).toBe(
+      'in(field=d, values=["sample.example*"])'
     )
   })
 

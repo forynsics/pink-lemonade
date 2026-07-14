@@ -20,7 +20,7 @@ describe('classifyTime', () => {
   it('rejects non-timestamps and out-of-range numbers', () => {
     expect(classifyTime('Jun 13 21:14:18')).toBeNull()
     expect(classifyTime('06/13/2026 21:14')).toBeNull()
-    expect(classifyTime('192.168.0.1')).toBeNull()
+    expect(classifyTime('10.47.212.3')).toBeNull()
     expect(classifyTime('0000000123')).toBeNull() // 10 digits but year ~1970
   })
 })
@@ -40,7 +40,13 @@ describe('detectColumnTime', () => {
     expect(detectColumnTime(['2026-06-13', 'banana', 'kiwi', 'mango'], 'when')).toBeNull()
   })
 
-  it('needs at least a few non-empty samples', () => {
-    expect(detectColumnTime(['2026-06-13', '', ''])).toBeNull()
+  it('tags a single-row source from one unambiguous ISO value (e.g. a one-row RBCmd DeletedOn)', () => {
+    expect(detectColumnTime(['2025-03-19 12:18:52'], 'DeletedOn')).toBe('iso')
+    expect(detectColumnTime(['2026-06-13', '', ''])).toBe('iso')
+  })
+
+  it('still needs a few samples (and a header) before trusting bare-number epochs', () => {
+    expect(detectColumnTime(['1718313258'], 'event_time')).toBeNull()
+    expect(detectColumnTime(['banana'])).toBeNull()
   })
 })

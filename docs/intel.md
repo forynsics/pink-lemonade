@@ -7,7 +7,9 @@ nav_order: 8
 
 The **Intel** tab is where you add context to indicators — look up what an IP / domain / hash *is*,
 and keep curated lists of things you care about. It’s a separate surface from the notepad and
-workspaces, opened from **Global Intel** on the Home screen (or a workspace’s own Intel).
+workspaces, opened from the **Global Intel** button in the top bar (or on the Home screen, or a
+workspace’s own Intel). Opening an Intel tab **loads its stored indicators automatically** — no manual
+“load all” — so you land straight on what’s in that database.
 
 ## Looking things up
 

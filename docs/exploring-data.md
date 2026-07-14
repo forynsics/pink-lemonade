@@ -75,6 +75,20 @@ On a large file the scan runs in the background with a **live progress** readout
 button, so the app never freezes. You can **export** the distinct values (or *all* values) into a
 new notepad to run them through text tools.
 
+## Extracting JSON fields
+
+Many logs pack their real content into a **single JSON column** — O365's `AuditData`, Hayabusa's
+`Details`. Two things help:
+
+- **Read it** — open a cell (double-click) and toggle **Pretty / Raw** for a collapsible tree view of
+  the JSON instead of one long line.
+- **Expand it into columns** — from a JSON column's ▾ menu, choose **Extract JSON field…**. It samples
+  the column, lists its top-level scalar fields (with example values), and lets you pick which to pull
+  out — or **add all** — into new **first-class grid columns**. Those new columns behave like any
+  other: filter, sort, [sweep](intel-sweep.md), pull distinct values, and record events on them. The
+  original data isn't changed; the fields are added alongside it (nested arrays/objects stay as JSON
+  text, and an extracted timestamp is detected as a time column automatically).
+
 ## Time pivots — “show me ±N around this”
 
 Investigations live and die on timelines. Right-click a **timestamp cell** and pick a window — e.g.

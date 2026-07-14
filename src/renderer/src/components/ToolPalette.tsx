@@ -55,7 +55,7 @@ export function ToolPalette({ onPick }: { onPick: (id: string) => void }): JSX.E
           <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-citrus-muted dark:text-citrus-night-muted" />
           <input
             className="w-full pl-8 pr-7 py-1.5 rounded-lg text-xs bg-citrus-card border border-citrus-border outline-none focus:border-citrus-pink transition-colors text-citrus-dark dark:bg-citrus-night-card dark:border-citrus-night-border dark:text-citrus-night-text"
-            placeholder="Search local tools…"
+            placeholder="Search tools…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             spellCheck={false}

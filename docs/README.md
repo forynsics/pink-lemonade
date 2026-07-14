@@ -56,6 +56,15 @@ everything VirusTotal flagged malicious.
 
 → [Intel & watchlists guide](intel.md)
 
+### 🤖 AI assistant — a grounded Claude analyst
+An embedded **Claude** analyst that operates the workspace you have open — it searches your sources,
+correlates across them and over time, and records what it concludes into clickable review surfaces (an
+event **constellation**, a **timeline**, an IOC catalog, an investigation plan). It's **grounded**: it
+uses the app's real tools for every fact instead of guessing. It runs on **your own Claude Code login**
+(your Claude subscription) — no API key.
+
+→ [AI assistant guide](ai.md)
+
 ---
 
 ## Guide
@@ -67,6 +76,7 @@ everything VirusTotal flagged malicious.
 5. [Tagging](tagging.md) — triaging rows and filtering by tag
 6. [Intel Sweep](intel-sweep.md) — sweeping a source for known indicators → sightings
 7. [Intel & watchlists](intel.md) — enrichment lookups, watchlists, and the sweep pivot
+8. [AI assistant](ai.md) — the grounded Claude analyst, and what it records
 
 ---
 
@@ -77,5 +87,7 @@ everything VirusTotal flagged malicious.
 - **It remembers your work.** Open tabs and workspaces come back when you relaunch.
 - **Built for big files.** The grid stays responsive on multi-GB timelines; heavy operations show
   a spinner with progress and can be canceled.
-- **Network is opt-in.** Work is local; the only outbound calls are enrichment lookups you trigger
-  against a provider you've configured.
+- **Local-first, network opt-in.** Your workspaces, tags, sightings, and watchlists live in local
+  files. Outbound calls happen only when you trigger them: **enrichment lookups** against a provider
+  you've configured, and the **AI assistant** (which reasons over your data via your own Claude Code
+  login). Nothing else leaves your machine.

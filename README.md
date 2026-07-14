@@ -63,6 +63,19 @@ a sortable Intel grid. Curate **watchlists** (IP / CIDR / ASN / domain / hash) f
 both ways — **send a cell or column to Intel**, or right-click indicators in the Intel grid to **run
 a sweep** against any open workspace source.
 
+### 🤖 AI assistant — a grounded Claude analyst
+An embedded **Claude** analyst that operates the open workspace — it searches your sources, correlates
+across them and over time, reads the intel cache, and records what it concludes into clickable review
+surfaces: an **Artifact Constellation** (events/TTPs backed by the exact corroborating rows, with MITRE
+ATT&CK + user attribution), a curated **Timeline**, an **IOC catalog**, and a resumable **investigation
+plan** — plus ✨ marks on the exact rows that back each claim. It's **grounded**: it calls the app's
+real tools (SQL layer, intel cache, classifiers) for every fact instead of guessing, and data-changing
+actions (tagging, grouping) need your approval. It runs on **your own Claude Code login** — your Claude
+subscription, no API key (Claude Code must be installed and signed in).
+
+> Extract structured fields, too: pull scalar sub-fields out of a JSON column (e.g. O365 `AuditData`,
+> Hayabusa `Details`) into new first-class grid columns you can filter, sort, sweep, and tag.
+
 → **User guide:** [forynsics.github.io/pink-lemonade](https://forynsics.github.io/pink-lemonade/) (or the [`docs/`](docs/README.md) source)
 
 ---
@@ -105,9 +118,10 @@ npm run dist         # build + package the portable Windows .exe into dist/
 src/
   main/        Electron main process — window + IPC; the DB runs in a worker thread
     csv/       SQLite-backed CSV/workspace engine + Intel Sweep (db.ts, worker.ts, sql.ts, sweep.ts)
-    enrich/    enrichment engine + cache, MaxMind provider, watchlists
+    enrich/    enrichment engine + cache, MaxMind + VirusTotal providers, watchlists
+    ai/        the grounded AI assistant — Claude Code runner + the grounding tools it calls
   preload/     contextBridge surface exposed to the renderer (window.api)
-  renderer/    React UI (tools palette, notepad, CSV grid, Intel grid, sidebars)
+  renderer/    React UI (tools palette, notepad, CSV grid, Intel grid, AI panel, sidebars)
     src/tools/ the text-transform tool registry (pure functions)
 docs/          user guide + screenshots
 ```

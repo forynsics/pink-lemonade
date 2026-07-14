@@ -91,10 +91,11 @@ export function registerEnrichIpc(): void {
   // Whether a MaxMind license key is already stored (so the UI can offer "Update" without re-asking).
   ipcMain.handle('enrich:hasKey', async () => {
     const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
-    return (typeof c.maxmindKeyEnc === 'string' && c.maxmindKeyEnc !== '') || typeof c.maxmindKeyPlain === 'string'
+    return typeof c.maxmindKeyEnc === 'string' && c.maxmindKeyEnc !== ''
   })
 
-  // --- VirusTotal key handling (safeStorage-only; the key never reaches the renderer/worker plaintext) ---
+  // --- VirusTotal key handling: stored only as a safeStorage-encrypted blob; the plaintext key never
+  //     reaches the renderer. Main decrypts it and injects it into the worker per-run to make the request. ---
 
   // Whether a VirusTotal API key is stored.
   ipcMain.handle('enrich:vtHasKey', async () => {
@@ -165,16 +166,15 @@ export function registerEnrichIpc(): void {
     async (e, { key, editions }: { key?: string; editions?: string[] }) => {
       const cfg = await dbw.call<Record<string, unknown>>('enrichGetConfig')
 
-      // Resolve the license key: a freshly-pasted one (persist it) or the stored encrypted one.
+      // Resolve the license key: a freshly-pasted one (encrypt + persist) or the stored encrypted one.
+      // Mirror the VirusTotal path — NEVER store the key in plaintext; refuse if safeStorage is off.
       let licenseKey = (key ?? '').trim()
       if (licenseKey) {
         const enc = encryptKey(licenseKey)
-        // On Windows safeStorage (DPAPI) is always available; the plaintext fallback is last-resort.
-        await dbw.call('enrichSetConfig', enc ? { maxmindKeyEnc: enc, maxmindKeyPlain: '' } : { maxmindKeyPlain: licenseKey })
+        if (!enc) return { ok: false, error: 'Secure storage unavailable' }
+        await dbw.call('enrichSetConfig', { maxmindKeyEnc: enc })
       } else if (typeof cfg.maxmindKeyEnc === 'string' && cfg.maxmindKeyEnc) {
         licenseKey = decryptKey(cfg.maxmindKeyEnc) ?? ''
-      } else if (typeof cfg.maxmindKeyPlain === 'string') {
-        licenseKey = cfg.maxmindKeyPlain
       }
       if (!licenseKey) return { ok: false, error: 'No license key provided' }
 

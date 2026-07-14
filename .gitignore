@@ -11,3 +11,29 @@ CLAUDE.md
 gemini/
 sample-data/
 design-notes/
+BACKLOG.md
+
+# Local investigation data + intel caches (never commit case data)
+*.db
+*.sqlite
+*.sqlite3
+*.workspace
+*.mmdb
+
+# Secrets / local config
+settings.json
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Local scratch (driver screenshots, ad-hoc test scripts)
+pl-*.png
+_pkgtest.mjs
+
+# OS cruft
+Thumbs.db
+desktop.ini

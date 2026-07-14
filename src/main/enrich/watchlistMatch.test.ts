@@ -20,13 +20,13 @@ describe('ipv4ToInt', () => {
     expect(ipv4ToInt('256.0.0.1')).toBeNull()
     expect(ipv4ToInt('1.2.3')).toBeNull()
     expect(ipv4ToInt('a.b.c.d')).toBeNull()
-    expect(ipv4ToInt('1.2.3.4.5')).toBeNull()
+    expect(ipv4ToInt('192.0.2.4.5')).toBeNull()
   })
 })
 
 describe('parseIpEntry (IPv4 + CIDR ranges)', () => {
   it('single IP → lo === hi', () => {
-    expect(parseIpEntry('8.8.8.8')).toEqual({ lo: ipv4ToInt('8.8.8.8'), hi: ipv4ToInt('8.8.8.8') })
+    expect(parseIpEntry('203.0.113.8')).toEqual({ lo: ipv4ToInt('203.0.113.8'), hi: ipv4ToInt('203.0.113.8') })
   })
   it('/24 spans 256 addresses, masking host bits', () => {
     const r = parseIpEntry('192.168.1.50/24')!
@@ -41,13 +41,13 @@ describe('parseIpEntry (IPv4 + CIDR ranges)', () => {
   })
   it('/0 is the whole space, /32 is a single host', () => {
     expect(parseIpEntry('0.0.0.0/0')).toEqual({ lo: 0, hi: 4294967295 })
-    expect(parseIpEntry('1.2.3.4/32')).toEqual({ lo: ipv4ToInt('1.2.3.4'), hi: ipv4ToInt('1.2.3.4') })
+    expect(parseIpEntry('192.0.2.4/32')).toEqual({ lo: ipv4ToInt('192.0.2.4'), hi: ipv4ToInt('192.0.2.4') })
   })
   it('contains its members', () => {
     const r = parseIpEntry('10.0.0.0/8')!
     const v = ipv4ToInt('10.4.2.7')!
     expect(v >= r.lo && v <= r.hi).toBe(true)
-    expect(ipv4ToInt('11.0.0.1')! >= r.lo && ipv4ToInt('11.0.0.1')! <= r.hi).toBe(false)
+    expect(ipv4ToInt('192.0.2.1')! >= r.lo && ipv4ToInt('192.0.2.1')! <= r.hi).toBe(false)
   })
   it('rejects bad masks / junk', () => {
     expect(parseIpEntry('10.0.0.0/33')).toBeNull()
@@ -58,25 +58,25 @@ describe('parseIpEntry (IPv4 + CIDR ranges)', () => {
 
 describe('normalizeAsn', () => {
   it('accepts AS-prefixed and bare numbers, dropping zero padding', () => {
-    expect(normalizeAsn('AS15169')).toBe('15169')
-    expect(normalizeAsn('as15169')).toBe('15169')
-    expect(normalizeAsn('ASN 9009')).toBe('9009')
-    expect(normalizeAsn('15169')).toBe('15169')
+    expect(normalizeAsn('AS64511')).toBe('64511')
+    expect(normalizeAsn('as64511')).toBe('64511')
+    expect(normalizeAsn('ASN 64502')).toBe('64502')
+    expect(normalizeAsn('64511')).toBe('64511')
     expect(normalizeAsn('00042')).toBe('42')
   })
   it('rejects non-numeric', () => {
     expect(normalizeAsn('AS')).toBeNull()
-    expect(normalizeAsn('comcast')).toBeNull()
+    expect(normalizeAsn('notanas')).toBeNull()
     expect(normalizeAsn('')).toBeNull()
   })
 })
 
 describe('normalizeDomain', () => {
   it('lowercases and strips scheme/path/port', () => {
-    expect(normalizeDomain('Evil.COM')).toBe('evil.com')
+    expect(normalizeDomain('Bad.EXAMPLE')).toBe('bad.example')
     expect(normalizeDomain('https://bad.example.org/path?x=1')).toBe('bad.example.org')
     expect(normalizeDomain('host.example.net:8080')).toBe('host.example.net')
-    expect(normalizeDomain('trailing.dot.com.')).toBe('trailing.dot.com')
+    expect(normalizeDomain('trailing.dot.example.')).toBe('trailing.dot.example')
   })
   it('rejects non-domains', () => {
     expect(normalizeDomain('localhost')).toBeNull()
@@ -87,7 +87,7 @@ describe('normalizeDomain', () => {
 
 describe('normalizeHash', () => {
   it('accepts md5/sha1/sha256 hex (any case)', () => {
-    expect(normalizeHash('D41D8CD98F00B204E9800998ECF8427E')).toBe('d41d8cd98f00b204e9800998ecf8427e')
+    expect(normalizeHash('B7E42F1A9C0D3E685F2A1B4C8D9E0F37')).toBe('b7e42f1a9c0d3e685f2a1b4c8d9e0f37')
     expect(normalizeHash('a'.repeat(40))).toBe('a'.repeat(40))
     expect(normalizeHash('f'.repeat(64))).toBe('f'.repeat(64))
   })
@@ -113,7 +113,7 @@ describe('normalizeEntry (dispatch by kind)', () => {
     expect(normalizeEntry('ip', '2001:db8::1')).toEqual({ norm: '2001:db8::1' })
   })
   it('asn/domain/hash → norm; blanks and junk → null', () => {
-    expect(normalizeEntry('asn', 'AS9009')).toEqual({ norm: '9009' })
+    expect(normalizeEntry('asn', 'AS64502')).toEqual({ norm: '64502' })
     expect(normalizeEntry('domain', 'Bad.Example.com')).toEqual({ norm: 'bad.example.com' })
     expect(normalizeEntry('hash', 'A'.repeat(64))).toEqual({ norm: 'a'.repeat(64) })
     expect(normalizeEntry('ip', '   ')).toBeNull()

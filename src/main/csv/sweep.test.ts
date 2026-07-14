@@ -7,25 +7,25 @@ function sweep(cell: string, entries: IntelEntry[]): string[] {
 }
 
 describe('matchText — ipv4 (whole token)', () => {
-  const ip: IntelEntry[] = [{ value: '8.8.8.8', kind: 'ipv4' }]
+  const ip: IntelEntry[] = [{ value: '192.0.2.7', kind: 'ipv4' }]
 
   it('matches an IP embedded in surrounding text', () => {
-    expect(sweep('explorer.exe connected to 8.8.8.8', ip)).toEqual(['ipv4:8.8.8.8'])
+    expect(sweep('explorer.exe connected to 192.0.2.7', ip)).toEqual(['ipv4:192.0.2.7'])
   })
 
   it('matches with trailing sentence punctuation', () => {
-    expect(sweep('blocked 8.8.8.8.', ip)).toEqual(['ipv4:8.8.8.8'])
+    expect(sweep('blocked 192.0.2.7.', ip)).toEqual(['ipv4:192.0.2.7'])
   })
 
   it('does NOT match inside a longer dotted number', () => {
-    expect(sweep('18.8.8.81', ip)).toEqual([])
-    expect(sweep('8.8.8.80', ip)).toEqual([])
-    expect(sweep('108.8.8.8', ip)).toEqual([])
+    expect(sweep('5192.0.2.79', ip)).toEqual([])
+    expect(sweep('192.0.2.70', ip)).toEqual([])
+    expect(sweep('9192.0.2.7', ip)).toEqual([])
   })
 })
 
 describe('matchText — hash (whole token, length-independent)', () => {
-  const md5 = 'd41d8cd98f00b204e9800998ecf8427e'
+  const md5 = 'a7f0c2e91b6d34805fa2c1e0d9b47e63'
   const entries: IntelEntry[] = [{ value: md5, kind: 'hash' }]
 
   it('matches a hash delimited by non-hex', () => {
@@ -38,37 +38,37 @@ describe('matchText — hash (whole token, length-independent)', () => {
 })
 
 describe('matchText — filename (whole token)', () => {
-  const fn: IntelEntry[] = [{ value: 'svchost.exe', kind: 'filename' }]
+  const fn: IntelEntry[] = [{ value: 'helper.exe', kind: 'filename' }]
 
   it('matches a filename inside a path', () => {
-    expect(sweep('C:\\Windows\\System32\\svchost.exe', fn)).toEqual(['filename:svchost.exe'])
+    expect(sweep('C:\\Windows\\System32\\helper.exe', fn)).toEqual(['filename:helper.exe'])
   })
 
   it('does NOT match a filename glued to other name chars', () => {
-    expect(sweep('notsvchost.exe', fn)).toEqual([])
+    expect(sweep('nothelper.exe', fn)).toEqual([])
   })
 })
 
 describe('matchText — domain (substring, subdomain-friendly)', () => {
-  const dom: IntelEntry[] = [{ value: 'evil.com', kind: 'domain' }]
+  const dom: IntelEntry[] = [{ value: 'badsite.example', kind: 'domain' }]
 
   it('matches the bare domain and its subdomains', () => {
-    expect(sweep('GET http://mail.evil.com/path', dom)).toEqual(['domain:evil.com'])
-    expect(sweep('evil.com', dom)).toEqual(['domain:evil.com'])
+    expect(sweep('GET http://mail.badsite.example/path', dom)).toEqual(['domain:badsite.example'])
+    expect(sweep('badsite.example', dom)).toEqual(['domain:badsite.example'])
   })
 })
 
 describe('matchText — case-insensitivity (paramount)', () => {
   it('matches regardless of case on either side, for every kind', () => {
     const entries: IntelEntry[] = [
-      { value: 'EVIL.COM', kind: 'domain' },
-      { value: 'MimiKatz.EXE', kind: 'filename' },
-      { value: 'D41D8CD98F00B204E9800998ECF8427E', kind: 'hash' }
+      { value: 'BADSITE.EXAMPLE', kind: 'domain' },
+      { value: 'PayLoad.EXE', kind: 'filename' },
+      { value: 'A7F0C2E91B6D34805FA2C1E0D9B47E63', kind: 'hash' }
     ]
-    expect(sweep('connect mail.evil.com', entries)).toContain('domain:EVIL.COM')
-    expect(sweep('ran C:\\tmp\\mimikatz.exe now', entries)).toContain('filename:MimiKatz.EXE')
-    expect(sweep('sha d41d8cd98f00b204e9800998ecf8427e', entries)).toContain(
-      'hash:D41D8CD98F00B204E9800998ECF8427E'
+    expect(sweep('connect mail.badsite.example', entries)).toContain('domain:BADSITE.EXAMPLE')
+    expect(sweep('ran C:\\tmp\\payload.exe now', entries)).toContain('filename:PayLoad.EXE')
+    expect(sweep('sha a7f0c2e91b6d34805fa2c1e0d9b47e63', entries)).toContain(
+      'hash:A7F0C2E91B6D34805FA2C1E0D9B47E63'
     )
   })
 })
@@ -76,23 +76,23 @@ describe('matchText — case-insensitivity (paramount)', () => {
 describe('matchText — multiple hits + compile', () => {
   it('returns every distinct indicator found in one cell', () => {
     const entries: IntelEntry[] = [
-      { value: '8.8.8.8', kind: 'ipv4' },
-      { value: 'evil.com', kind: 'domain' },
-      { value: 'mimikatz.exe', kind: 'filename' }
+      { value: '192.0.2.7', kind: 'ipv4' },
+      { value: 'badsite.example', kind: 'domain' },
+      { value: 'payload.exe', kind: 'filename' }
     ]
-    const hits = sweep('mimikatz.exe on host beaconed to evil.com via 8.8.8.8', entries)
-    expect(hits.sort()).toEqual(['domain:evil.com', 'filename:mimikatz.exe', 'ipv4:8.8.8.8'])
+    const hits = sweep('payload.exe on host beaconed to badsite.example via 192.0.2.7', entries)
+    expect(hits.sort()).toEqual(['domain:badsite.example', 'filename:payload.exe', 'ipv4:192.0.2.7'])
   })
 
   it('dedupes the intel set case-insensitively (one hit, not two)', () => {
     const entries: IntelEntry[] = [
-      { value: 'Evil.com', kind: 'domain' },
-      { value: 'evil.com', kind: 'domain' }
+      { value: 'Badsite.example', kind: 'domain' },
+      { value: 'badsite.example', kind: 'domain' }
     ]
-    expect(sweep('evil.com', entries)).toHaveLength(1)
+    expect(sweep('badsite.example', entries)).toHaveLength(1)
   })
 
   it('returns nothing for an empty cell', () => {
-    expect(sweep('', [{ value: '8.8.8.8', kind: 'ipv4' }])).toEqual([])
+    expect(sweep('', [{ value: '192.0.2.7', kind: 'ipv4' }])).toEqual([])
   })
 })

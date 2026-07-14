@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { ChevronDown, ChevronUp, Loader2, Search, X } from 'lucide-react'
 
 // Global quick-find for a CSV tab: one term matched against every column. The input is
@@ -14,7 +15,8 @@ export function SearchBar({
   loading,
   onChange,
   onClear,
-  onStep
+  onStep,
+  trailing
 }: {
   value: string
   /** true once the debounced term is actually applied to the query */
@@ -30,6 +32,8 @@ export function SearchBar({
   onClear: () => void
   /** Step to the next (+1) / previous (-1) match. */
   onStep: (dir: 1 | -1) => void
+  /** Optional controls pinned to the trailing (right) edge of the bar — e.g. workspace panel toggles. */
+  trailing?: ReactNode
 }): JSX.Element {
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-citrus-border/60 bg-citrus-cream/60 dark:border-citrus-night-border/60 dark:bg-citrus-night">
@@ -91,6 +95,7 @@ export function SearchBar({
           </div>
         )
       )}
+      {trailing && <div className="ml-auto flex items-center gap-1.5">{trailing}</div>}
     </div>
   )
 }

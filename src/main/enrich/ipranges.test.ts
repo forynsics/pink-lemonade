@@ -3,10 +3,10 @@ import { privateIpReason } from './ipranges'
 
 describe('privateIpReason', () => {
   it('flags the RFC1918 private ranges', () => {
-    expect(privateIpReason('10.0.0.5')).toMatch(/Private/)
-    expect(privateIpReason('172.16.4.4')).toMatch(/Private/)
-    expect(privateIpReason('172.31.255.1')).toMatch(/Private/)
-    expect(privateIpReason('192.168.1.1')).toMatch(/Private/)
+    expect(privateIpReason('10.17.42.9')).toMatch(/Private/)
+    expect(privateIpReason('172.19.5.20')).toMatch(/Private/)
+    expect(privateIpReason('172.28.130.6')).toMatch(/Private/)
+    expect(privateIpReason('192.168.44.9')).toMatch(/Private/)
   })
 
   it('flags loopback / link-local / CGNAT / multicast / reserved', () => {
@@ -18,18 +18,18 @@ describe('privateIpReason', () => {
   })
 
   it('does NOT flag public IPs', () => {
-    expect(privateIpReason('8.8.8.8')).toBeNull()
-    expect(privateIpReason('45.9.148.99')).toBeNull()
-    expect(privateIpReason('1.1.1.1')).toBeNull()
+    expect(privateIpReason('11.22.33.44')).toBeNull()
+    expect(privateIpReason('12.34.56.78')).toBeNull()
+    expect(privateIpReason('23.45.67.89')).toBeNull()
     expect(privateIpReason('172.32.0.1')).toBeNull() // just outside 172.16/12
-    expect(privateIpReason('11.0.0.1')).toBeNull()
+    expect(privateIpReason('88.77.66.55')).toBeNull()
   })
 
   it('handles IPv6 special ranges', () => {
     expect(privateIpReason('::1')).toMatch(/Loopback/)
     expect(privateIpReason('fe80::1')).toMatch(/Link-local/)
     expect(privateIpReason('fd00::1')).toMatch(/Unique-local/)
-    expect(privateIpReason('2606:4700::1111')).toBeNull() // public (Cloudflare)
+    expect(privateIpReason('2001:db8::5c3a')).toBeNull() // public
   })
 
   it('returns null for non-IPs', () => {

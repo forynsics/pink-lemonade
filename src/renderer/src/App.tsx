@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sun, Moon, Loader2, Info } from 'lucide-react'
+import { Sun, Moon, Loader2, Info, Bot, Network, Fingerprint, Clock, ClipboardList, Crosshair, Search, Radar, Sparkles } from 'lucide-react'
 import { Logo } from './components/Logo'
+import { AiPanel } from './components/ai/AiPanel'
+import { ConstellationPanel } from './components/ai/ConstellationPanel'
+import { TimelinePanel } from './components/ai/TimelinePanel'
+import { InvestigationPanel } from './components/ai/InvestigationPanel'
+import { GlobalSightingsPanel } from './components/csv/GlobalSightingsPanel'
+import { FindInFilesPanel } from './components/csv/FindInFilesPanel'
+import { IocPanel } from './components/ai/IocPanel'
 import { ToolPalette } from './components/ToolPalette'
 import { ScratchEditor } from './components/ScratchEditor'
 import { DocTabs } from './components/DocTabs'
@@ -8,6 +15,7 @@ import { Welcome } from './components/Welcome'
 import { CsvViewer, type CsvViewerHandle, type TagSummary } from './components/csv/CsvViewer'
 import { CsvPlaceholder } from './components/csv/CsvPlaceholder'
 import { IntelSweepTargetDialog, type SweepTargetWorkspace } from './components/csv/IntelSweepTargetDialog'
+import { FolderImportDialog, type FolderFile } from './components/csv/FolderImportDialog'
 import { WorkspaceSidebar } from './components/csv/WorkspaceSidebar'
 import { EnrichmentView } from './components/enrich/EnrichmentView'
 import { getById, defaultOptions } from './tools/registry'
@@ -26,7 +34,9 @@ import {
   type WorkspaceDoc,
   type WorkspaceSource
 } from './state/documents'
-import type { EnrichItem } from './state/enrichTypes'
+import type { AiWsCtx, EnrichItem } from './state/enrichTypes'
+import { TIMELINE_SOURCE_MARKER } from './state/timeline'
+import { loadAiPrefs, saveAiPrefs } from './state/ai'
 import { loadTheme, saveTheme, type Theme } from './state/theme'
 import { addRecent, loadRecent, removeRecent, saveRecent, type RecentFile } from './state/recent'
 import type { ToolOptions } from './tools/types'
@@ -46,6 +56,9 @@ function initialDocs(): DocsState {
   return { docs: [], activeId: '' }
 }
 
+/** True for Excel workbooks we ingest sheet-by-sheet (legacy binary .xls isn't supported). */
+const isXlsx = (path: string): boolean => /\.xls[xm]$/i.test(path)
+
 export default function App(): JSX.Element {
   const [{ docs, activeId }, setState] = useState<DocsState>(initialDocs)
   const [theme, setTheme] = useState<Theme>(loadTheme)
@@ -56,14 +69,45 @@ export default function App(): JSX.Element {
     rows: number
     bytes: number
     total: number
+    /** For a bulk (folder/multi-file) import: which file of how many is in progress. */
+    index?: number
+    count?: number
   } | null>(null)
+  // Folder-import review: after scanning a folder, the analyst confirms which files to import.
+  const [folderImport, setFolderImport] = useState<{
+    name: string
+    files: FolderFile[]
+    target: { kind: 'new' } | { kind: 'active'; wsId: string; docId: string }
+  } | null>(null)
+  // Confirm re-importing a single file that's already a source in the workspace.
+  const [reimport, setReimport] = useState<{ wsId: string; docId: string; path: string; sourceName: string } | null>(null)
   // Recently-opened CSV files (welcome-screen quick pivot) + whether the welcome screen is showing.
   const [recent, setRecent] = useState<RecentFile[]>(loadRecent)
   // The app opens on the Home/welcome screen by default (the user's saved tabs stay in the
   // tab bar; clicking one — or any open/new action — leaves Home).
   const [home, setHome] = useState<boolean>(true)
-  // About / credits dialog (holds the MaxMind GeoLite2 attribution, out of the working view).
+  // About dialog (app name, version, license).
   const [about, setAbout] = useState(false)
+  // AI assistant pull-out (right-side chat). Open state is remembered across launches.
+  const [aiOpen, setAiOpen] = useState<boolean>(() => loadAiPrefs().open)
+  useEffect(() => {
+    saveAiPrefs({ ...loadAiPrefs(), open: aiOpen })
+  }, [aiOpen])
+  // Constellation panel (the case graph of validated findings).
+  const [constellationOpen, setConstellationOpen] = useState(false)
+  const [timelineOpen, setTimelineOpen] = useState(false)
+  const [findingsRev, setFindingsRev] = useState(0) // bump to reload events after the AI records one
+  const [iocOpen, setIocOpen] = useState(false)
+  const [iocRev, setIocRev] = useState(0) // bump to reload the IOC catalog after the AI records one
+  const [investigationOpen, setInvestigationOpen] = useState(false)
+  const [investigationRev, setInvestigationRev] = useState(0) // bump to reload the plan/notes after the AI updates them
+  // Workspace-wide sightings results (the cross-file "where is it?" view); rev bumps after any sweep.
+  const [globalSightingsOpen, setGlobalSightingsOpen] = useState(false)
+  const [sightingsRev, setSightingsRev] = useState(0)
+  const [findInFilesOpen, setFindInFilesOpen] = useState(false)
+  // Cross-source pivot: jump the grid to a value's rows in a (possibly different) source.
+  const [pendingFocus, setPendingFocus] = useState<{ wsDocId: string; sourceId: number; value?: string; rids?: number[]; token: number } | null>(null)
+  const focusTokenRef = useRef(0)
   // Path to the seamless default intel DB (resolved once from main).
   const [enrichDefault, setEnrichDefault] = useState('')
   useEffect(() => {
@@ -115,6 +159,11 @@ export default function App(): JSX.Element {
 
   // May be undefined when no tabs are open (fresh start / closed the last tab) → Home screen shows.
   const active = docs.find((d) => d.id === activeId)
+  // The Constellation / Timeline / Investigation / IOC surfaces are workspace-scoped — they read a
+  // single workspace's events/findings/plan. Their toggles live in the workspace Search bar (so they
+  // only exist where they have something to show); this flag keeps an already-open docked panel from
+  // lingering after you switch to a non-workspace tab. The Assistant stays available everywhere.
+  const inWorkspace = !home && active?.kind === 'workspace'
 
   function updateActive(fn: (d: PinkDoc) => PinkDoc): void {
     setState((s) => ({ ...s, docs: s.docs.map((d) => (d.id === s.activeId ? fn(d) : d)) }))
@@ -300,15 +349,20 @@ export default function App(): JSX.Element {
     const ws = await window.api.csv.wsCreate(wsId, picked.sourceName)
     setHome(false)
     setCsvImport({ tabId: wsId, name: picked.sourceName, rows: 0, bytes: 0, total: 0 })
-    let src: WorkspaceSource | null = null
+    let srcs: WorkspaceSource[] = []
     try {
-      src = await window.api.csv.wsAddSource(wsId, picked.path)
+      if (isXlsx(picked.path)) {
+        srcs = (await window.api.csv.wsAddXlsx(wsId, picked.path)) ?? []
+      } else {
+        const src = await window.api.csv.wsAddSource(wsId, picked.path)
+        srcs = src ? [src] : []
+      }
     } finally {
       setCsvImport(null)
     }
-    const doc = createWorkspaceDoc({ ...ws, sources: src ? [src] : [] })
+    const doc = createWorkspaceDoc({ ...ws, sources: srcs })
     setState((s) => ({ docs: [...s.docs, doc], activeId: doc.id }))
-    recordRecent(ws.dbPath, ws.name, src?.rowCount ?? 0)
+    recordRecent(ws.dbPath, ws.name, srcs.reduce((a, src) => a + src.rowCount, 0))
   }
 
   /** New empty workspace (import sources into it afterwards). */
@@ -359,29 +413,131 @@ export default function App(): JSX.Element {
     void openWorkspaceByPath(f.path)
   }
 
-  /** Add a CSV as a new source to the active workspace (sidebar "Import"). */
+  /** Append one or more freshly-ingested sources to a workspace doc, activating the last. */
+  /** Materialize the Timeline rows as a real source the grid can open (Build Timeline). Replaces any
+   *  prior generated Timeline source and opens the new one. */
+  async function buildTimelineSourceFor(docId: string, wsId: string, header: string[], rows: string[][]): Promise<void> {
+    const src = await window.api.csv.wsBuildTimeline(wsId, header, rows)
+    if (!src) return
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) =>
+        d.id === docId && d.kind === 'workspace'
+          ? { ...d, sources: [...d.sources.filter((x) => x.originalPath !== TIMELINE_SOURCE_MARKER), src], activeSourceId: src.sourceId }
+          : d
+      )
+    }))
+  }
+
+  function appendSources(docId: string, srcs: WorkspaceSource[]): void {
+    if (srcs.length === 0) return
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) =>
+        d.id === docId && d.kind === 'workspace' ? { ...d, sources: [...d.sources, ...srcs], activeSourceId: srcs[srcs.length - 1].sourceId } : d
+      )
+    }))
+  }
+
+  /** Ingest one file as a new source (or, for an Excel workbook, one source per sheet) in a workspace.
+   *  Dedup is checked by callers. */
+  async function doSingleImport(wsId: string, docId: string, path: string, sourceName: string): Promise<void> {
+    setCsvImport({ tabId: wsId, name: sourceName, rows: 0, bytes: 0, total: 0 })
+    try {
+      if (isXlsx(path)) {
+        const srcs = await window.api.csv.wsAddXlsx(wsId, path)
+        if (srcs) appendSources(docId, srcs)
+      } else {
+        const src = await window.api.csv.wsAddSource(wsId, path)
+        if (src) appendSources(docId, [src])
+      }
+    } finally {
+      setCsvImport(null)
+    }
+  }
+
+  /** Add a CSV as a new source to the active workspace (sidebar "Import"). Warns on a re-import. */
   async function addSourceToActive(): Promise<void> {
     if (active?.kind !== 'workspace') return
     const picked = await window.api.csv.pick()
     if (!picked) return
     const { wsId, id: docId } = active
-    setCsvImport({ tabId: wsId, name: picked.sourceName, rows: 0, bytes: 0, total: 0 })
-    let src: WorkspaceSource | null = null
-    try {
-      src = await window.api.csv.wsAddSource(wsId, picked.path)
-    } finally {
-      setCsvImport(null)
+    if (active.sources.some((s) => s.originalPath && s.originalPath === picked.path)) {
+      setReimport({ wsId, docId, path: picked.path, sourceName: picked.sourceName })
+      return
     }
-    if (src) {
-      const added = src
-      setState((s) => ({
-        ...s,
-        docs: s.docs.map((d) =>
-          d.id === docId && d.kind === 'workspace'
-            ? { ...d, sources: [...d.sources, added], activeSourceId: added.sourceId }
-            : d
-        )
-      }))
+    await doSingleImport(wsId, docId, picked.path, picked.sourceName)
+  }
+
+  /** Ingest a list of files into a workspace as sources, one after another, updating the import
+   *  overlay (file N of M) and appending each source as it lands. A file that fails to parse is
+   *  skipped so one bad CSV doesn't abort a whole KAPE package. Returns the total rows ingested. */
+  async function bulkAddToWorkspace(
+    wsId: string,
+    docId: string,
+    files: Array<{ path: string; sourceName: string }>,
+    group?: string | null
+  ): Promise<number> {
+    let totalRows = 0
+    const grp = group && group.trim() ? group.trim() : null
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i]
+      setCsvImport({ tabId: wsId, name: f.sourceName, rows: 0, bytes: 0, total: 0, index: i + 1, count: files.length })
+      try {
+        // Excel workbooks yield one source per sheet; everything else is a single source.
+        const landed = isXlsx(f.path) ? (await window.api.csv.wsAddXlsx(wsId, f.path)) ?? [] : [await window.api.csv.wsAddSource(wsId, f.path)].filter(Boolean)
+        for (const raw of landed) {
+          if (!raw) continue
+          const added = grp ? { ...raw, group: grp } : raw
+          totalRows += added.rowCount
+          if (grp) await window.api.csv.wsSetSourceGroup(wsId, added.sourceId, grp)
+          setState((s) => ({
+            ...s,
+            docs: s.docs.map((d) =>
+              d.id === docId && d.kind === 'workspace' ? { ...d, sources: [...d.sources, added], activeSourceId: d.activeSourceId ?? added.sourceId } : d
+            )
+          }))
+        }
+      } catch {
+        /* skip a file that fails to ingest and keep going */
+      }
+    }
+    setCsvImport(null)
+    return totalRows
+  }
+
+  /** Scan a folder of CSVs (e.g. a parsed KAPE package) and open the review dialog to pick which to
+   *  import as ONE new workspace. */
+  async function newWorkspaceFromFolder(): Promise<void> {
+    const picked = await window.api.csv.pickFolder()
+    if (!picked || picked.files.length === 0) return
+    setFolderImport({ name: picked.name, files: picked.files, target: { kind: 'new' } })
+  }
+
+  /** Scan a folder and open the review dialog to import the chosen CSVs into the ACTIVE workspace. */
+  async function importFolderToActive(): Promise<void> {
+    if (active?.kind !== 'workspace') return
+    const picked = await window.api.csv.pickFolder()
+    if (!picked || picked.files.length === 0) return
+    setFolderImport({ name: picked.name, files: picked.files, target: { kind: 'active', wsId: active.wsId, docId: active.id } })
+  }
+
+  /** Confirm the folder-import selection → create/locate the workspace and ingest the chosen files,
+   *  optionally assigning them all one group (e.g. the host the package came from). */
+  async function runFolderImport(selected: FolderFile[], group: string | null): Promise<void> {
+    const job = folderImport
+    setFolderImport(null)
+    if (!job || selected.length === 0) return
+    if (job.target.kind === 'new') {
+      const wsId = newId()
+      const ws = await window.api.csv.wsCreate(wsId, job.name || 'Imported')
+      const doc = createWorkspaceDoc(ws)
+      setHome(false)
+      setState((s) => ({ docs: [...s.docs, doc], activeId: doc.id }))
+      const rows = await bulkAddToWorkspace(wsId, doc.id, selected, group)
+      recordRecent(ws.dbPath, ws.name, rows)
+    } else {
+      await bulkAddToWorkspace(job.target.wsId, job.target.docId, selected, group)
     }
   }
 
@@ -420,6 +576,9 @@ export default function App(): JSX.Element {
         needsReopen: false,
         reopenFailed: false
       })
+      // The DB is now open → events (constellation) can be (re)loaded. The panel reads them when it
+      // sees a new refreshKey, fixing "the constellation is empty after restart until I poke it".
+      setFindingsRev((r) => r + 1)
     } catch {
       patchWorkspaceById(doc.id, { reopenFailed: true })
     } finally {
@@ -456,6 +615,25 @@ export default function App(): JSX.Element {
             cols.splice(to, 0, moved)
             return { ...src, columns: cols }
           })
+        }
+      })
+    }))
+  }
+
+  /** Append columns extracted from a JSON field (db already added them to the source in place). Mutating
+   *  the live doc's columns is what makes them render immediately; openWorkspace reconstructs them from
+   *  source_columns on reopen, and the persisted order/hidden sets merge-by-name (tolerate new `c<n>`). */
+  function appendSourceColumns(docId: string, sourceId: number, cols: WorkspaceSource['columns']): void {
+    if (cols.length === 0) return
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) => {
+        if (d.id !== docId || d.kind !== 'workspace') return d
+        return {
+          ...d,
+          sources: d.sources.map((src) =>
+            src.sourceId === sourceId ? { ...src, columns: [...src.columns, ...cols] } : src
+          )
         }
       })
     }))
@@ -546,6 +724,35 @@ export default function App(): JSX.Element {
     }))
   }
 
+  /** Set or clear a source's grouping label (host/system/origin). Empty/whitespace clears it. */
+  async function setSourceGroupLabel(docId: string, wsId: string, sourceId: number, group: string | null): Promise<void> {
+    const trimmed = group && group.trim() ? group.trim() : null
+    await window.api.csv.wsSetSourceGroup(wsId, sourceId, trimmed)
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) =>
+        d.id === docId && d.kind === 'workspace'
+          ? { ...d, sources: d.sources.map((src) => (src.sourceId === sourceId ? { ...src, group: trimmed } : src)) }
+          : d
+      )
+    }))
+  }
+
+  /** Set or clear the grouping label on several sources at once (sidebar multi-select). */
+  async function setSourceGroupMany(docId: string, wsId: string, sourceIds: number[], group: string | null): Promise<void> {
+    const trimmed = group && group.trim() ? group.trim() : null
+    const ids = new Set(sourceIds)
+    await Promise.all(sourceIds.map((sid) => window.api.csv.wsSetSourceGroup(wsId, sid, trimmed)))
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) =>
+        d.id === docId && d.kind === 'workspace'
+          ? { ...d, sources: d.sources.map((src) => (ids.has(src.sourceId) ? { ...src, group: trimmed } : src)) }
+          : d
+      )
+    }))
+  }
+
   // ---- workflow operations (act on the active scratch document) ----
   function addTool(toolId: string): void {
     const tool = getById(toolId)
@@ -582,6 +789,160 @@ export default function App(): JSX.Element {
     patchScratch({ steps })
   }
 
+  // The active-workspace context handed to the AI assistant with each turn — read live so a tab/
+  // source switch is reflected. When no workspace source is active the agent's grid tools report so.
+  function aiWsCtx(): AiWsCtx {
+    if (!home && active?.kind === 'workspace' && active.sources.length > 0) {
+      return {
+        hasWorkspace: true,
+        wsId: active.wsId,
+        workspaceName: active.name,
+        activeSourceId: active.activeSourceId,
+        intelDbPath: active.intelMode === 'workspace' ? workspaceIntelPath(active.dbPath) : enrichDefault,
+        sources: active.sources.map((s) => ({
+          sourceId: s.sourceId,
+          tabId: srcKey(active.wsId, s.sourceId),
+          name: s.name,
+          columns: s.columns.map((c) => ({ name: c.name, original: c.original, time: c.time })),
+          rowCount: s.rowCount,
+          group: s.group ?? null,
+          derived: s.originalPath === TIMELINE_SOURCE_MARKER
+        }))
+      }
+    }
+    return { hasWorkspace: false, sources: [], intelDbPath: enrichDefault }
+  }
+
+  // Jump the grid to a constellation event's EXACT evidence rows in a source (by rowid, not a broad
+  // keyword). Switches the active source if needed, then hands the rids to that source's viewer.
+  function pivotToEvidence(sourceId: number, rids: number[]): void {
+    if (!active || active.kind !== 'workspace') return
+    if (active.activeSourceId !== sourceId) selectSource(active.id, sourceId)
+    setPendingFocus({ wsDocId: active.id, sourceId, rids, token: ++focusTokenRef.current })
+  }
+
+  // Mirror an AI group label into a workspace doc's source (the db write already happened on approval).
+  function applyGroupToDoc(wsId: string, sourceId: number, group: string | null): void {
+    setState((s) => ({
+      ...s,
+      docs: s.docs.map((d) =>
+        d.kind === 'workspace' && d.wsId === wsId ? { ...d, sources: d.sources.map((src) => (src.sourceId === sourceId ? { ...src, group } : src)) } : d
+      )
+    }))
+  }
+
+  // Actions relayed from a detached popout window (Constellation / Timeline / AI chat). The popout
+  // carries the wsId since it isn't bound to the active tab; we resolve the doc and apply it here.
+  useEffect(() => {
+    const off = window.api.popout.onRelay((p) => {
+      const msg = p as
+        | { type: 'pivot'; wsId: string; sourceId: number; rids: number[] }
+        | { type: 'pivotValue'; wsId: string; value: string; source?: string }
+        | { type: 'buildTimeline'; wsId: string; header: string[]; rows: string[][] }
+        | { type: 'applyGroup'; wsId: string; sourceId: number; group: string | null }
+        | { type: 'refresh'; wsId: string; what: 'findings' | 'tags' | 'iocs' | 'investigation' }
+      const doc = docs.find((d) => d.kind === 'workspace' && d.wsId === msg.wsId)
+      if (!doc || doc.kind !== 'workspace') return
+      if (msg.type === 'pivot') {
+        setState((s) => ({ ...s, activeId: doc.id }))
+        if (doc.activeSourceId !== msg.sourceId) selectSource(doc.id, msg.sourceId)
+        setPendingFocus({ wsDocId: doc.id, sourceId: msg.sourceId, rids: msg.rids, token: ++focusTokenRef.current })
+      } else if (msg.type === 'pivotValue') {
+        // Keyword pivot from a popped-out chat: activate the doc, then focus the value in the named
+        // source (or the doc's active source as a fallback).
+        setState((s) => ({ ...s, activeId: doc.id }))
+        const lc = (msg.source ?? '').toLowerCase()
+        const src = msg.source ? doc.sources.find((s) => s.name.toLowerCase() === lc) ?? doc.sources.find((s) => s.name.toLowerCase().includes(lc)) : undefined
+        const sourceId = src ? src.sourceId : doc.activeSourceId
+        if (sourceId == null) return
+        if (doc.activeSourceId !== sourceId) selectSource(doc.id, sourceId)
+        setPendingFocus({ wsDocId: doc.id, sourceId, value: msg.value, token: ++focusTokenRef.current })
+      } else if (msg.type === 'buildTimeline') {
+        void buildTimelineSourceFor(doc.id, msg.wsId, msg.header, msg.rows)
+      } else if (msg.type === 'applyGroup') {
+        applyGroupToDoc(msg.wsId, msg.sourceId, msg.group)
+      } else if (msg.type === 'refresh') {
+        if (msg.what === 'findings') setFindingsRev((r) => r + 1)
+        else if (msg.what === 'iocs') setIocRev((r) => r + 1)
+        else if (msg.what === 'investigation') setInvestigationRev((r) => r + 1)
+        else if (msg.what === 'tags') tagApiRef.current?.reloadTags()
+      }
+    })
+    return off
+  }, [docs])
+
+  // A pivot from the chat. Tool cards carry the source name → jump to that source's grid and keyword-
+  // filter (find_rows is a "where does X appear" search); a bare prose indicator filters the open grid.
+  function pivotFromChat(value: string, source?: string): void {
+    if (source && active?.kind === 'workspace') {
+      const lc = source.toLowerCase()
+      const src = active.sources.find((s) => s.name.toLowerCase() === lc) ?? active.sources.find((s) => s.name.toLowerCase().includes(lc))
+      if (src) {
+        if (active.activeSourceId !== src.sourceId) selectSource(active.id, src.sourceId)
+        setPendingFocus({ wsDocId: active.id, sourceId: src.sourceId, value, token: ++focusTokenRef.current })
+        return
+      }
+    }
+    tagApiRef.current?.focusValue(value)
+  }
+
+  // Manual handoff: send catalogued IOCs to the active workspace's Intel grid (global or its own).
+  function sendIocsToIntel(values: string[]): void {
+    if (active?.kind !== 'workspace') return
+    const target =
+      active.intelMode === 'workspace' ? { dbPath: workspaceIntelPath(active.dbPath), name: `${active.name} Intel` } : { dbPath: enrichDefault, name: 'Global Intel' }
+    sendToEnrichment(values, target)
+  }
+
+  // The workspace-scoped panel toggles (Constellation / Timeline / Investigation / IOCs). These live
+  // in the workspace's Search bar (rendered by CsvViewer) rather than the global header, since they
+  // only have anything to show for an open workspace. One node, passed to each source's search bar.
+  const pillToggle = (on: boolean): string =>
+    `inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-semibold transition-colors ${
+      on
+        ? 'border-citrus-pink/50 bg-citrus-pink/10 text-citrus-pink'
+        : 'border-citrus-border text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text'
+    }`
+  // Two groups: the analyst's own tools (Find, Sightings) on the left, then a divider, then the
+  // Assistant's surfaces bracketed under a ✨ label so it's clear which panels the AI produces.
+  const workspacePanelButtons = (
+    <>
+      <button className={pillToggle(findInFilesOpen)} onClick={() => setFindInFilesOpen((v) => !v)} title="Search every file for a string">
+        <Search className="w-3.5 h-3.5" />
+        Find
+      </button>
+      <button className={pillToggle(globalSightingsOpen)} onClick={() => setGlobalSightingsOpen((v) => !v)} title="Intel-Sweep hits across all files">
+        <Crosshair className="w-3.5 h-3.5" />
+        Sightings
+      </button>
+
+      <span className="mx-0.5 h-4 w-px shrink-0 bg-citrus-border dark:bg-citrus-night-border" />
+
+      <div className="inline-flex items-center gap-1 rounded-md border border-citrus-pink/25 bg-citrus-pink/5 px-1.5 py-0.5 dark:border-citrus-pink/30 dark:bg-citrus-pink/10">
+        <span className="inline-flex items-center gap-1 pr-0.5 text-[10px] font-bold uppercase tracking-wide text-citrus-pink" title="Panels the AI Assistant produces">
+          <Sparkles className="w-3 h-3" />
+          Assistant
+        </span>
+        <button className={pillToggle(constellationOpen)} onClick={() => setConstellationOpen((v) => !v)} title="Case graph of findings">
+          <Network className="w-3.5 h-3.5" />
+          Constellation
+        </button>
+        <button className={pillToggle(timelineOpen)} onClick={() => setTimelineOpen((v) => !v)} title="Timeline of recorded events">
+          <Clock className="w-3.5 h-3.5" />
+          Timeline
+        </button>
+        <button className={pillToggle(investigationOpen)} onClick={() => setInvestigationOpen((v) => !v)} title="The Assistant's plan and progress">
+          <ClipboardList className="w-3.5 h-3.5" />
+          Investigation
+        </button>
+        <button className={pillToggle(iocOpen)} onClick={() => setIocOpen((v) => !v)} title="Indicators the Assistant recorded">
+          <Fingerprint className="w-3.5 h-3.5" />
+          IOCs
+        </button>
+      </div>
+    </>
+  )
+
   return (
     <div className="app flex flex-col h-full">
       <header className="flex items-center justify-between px-4 py-2.5 border-b border-citrus-border bg-citrus-card dark:border-citrus-night-border dark:bg-citrus-night-card">
@@ -596,15 +957,36 @@ export default function App(): JSX.Element {
           >
             v{__APP_VERSION__}
           </span>
-          <span className="hidden sm:block truncate text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-            Local investigation toolkit — parse, pivot, and triage all in one space.
-          </span>
         </div>
         <div className="flex items-center gap-2">
           <button
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+              active?.kind === 'enrichment' && active.dbPath === enrichDefault
+                ? 'border-citrus-pink/50 bg-citrus-pink/10 text-citrus-pink'
+                : 'border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
+            }`}
+            onClick={() => void openEnrichmentTab()}
+            title="Global Intel"
+          >
+            <Radar className="w-3.5 h-3.5" />
+            Global Intel
+          </button>
+          <button
+            className={`ai-panel__toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+              aiOpen
+                ? 'border-citrus-pink/50 bg-citrus-pink/10 text-citrus-pink'
+                : 'border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
+            }`}
+            onClick={() => setAiOpen((v) => !v)}
+            title="AI Assistant"
+          >
+            <Bot className="w-3.5 h-3.5" />
+            Assistant
+          </button>
+          <button
             className="inline-flex items-center justify-center p-1.5 rounded-full border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev"
             onClick={() => setAbout(true)}
-            title="About & credits"
+            title="About"
           >
             <Info className="w-3.5 h-3.5" />
           </button>
@@ -628,9 +1010,12 @@ export default function App(): JSX.Element {
             importing={csvImport?.tabId === active.wsId}
             onSelectSource={(sid) => selectSource(active.id, sid)}
             onImport={addSourceToActive}
+            onImportFolder={importFolderToActive}
             onRemoveSource={(sid) => void removeSource(active.id, active.wsId, sid)}
             onRename={(name) => renameDoc(active.id, name)}
             onRenameSource={(sid, name) => void renameSourceName(active.id, active.wsId, sid, name)}
+            onSetSourceGroup={(sid, group) => void setSourceGroupLabel(active.id, active.wsId, sid, group)}
+            onSetSourceGroupMany={(sids, group) => void setSourceGroupMany(active.id, active.wsId, sids, group)}
             tagSummary={tagSummary}
             onToggleTagFilter={(tag) => tagApiRef.current?.toggleTagFilter(tag)}
             onExcludeTagFilter={(tag) => tagApiRef.current?.excludeTagFilter(tag)}
@@ -657,6 +1042,7 @@ export default function App(): JSX.Element {
               onOpenRecent={openRecent}
               onNewWorkspace={newWorkspace}
               onImportCsv={newWorkspaceFromCsv}
+              onImportFolder={newWorkspaceFromFolder}
               onOpenWorkspace={openWorkspaceFile}
               onNewScratch={addDoc}
               onNewEnrichment={openEnrichmentTab}
@@ -713,7 +1099,7 @@ export default function App(): JSX.Element {
                   <CsvPlaceholder name={d.name} dbPath={d.dbPath} failed={d.reopenFailed} onReopen={() => reopenWorkspace(d)} />
                 ) : d.sources.length === 0 ? (
                   <div className="flex flex-1 items-center justify-center text-sm text-citrus-muted dark:text-citrus-night-muted">
-                    Empty workspace — import a CSV from the sidebar.
+                    Import a CSV from the sidebar.
                   </div>
                 ) : (
                   d.sources.map((src) => {
@@ -734,7 +1120,9 @@ export default function App(): JSX.Element {
                             dbPath: d.dbPath
                           }}
                           onPivot={pivotToScratch}
+                          searchTrailing={workspacePanelButtons}
                           onReorderColumns={(from, to) => reorderSourceColumns(d.id, src.sourceId, from, to)}
+                          onColumnsExtracted={(cols) => appendSourceColumns(d.id, src.sourceId, cols)}
                           savedHidden={src.hiddenColumns}
                           onHiddenColumns={(names) => setSourceHiddenColumns(d.id, src.sourceId, names)}
                           pendingSweep={
@@ -743,8 +1131,16 @@ export default function App(): JSX.Element {
                               : undefined
                           }
                           onConsumePendingSweep={() => setPendingSweep(null)}
+                          pendingFocus={
+                            pendingFocus && pendingFocus.wsDocId === d.id && pendingFocus.sourceId === src.sourceId
+                              ? { value: pendingFocus.value, rids: pendingFocus.rids, token: pendingFocus.token }
+                              : undefined
+                          }
+                          onConsumePendingFocus={() => setPendingFocus(null)}
+                          onPivotEvidence={pivotToEvidence}
                           apiRef={isActiveSource ? tagApiRef : undefined}
                           onTagSummary={isActiveSource ? setTagSummary : undefined}
+                          onEventRecorded={() => setFindingsRev((r) => r + 1)}
                           onSendToEnrichment={(vals) =>
                             sendToEnrichment(
                               vals,
@@ -755,6 +1151,10 @@ export default function App(): JSX.Element {
                           }
                           sendIntelLabel={d.intelMode === 'workspace' ? 'Workspace Intel' : 'Global Intel'}
                           intelDbPath={d.intelMode === 'workspace' ? workspaceIntelPath(d.dbPath) : enrichDefault}
+                          sweepSources={d.sources}
+                          onSightingsChanged={() => setSightingsRev((r) => r + 1)}
+                          onOpenSightings={() => setGlobalSightingsOpen(true)}
+                          sightingRefreshKey={sightingsRev}
                         />
                       </div>
                     )
@@ -764,7 +1164,128 @@ export default function App(): JSX.Element {
             )
           })}
         </main>
+        {/* AI assistant + constellation dock beside the content (in-flow), shrinking the view. */}
+        <AiPanel
+          open={aiOpen}
+          onClose={() => setAiOpen(false)}
+          onPopOut={() => {
+            // Detach the chat into its own window: it carries a snapshot of the active workspace
+            // context and continues the same (localStorage-persisted) transcript. Close the docked
+            // panel so there's a single chat surface driving the run.
+            void window.api.popout.open('ai', { wsCtx: aiWsCtx(), title: active?.kind === 'workspace' ? active.name : undefined })
+            setAiOpen(false)
+          }}
+          getWsCtx={aiWsCtx}
+          scopeId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          onTagsChanged={() => tagApiRef.current?.reloadTags()}
+          onFindingsChanged={() => setFindingsRev((r) => r + 1)}
+          onIocsChanged={() => setIocRev((r) => r + 1)}
+          onInvestigationChanged={() => setInvestigationRev((r) => r + 1)}
+          onApplyGroup={(sid, group) => {
+            // The AI's set_source_group tool already persisted to the db on approval; mirror it into
+            // the active workspace doc so the sidebar + next-turn list_sources reflect it live.
+            if (active?.kind === 'workspace') applyGroupToDoc(active.wsId, sid, group)
+          }}
+          onPivot={pivotFromChat}
+        />
+        <ConstellationPanel
+          open={constellationOpen && inWorkspace}
+          onClose={() => setConstellationOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          workspaceName={!home && active?.kind === 'workspace' ? active.name : null}
+          refreshKey={findingsRev}
+          iocRefreshKey={iocRev}
+          sources={!home && active?.kind === 'workspace' ? active.sources : []}
+          onPivot={pivotToEvidence}
+          onSendToIntel={sendIocsToIntel}
+        />
+        <TimelinePanel
+          open={timelineOpen && inWorkspace}
+          onClose={() => setTimelineOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          workspaceName={!home && active?.kind === 'workspace' ? active.name : null}
+          refreshKey={findingsRev}
+          sources={!home && active?.kind === 'workspace' ? active.sources : []}
+          onPivot={pivotToEvidence}
+          onBuildSource={(header, rows) => {
+            if (active?.kind !== 'workspace') return
+            void buildTimelineSourceFor(active.id, active.wsId, header, rows)
+          }}
+        />
+        <IocPanel
+          open={iocOpen && inWorkspace}
+          onClose={() => setIocOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          refreshKey={iocRev}
+          onSendToIntel={sendIocsToIntel}
+        />
+        <InvestigationPanel
+          open={investigationOpen && inWorkspace}
+          onClose={() => setInvestigationOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          refreshKey={investigationRev}
+          onSaved={() => setInvestigationRev((r) => r + 1)}
+        />
+        <GlobalSightingsPanel
+          open={globalSightingsOpen && inWorkspace}
+          onClose={() => setGlobalSightingsOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          reloadKey={sightingsRev}
+          onPivot={pivotToEvidence}
+          onCleared={() => setSightingsRev((r) => r + 1)}
+        />
+        <FindInFilesPanel
+          open={findInFilesOpen && inWorkspace}
+          onClose={() => setFindInFilesOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          sources={!home && active?.kind === 'workspace' ? active.sources : []}
+          onPivot={pivotToEvidence}
+        />
       </div>
+
+      {folderImport && (
+        <FolderImportDialog
+          folderName={folderImport.name}
+          files={folderImport.files}
+          existingPaths={((): Set<string> | undefined => {
+            const t = folderImport.target
+            if (t.kind !== 'active') return undefined
+            const doc = docs.find((d) => d.id === t.docId && d.kind === 'workspace') as WorkspaceDoc | undefined
+            return new Set((doc?.sources ?? []).map((s) => s.originalPath).filter((p): p is string => !!p))
+          })()}
+          onConfirm={(selected, group) => void runFolderImport(selected, group)}
+          onCancel={() => setFolderImport(null)}
+        />
+      )}
+
+      {reimport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setReimport(null)}>
+          <div className="w-[24rem] max-w-[90vw] rounded-xl border border-citrus-border bg-citrus-card p-5 shadow-lg dark:border-citrus-night-border dark:bg-citrus-night-card" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Already imported</div>
+            <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">
+              <span className="font-mono">{reimport.sourceName}</span> is already a source in this workspace. Import it again as a duplicate?
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="rounded-md border border-citrus-border px-3 py-1 text-[11px] font-bold text-citrus-dark hover:bg-citrus-sand/60 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+                onClick={() => setReimport(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md bg-citrus-pink px-3 py-1 text-[11px] font-bold text-white hover:bg-citrus-pink-hover"
+                onClick={() => {
+                  const r = reimport
+                  setReimport(null)
+                  void doSingleImport(r.wsId, r.docId, r.path, r.sourceName)
+                }}
+              >
+                Import again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {sweepPicker && (
         <IntelSweepTargetDialog
@@ -815,18 +1336,12 @@ export default function App(): JSX.Element {
               <span className="text-[10px] font-mono text-citrus-muted dark:text-citrus-night-muted">v{__APP_VERSION__}</span>
             </div>
             <p className="mt-2 text-xs text-citrus-muted dark:text-citrus-night-muted">
-              Desktop toolkit for cybersecurity investigation and data wrangling.
+              Local investigation toolkit — parse, pivot, and triage in one space.
             </p>
             <div className="mt-4 space-y-3 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
               <div>
                 <div className="font-semibold text-citrus-dark dark:text-citrus-night-text">License</div>
                 MIT © forynsics
-              </div>
-              <div>
-                <div className="font-semibold text-citrus-dark dark:text-citrus-night-text">Data &amp; credits</div>
-                This product includes GeoLite2 data created by MaxMind, available from
-                https://www.maxmind.com. GeoLite2 databases are downloaded and used under your own
-                MaxMind license; the data is not distributed with this app.
               </div>
             </div>
             <div className="mt-5 text-right">
@@ -848,6 +1363,11 @@ export default function App(): JSX.Element {
             <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">
               Importing {csvImport.name}…
             </div>
+            {csvImport.count != null && csvImport.count > 1 && (
+              <div className="text-[11px] font-semibold text-citrus-pink">
+                file {csvImport.index} of {csvImport.count}
+              </div>
+            )}
             {csvImport.total > 0 && (
               <div className="h-1.5 w-56 overflow-hidden rounded-full bg-citrus-sand dark:bg-citrus-night-elev">
                 <div

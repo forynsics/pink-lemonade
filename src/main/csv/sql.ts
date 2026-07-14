@@ -48,6 +48,13 @@ export type Filter =
   // those specific indicators (the "zero in" facet). `exclude` flips it to "rows that do NOT hit
   // (any of) these" (right-click an indicator). Like the tag op, it resolves by source id.
   | { op: 'sighting'; indicators?: string[]; exclude?: boolean }
+  // AI-accountability marks: rows the AI assistant marked (✨) while asserting something during
+  // triage. Its own dimension (the `ai_marks` table), so the analyst can filter to exactly what the
+  // assistant flagged. `exclude` flips it to "rows the AI did NOT mark". Resolves by source id.
+  | { op: 'aimark'; exclude?: boolean }
+  // A specific set of positional rowids — used to pivot the grid to EXACTLY a constellation event's
+  // evidence rows (not a broad keyword). The rids are validated integers, so they bind safely.
+  | { op: 'rids'; rids: number[] }
 
 /** The source id of a workspace data table (`data_<id>` → id), or null for the legacy `data` table. */
 function tableSourceId(table: string): number | null {
@@ -151,6 +158,26 @@ function buildWhere(
           clauses.push(`rowid ${op} (SELECT rid FROM intel_hits WHERE source_id = ?)`)
           params.push(sid)
         }
+        continue
+      }
+      if (f.op === 'aimark') {
+        const sid = tableSourceId(table)
+        if (sid == null) {
+          if (!f.exclude) clauses.push('0') // legacy table has no AI marks → include matches nothing
+          continue
+        }
+        clauses.push(`rowid ${f.exclude ? 'NOT IN' : 'IN'} (SELECT rid FROM ai_marks WHERE source_id = ?)`)
+        params.push(sid)
+        continue
+      }
+      if (f.op === 'rids') {
+        const ids = Array.isArray(f.rids) ? f.rids.filter((n) => Number.isInteger(n)) : []
+        if (ids.length === 0) {
+          clauses.push('0') // an explicit empty set matches nothing
+          continue
+        }
+        clauses.push(`rowid IN (${ids.map(() => '?').join(', ')})`)
+        params.push(...ids)
         continue
       }
       assertCol(f.col)
@@ -387,7 +414,8 @@ export function buildTagApplyByFilterSql(
   sourceId: number,
   tag: string,
   updatedAt: number,
-  table = 'data'
+  table = 'data',
+  actor: string | null = null
 ): { sql: string; params: unknown[] } {
   assertTable(table)
   const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
@@ -395,9 +423,29 @@ export function buildTagApplyByFilterSql(
   // (SQLite upsert rule); reuse the predicate, or `WHERE true` when tagging the whole table.
   const whereSql = where.sql || ' WHERE true'
   const sql =
-    `INSERT INTO tags (source_id, rid, tag, updated_at) SELECT ?, rowid, ?, ? FROM ${table}${whereSql} ` +
-    `ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at`
-  return { sql, params: [sourceId, tag, updatedAt, ...where.params] }
+    `INSERT INTO tags (source_id, rid, tag, updated_at, actor) SELECT ?, rowid, ?, ?, ? FROM ${table}${whereSql} ` +
+    `ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at, actor = excluded.actor`
+  return { sql, params: [sourceId, tag, updatedAt, actor, ...where.params] }
+}
+
+/** Bulk AI-accountability mark every row matching the view, in one statement (the `ai_marks`
+ *  dimension). Upserts the note. `createdAt` is passed in (sql.ts stays clock-free). */
+export function buildAiMarkApplyByFilterSql(
+  cols: ColumnMap[],
+  filters: Filter[] | undefined,
+  search: string | undefined,
+  sourceId: number,
+  note: string | null,
+  createdAt: number,
+  table = 'data'
+): { sql: string; params: unknown[] } {
+  assertTable(table)
+  const where = buildWhere(filters, search ? { term: search, cols } : undefined, table)
+  const whereSql = where.sql || ' WHERE true'
+  const sql =
+    `INSERT INTO ai_marks (source_id, rid, note, created_at) SELECT ?, rowid, ?, ? FROM ${table}${whereSql} ` +
+    `ON CONFLICT(source_id, rid) DO UPDATE SET note = excluded.note, created_at = excluded.created_at`
+  return { sql, params: [sourceId, note, createdAt, ...where.params] }
 }
 
 /** Clear the tag from every row matching the current view (filters + search). */

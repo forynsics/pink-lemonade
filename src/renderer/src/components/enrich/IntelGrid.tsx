@@ -881,7 +881,7 @@ export function IntelGrid({
             : undefined
         }
         onDragEnd={drag ? () => { setDragF(null); setDropAt(null) } : undefined}
-        title={drag ? 'Drag to reorder · click to sort (Shift = add)' : 'Click to sort (Shift = add)'}
+        title={drag ? 'Drag to reorder · click to sort' : 'Click to sort (Shift = add)'}
         className={`${headTh} whitespace-nowrap overflow-hidden hover:text-citrus-pink ${drag ? 'cursor-move' : 'cursor-pointer'} ${div} ${
           dragF?.pid === l.pid && dragF?.f === l.field ? 'opacity-40' : ''
         } ${dropAt?.colId === l.colId ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/60' : ''}`}
@@ -918,7 +918,7 @@ export function IntelGrid({
             value={globalFilter}
             onChange={(e) => setGlobalFilter(e.target.value)}
             placeholder="Search all columns…"
-            title="Matches any text in the row — indicator, kind, status, and every field"
+            title="Matches any text in the row"
             className="w-56 rounded-md border border-citrus-border bg-citrus-cream pl-7 pr-6 py-1 text-xs text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
           />
           {globalFilter && (
@@ -1026,7 +1026,7 @@ export function IntelGrid({
       <div ref={gridRef} tabIndex={0} onKeyDown={onGridKeyDown} className="pane__text--out flex-1 min-h-0 overflow-auto px-2 py-2 outline-none">
         {indicators.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-citrus-muted dark:text-citrus-night-muted">
-            No indicators yet — paste some above, or use “Send to Intel” from a notepad or workspace.
+            No indicators yet — paste some above, or Send to Intel.
           </div>
         ) : rows.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-citrus-muted dark:text-citrus-night-muted">

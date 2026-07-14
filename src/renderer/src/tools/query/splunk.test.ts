@@ -7,14 +7,14 @@ const run = (input: string, opts = {}): string =>
 
 describe('Splunk SPL builder', () => {
   it('renders an IN() filter by default', () => {
-    expect(run('1.2.3.4\n5.6.7.8', { field: 'src_ip' })).toBe(
-      'src_ip IN ("1.2.3.4", "5.6.7.8")'
+    expect(run('192.0.2.10\n192.0.2.20', { field: 'src_ip' })).toBe(
+      'src_ip IN ("192.0.2.10", "192.0.2.20")'
     )
   })
 
   it('renders an OR chain in OR mode', () => {
-    expect(run('1.2.3.4\n5.6.7.8', { field: 'src_ip', match: 'OR' })).toBe(
-      'src_ip="1.2.3.4" OR src_ip="5.6.7.8"'
+    expect(run('192.0.2.10\n192.0.2.20', { field: 'src_ip', match: 'OR' })).toBe(
+      'src_ip="192.0.2.10" OR src_ip="192.0.2.20"'
     )
   })
 
@@ -29,11 +29,11 @@ describe('Splunk SPL builder', () => {
   })
 
   it('applies wildcard wrapping to both modes', () => {
-    expect(run('evil.com', { field: 'url', wildcard: 'contains' })).toBe(
-      'url IN ("*evil.com*")'
+    expect(run('sample.example', { field: 'url', wildcard: 'contains' })).toBe(
+      'url IN ("*sample.example*")'
     )
-    expect(run('evil.com', { field: 'url', match: 'OR', wildcard: 'suffix' })).toBe(
-      'url="evil.com*"'
+    expect(run('sample.example', { field: 'url', match: 'OR', wildcard: 'suffix' })).toBe(
+      'url="sample.example*"'
     )
   })
 

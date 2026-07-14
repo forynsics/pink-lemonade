@@ -34,11 +34,11 @@ describe('parseCsvStream', () => {
   }
 
   it('emits a sanitized header then batched rows', async () => {
-    const { header, rows, res } = await parseAll('source.ip,country\n8.8.8.8,US\n1.1.1.1,AU\n')
+    const { header, rows, res } = await parseAll('source.ip,country\n192.0.2.45,US\n198.51.100.23,AU\n')
     expect(header).toEqual(['source.ip', 'country'])
     expect(rows).toEqual([
-      ['8.8.8.8', 'US'],
-      ['1.1.1.1', 'AU']
+      ['192.0.2.45', 'US'],
+      ['198.51.100.23', 'AU']
     ])
     expect(res.rowsRead).toBe(2)
     expect(res.delimiter).toBe(',')
@@ -46,8 +46,8 @@ describe('parseCsvStream', () => {
   })
 
   it('handles quoted fields with embedded delimiter and newline', async () => {
-    const { rows } = await parseAll('name,note\n"Doe, John","line1\nline2"\n')
-    expect(rows).toEqual([['Doe, John', 'line1\nline2']])
+    const { rows } = await parseAll('name,note\n"alpha, bravo","line1\nline2"\n')
+    expect(rows).toEqual([['alpha, bravo', 'line1\nline2']])
   })
 
   it('handles escaped quotes ("")', async () => {
@@ -56,9 +56,9 @@ describe('parseCsvStream', () => {
   })
 
   it('parses tricky quoting that spans lines (escaped + embedded newline)', async () => {
-    const { rows } = await parseAll('h1,h2\n"Doe, ""J""","x\ny"\n42,end\n')
+    const { rows } = await parseAll('h1,h2\n"charlie, ""J""","x\ny"\n42,end\n')
     expect(rows).toEqual([
-      ['Doe, "J"', 'x\ny'],
+      ['charlie, "J"', 'x\ny'],
       ['42', 'end']
     ])
   })
@@ -85,10 +85,10 @@ describe('parseCsvStream', () => {
   })
 
   it('strips a leading UTF-8 BOM from the first header (Excel/Windows export)', async () => {
-    const { header, rows } = await parseAll('\uFEFFsource.ip,country\n8.8.8.8,US\n', 'bom.csv')
+    const { header, rows } = await parseAll('\uFEFFsource.ip,country\n192.0.2.45,US\n', 'bom.csv')
     // Without BOM stripping the first column reads "source.ip" and never matches.
     expect(header).toEqual(['source.ip', 'country'])
-    expect(rows).toEqual([['8.8.8.8', 'US']])
+    expect(rows).toEqual([['192.0.2.45', 'US']])
   })
 
   it('handles a header-only file (no data rows)', async () => {

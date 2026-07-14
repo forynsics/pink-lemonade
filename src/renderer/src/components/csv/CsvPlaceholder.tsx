@@ -21,7 +21,7 @@ export function CsvPlaceholder({
       {failed ? (
         <>
           <p className="max-w-xs text-xs text-citrus-muted dark:text-citrus-night-muted">
-            The saved database for this session couldn’t be opened — it may have been deleted or moved.
+            This workspace’s database couldn’t be opened — it may have moved or been deleted.
           </p>
           {dbPath && (
             <p className="max-w-md text-[10px] font-mono text-citrus-muted/70 dark:text-citrus-night-muted/70 truncate">

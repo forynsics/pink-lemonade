@@ -47,6 +47,65 @@ export interface EnrichCachedRow {
   fetchedAt: number
 }
 
+// ---- AI assistant (mirrors preload AiApi shapes by value) ----
+export interface AiProviderInfo {
+  id: string
+  name: string
+  ready: boolean
+  detail: string
+}
+export interface AiConfig {
+  provider: string
+  model: string
+  providers: AiProviderInfo[]
+}
+export interface AiWsColumn {
+  name: string
+  original: string
+  time?: string
+}
+/** One source (imported artifact/CSV) in the active workspace. */
+export interface AiWsSource {
+  sourceId: number
+  tabId: string
+  name: string
+  columns: AiWsColumn[]
+  rowCount: number
+  /** Analyst-assigned grouping label (host/system/origin); null = ungrouped. */
+  group?: string | null
+  /** True for a derived source (the materialized Timeline) — excluded from the agent's triage coverage. */
+  derived?: boolean
+}
+/** The active-workspace context the renderer sends with each chat turn — all sources. */
+export interface AiWsCtx {
+  hasWorkspace: boolean
+  wsId?: string
+  workspaceName?: string
+  activeSourceId?: number | null
+  sources: AiWsSource[]
+  intelDbPath?: string
+}
+export interface AiChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+export type AiEventPayload =
+  | { reqId: number; type: 'token'; delta: string }
+  | {
+      reqId: number
+      type: 'tool'
+      phase: 'start' | 'done' | 'error'
+      id: string
+      name: string
+      args?: unknown
+      card?: string
+      result?: unknown
+      message?: string
+    }
+  | { reqId: number; type: 'action'; actionId: string; kind: string; summary: string; detail?: string; tag?: string; count?: number; sourceId?: number; group?: string | null }
+  | { reqId: number; type: 'done'; truncated?: boolean }
+  | { reqId: number; type: 'error'; message?: string }
+
 // ---- Watchlists (analyst-curated context lists) ----
 export type WatchlistKind = 'ip' | 'asn' | 'domain' | 'hash'
 

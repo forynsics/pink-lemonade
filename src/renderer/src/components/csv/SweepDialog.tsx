@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ChevronDown, Crosshair, FileUp, ListChecks, ShieldAlert, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Crosshair, FileUp, Layers, ListChecks, ShieldAlert, X } from 'lucide-react'
 import type { CsvColumn } from '../../state/csvTypes'
 import type { WatchlistInfo } from '../../state/enrichTypes'
 import { parseIntelText } from '../../state/sweepIntel'
@@ -8,31 +8,41 @@ import { INDICATOR_KINDS, kindChip } from '../../state/indicatorKinds'
 // Watchlist kinds map onto sweep kinds (asn has no sweep matcher, so those lists are filtered out).
 const WL_CHIP: Record<string, string> = { ip: kindChip('ipv4'), domain: kindChip('domain'), hash: kindChip('hash') }
 
+/** One sweepable source (a structural subset of WorkspaceSource — all the dialog needs). */
+export interface SweepSource {
+  sourceId: number
+  name: string
+  columns: CsvColumn[]
+  rowCount: number
+  group?: string | null
+}
+
 /**
- * Intel Sweep dialog: paste an intel set (IPs / domains / hashes), pick which columns to scan, and
- * run a sweep that marks matching rows as sightings. The paste box classifies + normalizes each line
- * live (accepted / normalized before→after / skipped with a reason) so bad input is caught up front.
+ * Intel Sweep dialog: paste an intel set (IPs / domains / hashes), pick which SOURCES + columns to
+ * scan, and run a sweep that marks matching rows as sightings. One run can fan out across several
+ * sources in the workspace (the scan loops them, recording sightings per source). The paste box
+ * classifies + normalizes each line live (accepted / normalized before→after / skipped with a reason)
+ * so bad input is caught up front.
  */
 export function SweepDialog({
-  tabId,
-  columns,
-  sourceName,
+  wsId,
+  sources,
+  initialSourceId,
   onClose,
   onSwept,
   onSeeSightings,
-  existingCount,
   initialText,
   intelDbPath
 }: {
-  tabId: string
-  columns: CsvColumn[]
-  sourceName: string
+  wsId: string
+  /** Every source in the workspace — the user picks which to sweep (defaults to the opened one). */
+  sources: SweepSource[]
+  /** The source the dialog was opened from — pre-selected. */
+  initialSourceId: number
   onClose: () => void
   onSwept: () => void
   /** Open the Sightings panel (offered after a run, while the indicator list is unchanged). */
   onSeeSightings: () => void
-  /** Sightings already on this source — drives the Add-vs-Replace choice (avoids silent wipes). */
-  existingCount: number
   /** Pre-fill the indicator box (used by the Intel-tab → sweep pivot). */
   initialText?: string
   /** This workspace's Intel DB — enables the "Flagged" source (indicators VT marked Malicious). */
@@ -42,17 +52,63 @@ export function SweepDialog({
   // The exact paste text of the last successful run. While it still matches, re-running would be
   // a no-op, so the primary action becomes "See sightings"; editing the list flips it back.
   const [lastRunText, setLastRunText] = useState<string | null>(null)
-  // With prior sightings, default to keeping them (Add) so a re-sweep never silently wipes progress.
-  const [mode, setMode] = useState<'replace' | 'add'>(existingCount > 0 ? 'add' : 'replace')
+  // Default to keeping prior sightings (Add) so a re-sweep never silently wipes progress. Per source,
+  // a source with no existing sightings is swept as 'replace' regardless (Add and Replace coincide).
+  const [mode, setMode] = useState<'replace' | 'add'>('add')
   // Declared-filename mode: when on, every line is treated as a file name (no auto-detection), so an
   // ambiguous kind that can't be sniffed (evil.exe vs a domain) enters via an explicit declaration.
   const [filenameMode, setFilenameMode] = useState(false)
+  // Which sources to sweep. Defaults to the source the dialog was opened from.
+  const [selectedSources, setSelectedSources] = useState<Set<number>>(() => new Set([initialSourceId]))
+  // Existing distinct-sighting-row count per source — drives the keep-vs-replace warning.
+  const [existing, setExisting] = useState<Record<number, number>>({})
   const [allColumns, setAllColumns] = useState(true)
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(columns.map((c) => c.name)))
+  const [selectedCols, setSelectedCols] = useState<Set<string>>(() => new Set())
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<{ scanned: number; max: number; sightings: number } | null>(null)
-  const [result, setResult] = useState<{ sightings: number; hits: number } | { canceled: true } | null>(null)
+  const [current, setCurrent] = useState<{ index: number; total: number; name: string } | null>(null)
+  const [result, setResult] = useState<{ sightings: number; hits: number; sources: number; canceled: boolean } | null>(null)
   const reqRef = useRef(0)
+  const cancelRef = useRef(false)
+  const curTabRef = useRef<string | null>(null)
+  // Refs (not state) so per-source rollover doesn't re-render on its own; read at paint time when a
+  // progress event lands. Track rows + sightings already finished so the bar/counter are workspace-wide.
+  const doneRowsRef = useRef(0)
+  const doneSightingsRef = useRef(0)
+  const totalRowsRef = useRef(0)
+
+  // Per-column scan is only meaningful for a SINGLE source (column sets differ across sources); with
+  // more than one selected we force all-columns. `colSource` is that lone source, else null.
+  const colSource = selectedSources.size === 1 ? sources.find((s) => selectedSources.has(s.sourceId)) ?? null : null
+  const colSourceId = colSource?.sourceId
+
+  // Reset the column selection to the lone source's full column set whenever that source changes.
+  useEffect(() => {
+    if (!colSource) return
+    setSelectedCols(new Set(colSource.columns.map((c) => c.name)))
+    setAllColumns(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colSourceId])
+
+  // Existing sighting counts per source (distinct rids) so the keep-vs-replace warning is accurate
+  // across whatever the analyst selects. Sightings are a subset of rows, so this is cheap in practice.
+  useEffect(() => {
+    let live = true
+    void Promise.all(
+      sources.map(async (s) => {
+        const rows = await window.api.csv.sightingList(wsId, s.sourceId)
+        return [s.sourceId, new Set(rows.map((r) => r.rid)).size] as const
+      })
+    ).then((pairs) => {
+      if (!live) return
+      const map: Record<number, number> = {}
+      for (const [id, n] of pairs) map[id] = n
+      setExisting(map)
+    })
+    return () => {
+      live = false
+    }
+  }, [wsId, sources])
 
   // Intel sources beyond pasting: saved watchlists + a file. All three funnel into the textarea
   // (the single source of truth), so the existing parse/preview/dedup/run path is unchanged and you
@@ -115,48 +171,101 @@ export function SweepDialog({
   }
 
   const parsed = useMemo(() => parseIntelText(text, filenameMode ? 'filename' : 'classify'), [text, filenameMode])
-  const colCount = allColumns ? columns.length : selected.size
-  const canRun = parsed.entries.length > 0 && colCount > 0 && !running
+  // Total existing sightings across the selected sources (drives the keep/replace prompt).
+  const selectedExisting = sources.reduce((n, s) => (selectedSources.has(s.sourceId) ? n + (existing[s.sourceId] ?? 0) : n), 0)
+  const colCount = colSource ? (allColumns ? colSource.columns.length : selectedCols.size) : 1
+  const canRun = parsed.entries.length > 0 && selectedSources.size > 0 && colCount > 0 && !running
 
-  // Stream scan progress for the active sweep request only.
+  // Stream scan progress for the active sweep request only (any source within this run's reqId).
   useEffect(() => {
     return window.api.csv.onSweepProgress((p) => {
-      if (p.tabId === tabId && p.reqId === reqRef.current) {
-        setProgress({ scanned: p.scanned, max: p.max, sightings: p.sightings })
-      }
+      if (p.reqId !== reqRef.current) return
+      if (curTabRef.current && p.tabId !== curTabRef.current) return
+      setProgress({ scanned: p.scanned, max: p.max, sightings: p.sightings })
     })
-  }, [tabId])
+  }, [])
 
   function toggleCol(name: string): void {
-    setSelected((s) => {
+    setSelectedCols((s) => {
       const n = new Set(s)
       if (n.has(name)) n.delete(name)
       else n.add(name)
       return n
     })
   }
+  function toggleSource(id: number): void {
+    setSelectedSources((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+    setResult(null)
+  }
 
   async function run(): Promise<void> {
     if (!canRun) return
-    const cols = allColumns ? undefined : columns.filter((c) => selected.has(c.name)).map((c) => c.name)
+    const ids = sources.filter((s) => selectedSources.has(s.sourceId))
+    if (ids.length === 0) return
+    const multi = ids.length > 1
     const reqId = ++reqRef.current
+    cancelRef.current = false
+    doneRowsRef.current = 0
+    doneSightingsRef.current = 0
+    totalRowsRef.current = ids.reduce((n, s) => n + s.rowCount, 0)
     setRunning(true)
     setResult(null)
     setProgress({ scanned: 0, max: 0, sightings: 0 })
-    const res = await window.api.csv.sweep(tabId, reqId, parsed.entries, cols, existingCount > 0 ? mode : 'replace')
+    let totalSightings = 0
+    let totalHits = 0
+    const swept: number[] = []
+    for (let i = 0; i < ids.length; i++) {
+      if (cancelRef.current) break
+      const s = ids[i]
+      setCurrent({ index: i, total: ids.length, name: s.name })
+      // Per-column scope only applies to a single-source run; multi always scans all columns.
+      const cols = !multi && !allColumns ? s.columns.filter((c) => selectedCols.has(c.name)).map((c) => c.name) : undefined
+      const tabId = `${wsId}:${s.sourceId}`
+      curTabRef.current = tabId
+      // A source with no prior sightings is always swept fresh ('replace' == 'add' for an empty set).
+      const perMode = (existing[s.sourceId] ?? 0) > 0 ? mode : 'replace'
+      const res = await window.api.csv.sweep(tabId, reqId, parsed.entries, cols, perMode)
+      if ('canceled' in res) break
+      totalSightings += res.sightings
+      totalHits += res.hits
+      doneRowsRef.current += s.rowCount
+      doneSightingsRef.current += res.sightings
+      swept.push(s.sourceId)
+    }
+    curTabRef.current = null
     setRunning(false)
-    setResult(res)
-    if (!('canceled' in res)) {
-      onSwept() // refresh the grid's sighting markers + count
+    setCurrent(null)
+    setResult({ sightings: totalSightings, hits: totalHits, sources: swept.length, canceled: cancelRef.current })
+    if (swept.length > 0) {
+      onSwept() // refresh the active grid's sighting markers + count
       setLastRunText(text) // re-running the same list is now redundant → offer "See sightings"
     }
   }
 
   function cancel(): void {
-    void window.api.csv.sweepCancel(tabId)
+    cancelRef.current = true
+    if (curTabRef.current) void window.api.csv.sweepCancel(curTabRef.current)
   }
 
-  const pct = progress && progress.max > 0 ? Math.min(100, Math.round((progress.scanned / progress.max) * 100)) : 0
+  function selectAllSources(): void {
+    setSelectedSources(new Set(sources.map((s) => s.sourceId)))
+    setResult(null)
+  }
+  function selectOneSource(): void {
+    setSelectedSources(new Set([initialSourceId]))
+    setResult(null)
+  }
+
+  // Workspace-wide progress: rows already finished + the current source's scan, over the grand total.
+  const overallPct =
+    totalRowsRef.current > 0 ? Math.min(100, Math.round(((doneRowsRef.current + (progress?.scanned ?? 0)) / totalRowsRef.current) * 100)) : 0
+  const liveSightings = doneSightingsRef.current + (progress?.sightings ?? 0)
+  const scopeLabel = selectedSources.size === 1 ? (colSource?.name ?? '1 source') : `${selectedSources.size} sources`
 
   return (
     <div
@@ -170,7 +279,7 @@ export function SweepDialog({
         <div className="flex items-center gap-2 border-b border-citrus-border px-5 py-3 dark:border-citrus-night-border">
           <Crosshair className="h-4 w-4 text-red-500 dark:text-red-400" />
           <span className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Intel Sweep</span>
-          <span className="truncate text-xs text-citrus-muted dark:text-citrus-night-muted">· {sourceName}</span>
+          <span className="truncate text-xs text-citrus-muted dark:text-citrus-night-muted">· {scopeLabel}</span>
           {!running && (
             <button onClick={onClose} className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted">
               <X className="h-4 w-4" />
@@ -224,7 +333,7 @@ export function SweepDialog({
                 <button
                   onClick={() => void loadFlagged()}
                   className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[10px] font-semibold text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text"
-                  title="Load indicators VirusTotal flagged Malicious from this workspace's Intel DB"
+                  title="Load VT-flagged malicious indicators"
                 >
                   <ShieldAlert className="h-3 w-3" /> Flagged
                 </button>
@@ -237,7 +346,7 @@ export function SweepDialog({
               setText(e.target.value)
               setResult(null) // a changed list invalidates the last run's result
             }}
-            placeholder={'Paste IPs, domains, or hashes — one per line, or load from a watchlist / file above.\nURLs are reduced to their domain; defanged values (1[.]2[.]3[.]4) are fine.'}
+            placeholder={'Paste IPs, domains, or hashes — one per line'}
             className="h-28 w-full resize-y rounded-md border border-citrus-border bg-citrus-cream px-2 py-1.5 font-mono text-xs text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
           />
           {loadNote && <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{loadNote}</div>}
@@ -251,8 +360,7 @@ export function SweepDialog({
                 setResult(null)
               }}
             />
-            Treat each line as a <strong>file name</strong>
-            <span className="text-citrus-muted dark:text-citrus-night-muted">(skips IP/domain/hash auto-detection)</span>
+            Skip IP/domain/hash autodetection
           </label>
 
           {/* Live parse feedback */}
@@ -294,43 +402,100 @@ export function SweepDialog({
             </div>
           )}
 
+          {/* Sources to sweep — fan out across one or many files in the workspace */}
+          <div className="mt-3">
+            <div className="mb-1 flex items-center gap-2">
+              <Layers className="h-3 w-3 text-citrus-muted dark:text-citrus-night-muted" />
+              <span className="text-[11px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
+                Sources to sweep
+              </span>
+              <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+                ({selectedSources.size}/{sources.length})
+              </span>
+              <div className="ml-auto flex items-center gap-1.5">
+                <button
+                  onClick={selectAllSources}
+                  className="rounded border border-citrus-border px-1.5 py-0.5 text-[10px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
+                >
+                  All
+                </button>
+                <button
+                  onClick={selectOneSource}
+                  className="rounded border border-citrus-border px-1.5 py-0.5 text-[10px] font-semibold text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
+                >
+                  Selected source
+                </button>
+              </div>
+            </div>
+            <div className="grid max-h-32 grid-cols-1 gap-x-3 overflow-auto rounded border border-citrus-border/60 p-2 dark:border-citrus-night-border/60">
+              {sources.map((s) => (
+                <label
+                  key={s.sourceId}
+                  className="flex cursor-pointer items-center gap-2 py-0.5 text-[11px] text-citrus-dark dark:text-citrus-night-text"
+                >
+                  <input type="checkbox" checked={selectedSources.has(s.sourceId)} onChange={() => toggleSource(s.sourceId)} />
+                  <span className="truncate" title={s.name}>
+                    {s.name}
+                  </span>
+                  {s.group && (
+                    <span className="shrink-0 rounded bg-citrus-sand px-1 text-[9px] text-citrus-muted dark:bg-citrus-night-elev dark:text-citrus-night-muted">
+                      {s.group}
+                    </span>
+                  )}
+                  <span className="ml-auto shrink-0 text-citrus-muted dark:text-citrus-night-muted">
+                    {s.rowCount.toLocaleString()} rows
+                    {existing[s.sourceId] ? <span className="text-red-500 dark:text-red-400"> · {existing[s.sourceId].toLocaleString()} sightings</span> : null}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
           {/* Existing sightings: keep or replace (so a re-sweep never wipes progress silently) */}
-          {existingCount > 0 && (
+          {selectedExisting > 0 && (
             <div className="mt-3 rounded-md border border-amber-400/50 bg-amber-50 px-2.5 py-2 dark:border-amber-400/30 dark:bg-amber-900/15">
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                This source already has {existingCount.toLocaleString()} {existingCount === 1 ? 'sighting' : 'sightings'}
+                Selected sources already have {selectedExisting.toLocaleString()} {selectedExisting === 1 ? 'sighting' : 'sightings'}
               </div>
               <label className="flex cursor-pointer items-start gap-2 py-0.5 text-[11px] text-citrus-dark dark:text-citrus-night-text">
                 <input type="radio" className="mt-0.5" checked={mode === 'add'} onChange={() => setMode('add')} />
                 <span>
-                  <strong>Add</strong> to them — keep the existing sightings and add any new matches.
+                  <strong>Add</strong> to existing sightings.
                 </span>
               </label>
               <label className="flex cursor-pointer items-start gap-2 py-0.5 text-[11px] text-citrus-dark dark:text-citrus-night-text">
                 <input type="radio" className="mt-0.5" checked={mode === 'replace'} onChange={() => setMode('replace')} />
                 <span>
-                  <strong>Replace</strong> — clear the existing {existingCount.toLocaleString()} first, then sweep fresh.
+                  <strong>Replace</strong> existing sightings.
                 </span>
               </label>
             </div>
           )}
 
-          {/* Column scope */}
+          {/* Column scope — per-column only for a single source (column sets differ across sources) */}
           <div className="mt-3">
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-citrus-dark dark:text-citrus-night-text">
-              <input type="checkbox" checked={allColumns} onChange={(e) => setAllColumns(e.target.checked)} />
-              Scan <strong>all columns</strong>
-              <span className="text-citrus-muted dark:text-citrus-night-muted">(slower, catches IOCs anywhere)</span>
-            </label>
-            {!allColumns && (
-              <div className="mt-1 grid max-h-32 grid-cols-2 gap-x-3 overflow-auto rounded border border-citrus-border/60 p-2 dark:border-citrus-night-border/60">
-                {columns.map((c) => (
-                  <label key={c.name} className="flex cursor-pointer items-center gap-1.5 text-[11px] text-citrus-dark dark:text-citrus-night-text">
-                    <input type="checkbox" checked={selected.has(c.name)} onChange={() => toggleCol(c.name)} />
-                    <span className="truncate" title={c.original}>{c.original}</span>
-                  </label>
-                ))}
+            {colSource ? (
+              <>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-citrus-dark dark:text-citrus-night-text">
+                  <input type="checkbox" checked={allColumns} onChange={(e) => setAllColumns(e.target.checked)} />
+                  Scan <strong>all columns</strong>
+                </label>
+                {!allColumns && (
+                  <div className="mt-1 grid max-h-32 grid-cols-2 gap-x-3 overflow-auto rounded border border-citrus-border/60 p-2 dark:border-citrus-night-border/60">
+                    {colSource.columns.map((c) => (
+                      <label key={c.name} className="flex cursor-pointer items-center gap-1.5 text-[11px] text-citrus-dark dark:text-citrus-night-text">
+                        <input type="checkbox" checked={selectedCols.has(c.name)} onChange={() => toggleCol(c.name)} />
+                        <span className="truncate" title={c.original}>{c.original}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+                Scanning <strong className="text-citrus-dark dark:text-citrus-night-text">all columns</strong> across {selectedSources.size} sources
+                <span className="text-citrus-muted dark:text-citrus-night-muted"> (pick columns when one source is selected)</span>
               </div>
             )}
           </div>
@@ -340,31 +505,32 @@ export function SweepDialog({
             <div className="mt-3">
               <div className="mb-1 flex items-center justify-between text-[11px] text-citrus-muted dark:text-citrus-night-muted">
                 <span>
-                  Scanning… <strong className="text-citrus-dark dark:text-citrus-night-text">{pct}%</strong>
-                  {progress && progress.max > 0 && (
-                    <span className="ml-1 font-mono">
-                      ({progress.scanned.toLocaleString()} / {progress.max.toLocaleString()} rows)
+                  Scanning… <strong className="text-citrus-dark dark:text-citrus-night-text">{overallPct}%</strong>
+                  {current && current.total > 1 && (
+                    <span className="ml-1">
+                      · source {current.index + 1}/{current.total}: <span className="font-mono">{current.name}</span>
                     </span>
                   )}
                 </span>
-                <span className="text-red-600 dark:text-red-400">{progress?.sightings.toLocaleString() ?? 0} sightings</span>
+                <span className="text-red-600 dark:text-red-400">{liveSightings.toLocaleString()} sightings</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded bg-citrus-sand dark:bg-citrus-night-elev">
-                <div className="h-full bg-red-500 transition-all dark:bg-red-400" style={{ width: `${pct}%` }} />
+                <div className="h-full bg-red-500 transition-all dark:bg-red-400" style={{ width: `${overallPct}%` }} />
               </div>
               <div className="mt-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted">
-                Keep this open until it finishes — use Cancel to stop.
+                Cancel to stop.
               </div>
             </div>
           )}
           {result && !running && (
             <div className="mt-3 text-xs">
-              {'canceled' in result ? (
+              {result.canceled && result.sources === 0 ? (
                 <span className="text-citrus-muted dark:text-citrus-night-muted">Sweep canceled.</span>
               ) : (
                 <span className="text-citrus-dark dark:text-citrus-night-text">
                   Matched <strong className="text-red-600 dark:text-red-400">{result.sightings.toLocaleString()}</strong>{' '}
-                  {result.sightings === 1 ? 'row' : 'rows'} this sweep.
+                  {result.sightings === 1 ? 'row' : 'rows'} across {result.sources} {result.sources === 1 ? 'source' : 'sources'}
+                  {result.canceled ? ' (canceled)' : ''}.
                 </span>
               )}
             </div>
@@ -391,7 +557,7 @@ export function SweepDialog({
                 <button
                   onClick={onSeeSightings}
                   className="inline-flex items-center gap-1 rounded-md bg-red-500 px-3 py-1 text-[11px] font-bold text-white hover:bg-red-600"
-                  title="Open the Sightings panel (the list is unchanged — no need to re-sweep)"
+                  title="Open the Sightings panel"
                 >
                   <Crosshair className="h-3.5 w-3.5" />
                   See sightings
@@ -401,10 +567,18 @@ export function SweepDialog({
                   onClick={() => void run()}
                   disabled={!canRun}
                   className="inline-flex items-center gap-1 rounded-md bg-red-500 px-3 py-1 text-[11px] font-bold text-white hover:bg-red-600 disabled:opacity-40 dark:bg-red-500 dark:hover:bg-red-600"
-                  title={parsed.entries.length === 0 ? 'Add some indicators first' : colCount === 0 ? 'Pick at least one column' : `Sweep ${parsed.entries.length} indicator(s) across ${colCount} column(s)`}
+                  title={
+                    parsed.entries.length === 0
+                      ? 'Add some indicators first'
+                      : selectedSources.size === 0
+                        ? 'Pick at least one source'
+                        : colCount === 0
+                          ? 'Pick at least one column'
+                          : `Sweep ${parsed.entries.length} indicator(s) across ${selectedSources.size} source(s)`
+                  }
                 >
                   <Crosshair className="h-3.5 w-3.5" />
-                  Run sweep
+                  {selectedSources.size > 1 ? `Run sweep · ${selectedSources.size} sources` : 'Run sweep'}
                 </button>
               )}
             </>

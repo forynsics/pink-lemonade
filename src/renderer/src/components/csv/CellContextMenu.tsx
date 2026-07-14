@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Ban, Clock, Crosshair, Filter, Radar, Tag, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Ban, Clock, Copy, Crosshair, Filter, List, Network, Radar, Tag, X } from 'lucide-react'
 import type { CellRef } from './VirtualGrid'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -25,6 +25,10 @@ export function CellContextMenu({
   tagRids,
   currentTag,
   onFilter,
+  onViewRow,
+  onRecordEvent,
+  onCopyRow,
+  copyRowCount,
   onPickTime,
   onPickBound,
   onTag,
@@ -43,6 +47,14 @@ export function CellContextMenu({
   /** The current tag of the single clicked row (shows a check + enables "Clear tag"). */
   currentTag?: string
   onFilter: (cell: CellRef, exclude: boolean) => void
+  /** Open the full-row detail modal for the clicked row. Absent on multi-row selections + chip edits. */
+  onViewRow?: () => void
+  /** Record the acted-on row(s) as an analyst event (the analyst's own finding). Workspace sources only. */
+  onRecordEvent?: () => void
+  /** Copy the acted-on row(s) (header + values, tab-separated). Absent when there's no row (e.g. chip edit). */
+  onCopyRow?: () => void
+  /** How many rows "Copy row(s)" will copy — pluralizes the label when > 1. */
+  copyRowCount?: number
   onPickTime: (cell: CellRef, deltaSec: number) => void
   onPickBound: (cell: CellRef, which: 'from' | 'to') => void
   onTag?: (rids: number[], tag: TagId | null) => void
@@ -119,6 +131,24 @@ export function CellContextMenu({
             <Ban className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
             Exclude value
           </button>
+          {onViewRow && (
+            <button className={item} onClick={() => { onViewRow(); onClose() }}>
+              <List className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+              View full row
+            </button>
+          )}
+          {onRecordEvent && (
+            <button className={item} onClick={() => { onRecordEvent(); onClose() }}>
+              <Network className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+              {copyRowCount && copyRowCount > 1 ? `Record ${copyRowCount} rows as event` : 'Record as event'}
+            </button>
+          )}
+          {onCopyRow && (
+            <button className={item} onClick={() => { onCopyRow(); onClose() }}>
+              <Copy className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+              {copyRowCount && copyRowCount > 1 ? `Copy ${copyRowCount} rows` : 'Copy row'}
+            </button>
+          )}
           {onSend && (
             <button className={item} onClick={() => { onSend(); onClose() }}>
               <Radar className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />

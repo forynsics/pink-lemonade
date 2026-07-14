@@ -1,9 +1,14 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import type { WebContents } from 'electron'
-import { basename } from 'path'
+import { basename, extname, join, relative } from 'path'
+import { readdirSync, statSync } from 'fs'
+import { randomUUID } from 'crypto'
 import * as dbw from './dbClient'
 import type { Filter, QueryOpts, Sort } from './sql'
 import type { CsvTableMeta, SourceInfo } from './db'
+import { resolveTechnique } from '../ai/attack'
+import { spansByColumn, envelopeOf } from '../ai/timecols'
+import type { WsSource } from '../ai/types'
 
 // Registers the csv:* / ws:* IPC surface. Every DB operation is forwarded to the worker thread
 // (dbClient) so a slow query never blocks the main process; the renderer only receives small
@@ -21,6 +26,9 @@ export function registerCsvIpc(): void {
   // Pick (dialog) and ingest are separate so the renderer shows an import overlay only
   // during ingest — not while the user is still choosing a file.
   ipcMain.handle('csv:pick', (e) => doPick(e.sender))
+  // Bulk import: pick several files at once, or a whole folder of CSVs (e.g. a parsed KAPE package).
+  ipcMain.handle('csv:pickMany', (e) => doPickMany(e.sender))
+  ipcMain.handle('csv:pickFolder', (e) => doPickFolder(e.sender))
   ipcMain.handle('csv:ingest', (e, { tabId, path }: { tabId: string; path: string }) =>
     doIngest(e.sender, tabId, path)
   )
@@ -121,6 +129,14 @@ export function registerCsvIpc(): void {
   ipcMain.handle('csv:sightingList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
     dbw.call('listSightings', wsId, sourceId)
   )
+  ipcMain.handle('csv:sightingsAll', (_e, { wsId }: { wsId: string }) => dbw.call('sightingsByIndicator', wsId))
+  // Workspace-wide free-string "find in files": which sources contain `term` + the matching rowids
+  // (for click-to-jump). Optionally scoped to one group. Fans out in the worker (non-blocking).
+  ipcMain.handle(
+    'csv:findInFiles',
+    (_e, { wsId, term, group, ridCap }: { wsId: string; term: string; group?: string | null; ridCap?: number }) =>
+      dbw.call('findInFiles', wsId, term, { ...(group !== undefined ? { group } : {}), ...(ridCap != null ? { ridCap } : {}) })
+  )
   ipcMain.handle('csv:sightingSummary', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
     dbw.call('sightingSummary', wsId, sourceId)
   )
@@ -207,6 +223,9 @@ export function registerCsvIpc(): void {
   ipcMain.handle('ws:addSource', (e, { wsId, path }: { wsId: string; path: string }) =>
     doAddSource(e.sender, wsId, path)
   )
+  ipcMain.handle('ws:addXlsx', (e, { wsId, path }: { wsId: string; path: string }) =>
+    doAddXlsx(e.sender, wsId, path)
+  )
   ipcMain.handle('ws:rename', (_e, { wsId, name }: { wsId: string; name: string }) =>
     dbw.call('renameWorkspace', wsId, name).then(() => null)
   )
@@ -219,10 +238,149 @@ export function registerCsvIpc(): void {
   ipcMain.handle('ws:renameSource', (_e, { wsId, sourceId, name }: { wsId: string; sourceId: number; name: string }) =>
     dbw.call('renameSource', wsId, sourceId, name).then(() => null)
   )
+  ipcMain.handle('ws:setSourceGroup', (_e, { wsId, sourceId, group }: { wsId: string; sourceId: number; group: string | null }) =>
+    dbw.call('setSourceGroup', wsId, sourceId, group).then(() => null)
+  )
+  ipcMain.handle(
+    'ws:addDerivedColumns',
+    (
+      _e,
+      { wsId, sourceId, jsonCol, fields }: { wsId: string; sourceId: number; jsonCol: string; fields: Array<{ path: string; displayName: string }> }
+    ) => dbw.call('addDerivedColumns', wsId, sourceId, jsonCol, fields) // returns the new ColumnMap[]
+  )
+  ipcMain.handle('ws:buildTimeline', (_e, { wsId, header, rows }: { wsId: string; header: string[]; rows: string[][] }) =>
+    dbw.call('buildTimelineSource', wsId, header, rows)
+  )
 
   // Row tags: list all tags for a source, and set/clear a tag on a set of rows.
   ipcMain.handle('ws:tagList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
     dbw.call('listTags', wsId, sourceId)
+  )
+  // AI-accountability marks (✨): the renderer loads them for the grid marker; clear resets them.
+  ipcMain.handle('ws:aiMarkList', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    dbw.call('listAiMarks', wsId, sourceId)
+  )
+  ipcMain.handle('ws:aiMarkClear', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
+    dbw.call('clearAiMarks', wsId, sourceId).then(() => null)
+  )
+  // Findings (constellation substrate) — the renderer lists/clears them; the AI writes via record_finding.
+  ipcMain.handle('ws:findingList', (_e, { wsId }: { wsId: string }) => dbw.call('listFindings', wsId))
+  ipcMain.handle('ws:findingDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteFinding', wsId, id).then(() => null))
+  ipcMain.handle('ws:findingClear', (_e, { wsId }: { wsId: string }) => dbw.call('clearFindings', wsId).then(() => null))
+  // Events (the Artifact Constellation) — the renderer lists/clears them; the AI writes via record_event.
+  ipcMain.handle('ws:eventList', (_e, { wsId }: { wsId: string }) => dbw.call('listEvents', wsId))
+  ipcMain.handle('ws:eventDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteEvent', wsId, id).then(() => null))
+  ipcMain.handle('ws:eventClear', (_e, { wsId }: { wsId: string }) => dbw.call('clearEvents', wsId).then(() => null))
+
+  // Analyst event editing — the INTERPRETATION only (label/description/technique, manual create from
+  // selected rows, evidence re-grouping). Never mutates source rows; analyst events are flagged + protected.
+  ipcMain.handle(
+    'ws:eventUpdate',
+    (
+      _e,
+      { wsId, id, label, description, technique, users }: { wsId: string; id: string; label: string; description: string | null; technique: string | null; users: string[] }
+    ) => {
+      const resolved = technique && technique.trim() ? resolveTechnique(technique.trim())?.display ?? technique.trim() : null
+      return dbw.call('updateEvent', wsId, id, { label, description, technique: resolved, users: users ?? [] }).then(() => null)
+    }
+  )
+  ipcMain.handle('ws:evidenceDelete', (_e, { wsId, evidenceId }: { wsId: string; evidenceId: number }) =>
+    dbw.call('deleteEvidence', wsId, evidenceId).then(() => null)
+  )
+  ipcMain.handle(
+    'ws:eventCreateFromRows',
+    async (
+      _e,
+      {
+        wsId,
+        sourceId,
+        sourceName,
+        rids,
+        rows,
+        columns,
+        label,
+        description,
+        technique,
+        users,
+        eventId
+      }: {
+        wsId: string
+        sourceId: number
+        sourceName: string
+        rids: number[]
+        rows: string[][]
+        columns: Array<{ name: string; original: string; time: string | null }>
+        label: string
+        description: string | null
+        technique: string | null
+        users: string[]
+        /** When set, ATTACH the rows as evidence to this existing event instead of creating a new one. */
+        eventId?: string
+      }
+    ) => {
+      // Spans are DERIVED from the selected rows' time cells (same helper the AI uses) — grounded in real
+      // data, not authored. `columns` arrive in canonical c0..cN order, aligned with the row arrays.
+      const src = { sourceId, name: sourceName, columns } as unknown as WsSource
+      const spans = spansByColumn(src, rows)
+      const { tsMin, tsMax } = envelopeOf(spans)
+      const capped = rids.slice(0, 500)
+      // A readable, selection-specific label (NOT '') so two manual evidence items from the same source
+      // on one event don't collide on recordEvent's (source_id, matched) dedup key — re-attaching the
+      // exact same rows is idempotent; a different selection appends instead of clobbering.
+      const matched =
+        capped.length === 0 ? 'selected rows' : capped.length === 1 ? `row ${capped[0]}` : `rows ${Math.min(...capped)}–${Math.max(...capped)} ×${capped.length}`
+      const evidence = [{ sourceId, sourceName, matched, count: capped.length, rids: capped, spans, tsMin, tsMax }]
+
+      // Attach to an existing event: merge the rows in as new evidence, preserving the event's
+      // interpretation (label/description/technique) and ownership (actor). The evidence merge in
+      // recordEvent is additive, so this corroborates the event without touching its meaning.
+      if (eventId) {
+        const existing = (await dbw.call('getEvent', wsId, eventId)) as
+          | { id: string; label: string; description: string | null; technique: string | null; actor: 'ai' | 'analyst' }
+          | null
+        if (!existing) throw new Error('That event no longer exists — reopen the dialog to pick another.')
+        // users omitted (undefined) → leave the event's curated user set untouched.
+        await dbw.call('recordEvent', wsId, { id: existing.id, label: existing.label, description: existing.description, technique: existing.technique }, evidence, existing.actor)
+        await dbw.call('setAiMarks', wsId, sourceId, capped, `Timeline evidence: ${existing.label}`)
+        return { id: existing.id }
+      }
+
+      const resolved = technique && technique.trim() ? resolveTechnique(technique.trim())?.display ?? technique.trim() : null
+      // Random id (never the AI's label-slug) so a manual event never collides with — or is merged into — an AI one.
+      const id = `event:analyst:${randomUUID()}`
+      await dbw.call('recordEvent', wsId, { id, label: label.slice(0, 300), description: description || null, technique: resolved, users: users ?? [] }, evidence, 'analyst')
+      await dbw.call('setAiMarks', wsId, sourceId, capped, `Timeline evidence: ${label}`)
+      return { id }
+    }
+  )
+  // IOC catalog — the renderer lists/clears; the AI writes via record_ioc. Sending to Intel is manual.
+  ipcMain.handle('ws:iocList', (_e, { wsId }: { wsId: string }) => dbw.call('listIocs', wsId))
+  // Content-based IOC↔event linkage: which events' evidence rows actually contain each IOC value
+  // (drives the constellation's IOCs-view edges, unioned with the renderer's label/text match).
+  ipcMain.handle('ws:iocEventLinks', (_e, { wsId }: { wsId: string }) => dbw.call('iocEventLinks', wsId))
+  ipcMain.handle('ws:iocDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteIoc', wsId, id).then(() => null))
+  ipcMain.handle('ws:iocClear', (_e, { wsId }: { wsId: string }) => dbw.call('clearIocs', wsId).then(() => null))
+
+  // Investigation plan + progress notes (the AI's persistent, analyst-editable working state).
+  ipcMain.handle('ws:investigationGet', (_e, { wsId }: { wsId: string }) => dbw.call('getInvestigation', wsId))
+  ipcMain.handle('ws:investigationSetPlan', (_e, { wsId, plan }: { wsId: string; plan: unknown[] }) =>
+    dbw.call('setInvestigationPlan', wsId, plan).then(() => null)
+  )
+  ipcMain.handle('ws:investigationSetNotes', (_e, { wsId, notes }: { wsId: string; notes: string }) =>
+    dbw.call('setInvestigationNotes', wsId, notes).then(() => null)
+  )
+
+  // AI conversation history (saved chat transcripts, per workspace).
+  ipcMain.handle('ws:conversationList', (_e, { wsId }: { wsId: string }) => dbw.call('listConversations', wsId))
+  ipcMain.handle('ws:conversationGet', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('getConversation', wsId, id))
+  ipcMain.handle('ws:conversationUpsert', (_e, { wsId, conv }: { wsId: string; conv: unknown }) =>
+    dbw.call('upsertConversation', wsId, conv)
+  )
+  ipcMain.handle('ws:conversationRename', (_e, { wsId, id, title }: { wsId: string; id: string; title: string }) =>
+    dbw.call('renameConversation', wsId, id, title).then(() => null)
+  )
+  ipcMain.handle('ws:conversationDelete', (_e, { wsId, id }: { wsId: string; id: string }) =>
+    dbw.call('deleteConversation', wsId, id).then(() => null)
   )
   ipcMain.handle(
     'ws:tagSet',
@@ -291,13 +449,75 @@ async function doPick(sender: WebContents): Promise<{ path: string; sourceName: 
   const dialogOpts = {
     properties: ['openFile' as const],
     filters: [
-      { name: 'Tabular data', extensions: ['csv', 'tsv', 'txt', 'log'] },
+      { name: 'Tabular data & Excel', extensions: ['csv', 'tsv', 'txt', 'log', 'xlsx', 'xlsm'] },
       { name: 'All files', extensions: ['*'] }
     ]
   }
   const r = win ? await dialog.showOpenDialog(win, dialogOpts) : await dialog.showOpenDialog(dialogOpts)
   if (r.canceled || r.filePaths.length === 0) return null
   return { path: r.filePaths[0], sourceName: basename(r.filePaths[0]) }
+}
+
+// Extensions a bulk/folder import will ingest as sources. Excel workbooks (.xlsx/.xlsm) become one
+// source per non-empty sheet; legacy binary .xls is unsupported (exceljs can't read it).
+const TABULAR_EXT = new Set(['.csv', '.tsv', '.xlsx', '.xlsm'])
+const MAX_BULK_FILES = 500 // guard against picking an enormous tree
+
+/** Pick several tabular files at once (each becomes a source). */
+async function doPickMany(sender: WebContents): Promise<Array<{ path: string; sourceName: string }> | null> {
+  const win = BrowserWindow.fromWebContents(sender)
+  const opts = {
+    properties: ['openFile' as const, 'multiSelections' as const],
+    filters: [
+      { name: 'Tabular data & Excel', extensions: ['csv', 'tsv', 'txt', 'log', 'xlsx', 'xlsm'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  }
+  const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+  if (r.canceled || r.filePaths.length === 0) return null
+  return r.filePaths.slice(0, MAX_BULK_FILES).map((p) => ({ path: p, sourceName: basename(p) }))
+}
+
+/** Recursively collect every supported file (csv/tsv/xlsx/xlsm) under `dir` (KAPE writes its module
+ *  outputs as CSVs, often nested in subfolders), capped so a stray huge tree can't hang the scan. */
+function walkCsvs(dir: string, out: Array<{ path: string; size: number }>): void {
+  if (out.length >= MAX_BULK_FILES) return
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (out.length >= MAX_BULK_FILES) return
+    const full = join(dir, name)
+    let st: ReturnType<typeof statSync>
+    try {
+      st = statSync(full)
+    } catch {
+      continue
+    }
+    if (st.isDirectory()) walkCsvs(full, out)
+    else if (TABULAR_EXT.has(extname(name).toLowerCase())) out.push({ path: full, size: st.size })
+  }
+}
+
+/** Pick a folder and return every CSV/TSV inside it (recursively) — with size + relative path so the
+ *  renderer can show a selection dialog before importing. */
+async function doPickFolder(
+  sender: WebContents
+): Promise<{ name: string; files: Array<{ path: string; sourceName: string; relPath: string; size: number }> } | null> {
+  const win = BrowserWindow.fromWebContents(sender)
+  const opts = { properties: ['openDirectory' as const] }
+  const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+  if (r.canceled || r.filePaths.length === 0) return null
+  const dir = r.filePaths[0]
+  const found: Array<{ path: string; size: number }> = []
+  walkCsvs(dir, found)
+  return {
+    name: basename(dir),
+    files: found.map((f) => ({ path: f.path, sourceName: basename(f.path), relPath: relative(dir, f.path), size: f.size }))
+  }
 }
 
 async function doIngest(sender: WebContents, tabId: string, filePath: string): Promise<OpenResult | null> {
@@ -314,6 +534,24 @@ async function doIngest(sender: WebContents, tabId: string, filePath: string): P
     sender.send('csv:progress', { tabId, bytes: 0, rows: meta.rowCount, total: 0, phase: 'done' })
   }
   return { tabId, sourceName: meta.sourceName, columns: meta.columns, rowCount: meta.rowCount, dbPath: meta.dbPath }
+}
+
+/** Ingest an Excel workbook as one source per worksheet; progress is keyed on the workspace id. */
+async function doAddXlsx(sender: WebContents, wsId: string, filePath: string): Promise<SourceInfo[] | null> {
+  const srcs = await dbw.ingest<SourceInfo[] | null>(
+    'addXlsxSources',
+    { wsId, filePath, sourceName: basename(filePath) },
+    wsId,
+    (p) => {
+      if (!sender.isDestroyed()) sender.send('csv:progress', { tabId: wsId, ...p, phase: 'parsing' })
+    }
+  )
+  if (srcs == null) return null // canceled
+  if (!sender.isDestroyed()) {
+    const rows = srcs.reduce((a, s) => a + s.rowCount, 0)
+    sender.send('csv:progress', { tabId: wsId, bytes: 0, rows, total: 0, phase: 'done' })
+  }
+  return srcs
 }
 
 /** Ingest a CSV as a new source in an open workspace; progress is keyed on the workspace id. */
@@ -333,7 +571,7 @@ async function doAddSource(sender: WebContents, wsId: string, filePath: string):
   return src
 }
 
-function normalizeOpts(opts: QueryOpts): QueryOpts {
+export function normalizeOpts(opts: QueryOpts): QueryOpts {
   return {
     limit: Number(opts?.limit) || 100,
     offset: Number(opts?.offset) || 0,
@@ -354,7 +592,7 @@ function normalizeSort(sort?: Sort): Sort | undefined {
   return { col: sort.col, dir: sort.dir === 'desc' ? 'desc' : 'asc', numeric: !!sort.numeric }
 }
 
-function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
+export function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
   if (!Array.isArray(filters) || filters.length === 0) return undefined
   const out: Filter[] = []
   for (const f of filters) {
@@ -371,6 +609,15 @@ function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
         ...(inds && inds.length > 0 ? { indicators: inds } : {}),
         ...(f.exclude ? { exclude: true } : {})
       })
+      continue
+    }
+    if (f.op === 'aimark') {
+      out.push({ op: 'aimark', ...(f.exclude ? { exclude: true } : {}) })
+      continue
+    }
+    if (f.op === 'rids') {
+      const rids = Array.isArray(f.rids) ? f.rids.filter((n) => Number.isInteger(n)) : []
+      out.push({ op: 'rids', rids })
       continue
     }
     if (typeof f.col !== 'string') continue

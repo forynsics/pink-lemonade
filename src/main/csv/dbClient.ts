@@ -55,9 +55,9 @@ export function call<T = unknown>(fn: string, ...args: unknown[]): Promise<T> {
   })
 }
 
-/** Run an ingest (ingestCsv | addSource); `onProgress` fires for each progress tick. */
+/** Run an ingest (ingestCsv | addSource | addXlsxSources); `onProgress` fires for each progress tick. */
 export function ingest<T = unknown>(
-  fn: 'ingestCsv' | 'addSource',
+  fn: 'ingestCsv' | 'addSource' | 'addXlsxSources',
   args: Record<string, unknown>,
   cancelKey: string,
   onProgress: (p: { bytes: number; rows: number; total: number }) => void

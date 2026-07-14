@@ -13,6 +13,7 @@ import {
   buildFiltPageSql,
   buildTagApplyByFilterSql,
   buildTagClearByFilterSql,
+  buildAiMarkApplyByFilterSql,
   buildTagCountsSql,
   buildSweepScanSql,
   buildDistinctSql,
@@ -118,20 +119,20 @@ describe('buildQueryRowsSql', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 10,
       offset: 0,
-      filters: [{ col: 'c1', op: 'neq', value: 'HackTool' }]
+      filters: [{ col: 'c1', op: 'neq', value: 'alpha' }]
     })
     expect(sql).toBe('SELECT c0, c1 FROM data WHERE c1 <> ? LIMIT ? OFFSET ?')
-    expect(params).toEqual(['HackTool', 10, 0])
+    expect(params).toEqual(['alpha', 10, 0])
   })
 
   it('renders an `nlike` (not contains) filter as NOT LIKE', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 10,
       offset: 0,
-      filters: [{ col: 'c1', op: 'nlike', value: 'Clean' }]
+      filters: [{ col: 'c1', op: 'nlike', value: 'bravo' }]
     })
     expect(sql).toBe("SELECT c0, c1 FROM data WHERE c1 NOT LIKE ? ESCAPE '\\' LIMIT ? OFFSET ?")
-    expect(params).toEqual(['%Clean%', 10, 0])
+    expect(params).toEqual(['%bravo%', 10, 0])
   })
 
   it('renders a single-tag filter as a rowid subquery with tag IN (?) (source id from the table)', () => {
@@ -174,10 +175,10 @@ describe('buildQueryRowsSql', () => {
     const { sql, params } = buildQueryRowsSql(cols, {
       limit: 100,
       offset: 0,
-      filters: [{ col: 'c0', op: 'in', values: ['1.1.1.1', '8.8.8.8', '9.9.9.9'] }]
+      filters: [{ col: 'c0', op: 'in', values: ['198.51.100.10', '192.0.2.20', '203.0.113.30'] }]
     })
     expect(sql).toBe('SELECT c0, c1 FROM data WHERE c0 IN (?, ?, ?) LIMIT ? OFFSET ?')
-    expect(params).toEqual(['1.1.1.1', '8.8.8.8', '9.9.9.9', 100, 0])
+    expect(params).toEqual(['198.51.100.10', '192.0.2.20', '203.0.113.30', 100, 0])
   })
 
   it('renders a `timearound` ISO filter via unixepoch ± delta', () => {
@@ -252,8 +253,8 @@ describe('buildExportSql', () => {
     const { sql, params } = buildExportSql(
       cols,
       {
-        filters: [{ col: 'c0', op: 'eq', value: '8.8.8.8' }],
-        search: 'goog',
+        filters: [{ col: 'c0', op: 'eq', value: '192.0.2.20' }],
+        search: 'srch',
         sort: { col: 'c1', dir: 'desc' }
       },
       'data_2'
@@ -261,7 +262,7 @@ describe('buildExportSql', () => {
     expect(sql).toBe(
       "SELECT c0, c1 FROM data_2 WHERE c0 = ? AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\') ORDER BY c1 COLLATE NOCASE DESC"
     )
-    expect(params).toEqual(['8.8.8.8', '%goog%', '%goog%'])
+    expect(params).toEqual(['192.0.2.20', '%srch%', '%srch%'])
     expect(sql).not.toMatch(/LIMIT|OFFSET/)
   })
 
@@ -272,7 +273,7 @@ describe('buildExportSql', () => {
 
 describe('csvField / csvRow (RFC-4180 export escaping)', () => {
   it('leaves plain fields untouched', () => {
-    expect(csvField('8.8.8.8')).toBe('8.8.8.8')
+    expect(csvField('192.0.2.20')).toBe('192.0.2.20')
     expect(csvField('')).toBe('')
   })
 
@@ -284,7 +285,7 @@ describe('csvField / csvRow (RFC-4180 export escaping)', () => {
   })
 
   it('joins a row, escaping only the fields that need it', () => {
-    expect(csvRow(['1.2.3.4', 'United States', 'AS15169, Google'])).toBe('1.2.3.4,United States,"AS15169, Google"')
+    expect(csvRow(['203.0.113.44', 'United States', 'AS64500, Example Org'])).toBe('203.0.113.44,United States,"AS64500, Example Org"')
   })
 })
 
@@ -292,7 +293,7 @@ describe('bulk tag-by-filter builders', () => {
   it('apply: upserts a tag for every row matching the view (predicate + search), params SELECT-first', () => {
     const { sql, params } = buildTagApplyByFilterSql(
       cols,
-      [{ col: 'c0', op: 'eq', value: '8.8.8.8' }],
+      [{ col: 'c0', op: 'eq', value: '192.0.2.20' }],
       undefined,
       3,
       'malicious',
@@ -300,25 +301,64 @@ describe('bulk tag-by-filter builders', () => {
       'data_3'
     )
     expect(sql).toBe(
-      'INSERT INTO tags (source_id, rid, tag, updated_at) SELECT ?, rowid, ?, ? FROM data_3 WHERE c0 = ? ' +
-        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at'
+      'INSERT INTO tags (source_id, rid, tag, updated_at, actor) SELECT ?, rowid, ?, ?, ? FROM data_3 WHERE c0 = ? ' +
+        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at, actor = excluded.actor'
     )
-    expect(params).toEqual([3, 'malicious', 1700, '8.8.8.8'])
+    // actor defaults to null (an analyst tag) when not supplied.
+    expect(params).toEqual([3, 'malicious', 1700, null, '192.0.2.20'])
+  })
+
+  it('apply: records the actor (e.g. ai) when supplied', () => {
+    const { params } = buildTagApplyByFilterSql(cols, [{ col: 'c0', op: 'eq', value: '192.0.2.20' }], undefined, 3, 'malicious', 1700, 'data_3', 'ai')
+    expect(params).toEqual([3, 'malicious', 1700, 'ai', '192.0.2.20'])
   })
 
   it('apply: with no predicate falls back to WHERE true (tag the whole source)', () => {
     expect(buildTagApplyByFilterSql(cols, undefined, undefined, 0, 'benign', 9, 'data_0').sql).toBe(
-      'INSERT INTO tags (source_id, rid, tag, updated_at) SELECT ?, rowid, ?, ? FROM data_0 WHERE true ' +
-        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at'
+      'INSERT INTO tags (source_id, rid, tag, updated_at, actor) SELECT ?, rowid, ?, ?, ? FROM data_0 WHERE true ' +
+        'ON CONFLICT(source_id, rid) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at, actor = excluded.actor'
     )
   })
 
   it('clear: deletes tags for rows matching the view', () => {
-    const { sql, params } = buildTagClearByFilterSql(cols, undefined, 'mimikatz', 2, 'data_2')
+    const { sql, params } = buildTagClearByFilterSql(cols, undefined, 'payload', 2, 'data_2')
     expect(sql).toBe(
       "DELETE FROM tags WHERE source_id = ? AND rid IN (SELECT rowid FROM data_2 WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\'))"
     )
-    expect(params).toEqual([2, '%mimikatz%', '%mimikatz%'])
+    expect(params).toEqual([2, '%payload%', '%payload%'])
+  })
+})
+
+describe('AI-accountability marks', () => {
+  it('resolves an aimark filter against ai_marks by source id', () => {
+    const { sql, params } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'aimark' }] }, 'data_7')
+    expect(sql).toBe('SELECT c0, c1 FROM data_7 WHERE rowid IN (SELECT rid FROM ai_marks WHERE source_id = ?) LIMIT ? OFFSET ?')
+    expect(params).toEqual([7, 10, 0])
+  })
+
+  it('flips to NOT IN when excluded', () => {
+    const { sql } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'aimark', exclude: true }] }, 'data_7')
+    expect(sql).toContain('rowid NOT IN (SELECT rid FROM ai_marks WHERE source_id = ?)')
+  })
+
+  it('resolves a rids filter to a rowid IN set (constellation evidence pivot)', () => {
+    const { sql, params } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'rids', rids: [3, 7, 12] }] }, 'data_2')
+    expect(sql).toBe('SELECT c0, c1 FROM data_2 WHERE rowid IN (?, ?, ?) LIMIT ? OFFSET ?')
+    expect(params).toEqual([3, 7, 12, 10, 0])
+  })
+
+  it('an empty rids set matches nothing', () => {
+    const { sql } = buildQueryRowsSql(cols, { limit: 10, offset: 0, filters: [{ op: 'rids', rids: [] }] }, 'data_2')
+    expect(sql).toContain('WHERE 0')
+  })
+
+  it('apply builder upserts the note for matching rows', () => {
+    const { sql, params } = buildAiMarkApplyByFilterSql(cols, [{ col: 'c0', op: 'like', value: 'susp' }], undefined, 4, 'beacon to C2', 1700, 'data_4')
+    expect(sql).toBe(
+      "INSERT INTO ai_marks (source_id, rid, note, created_at) SELECT ?, rowid, ?, ? FROM data_4 WHERE c0 LIKE ? ESCAPE '\\' " +
+        'ON CONFLICT(source_id, rid) DO UPDATE SET note = excluded.note, created_at = excluded.created_at'
+    )
+    expect(params).toEqual([4, 'beacon to C2', 1700, '%susp%'])
   })
 })
 
@@ -332,25 +372,25 @@ describe('sighting filter + sweep scan', () => {
   it('narrows a sighting filter to specific indicators ("zero in")', () => {
     const { sql, params } = buildQueryRowsSql(
       cols,
-      { limit: 10, offset: 0, filters: [{ op: 'sighting', indicators: ['8.8.8.8', 'evil.com'] }] },
+      { limit: 10, offset: 0, filters: [{ op: 'sighting', indicators: ['192.0.2.20', 'badsite.example'] }] },
       'data_7'
     )
     expect(sql).toBe(
       'SELECT c0, c1 FROM data_7 WHERE rowid IN (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (?, ?)) LIMIT ? OFFSET ?'
     )
-    expect(params).toEqual([7, '8.8.8.8', 'evil.com', 10, 0])
+    expect(params).toEqual([7, '192.0.2.20', 'badsite.example', 10, 0])
   })
 
   it('excludes specific indicators (right-click → NOT IN)', () => {
     const { sql, params } = buildQueryRowsSql(
       cols,
-      { limit: 10, offset: 0, filters: [{ op: 'sighting', indicators: ['evil.com'], exclude: true }] },
+      { limit: 10, offset: 0, filters: [{ op: 'sighting', indicators: ['badsite.example'], exclude: true }] },
       'data_7'
     )
     expect(sql).toBe(
       'SELECT c0, c1 FROM data_7 WHERE rowid NOT IN (SELECT rid FROM intel_hits WHERE source_id = ? AND indicator IN (?)) LIMIT ? OFFSET ?'
     )
-    expect(params).toEqual([7, 'evil.com', 10, 0])
+    expect(params).toEqual([7, 'badsite.example', 10, 0])
   })
 
   it('excludes a tag (right-click a tag facet → NOT IN)', () => {
@@ -391,12 +431,12 @@ describe('buildTagCountsSql (filtered tag rollup)', () => {
   })
 
   it('folds search into the predicate', () => {
-    const q = buildTagCountsSql(cols, undefined, 'mimikatz', 'data_2')
+    const q = buildTagCountsSql(cols, undefined, 'payload', 'data_2')
     expect(q?.sql).toBe(
       'SELECT t.tag AS tag, COUNT(*) AS cnt FROM tags t WHERE t.source_id = ? ' +
         "AND EXISTS (SELECT 1 FROM data_2 WHERE data_2.rowid = t.rid AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')) GROUP BY t.tag"
     )
-    expect(q?.params).toEqual([2, '%mimikatz%', '%mimikatz%'])
+    expect(q?.params).toEqual([2, '%payload%', '%payload%'])
   })
 
   it('excludes the tag filter itself so a facet does not zero out its siblings', () => {
@@ -483,17 +523,17 @@ describe('global search', () => {
   })
 
   it('count: applies the same all-column search predicate', () => {
-    const { sql, params } = buildCountSql(cols, undefined, '185.220')
+    const { sql, params } = buildCountSql(cols, undefined, '203.0.113')
     expect(sql).toBe("SELECT COUNT(*) AS n FROM data WHERE (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')")
-    expect(params).toEqual(['%185.220%', '%185.220%'])
+    expect(params).toEqual(['%203.0.113%', '%203.0.113%'])
   })
 
   it('count chunk: bounds by a rowid slice and ANDs the predicate (params rowid-first)', () => {
-    const { sql, params } = buildCountChunkSql(cols, undefined, '185.220', 1_000_000, 2_000_000)
+    const { sql, params } = buildCountChunkSql(cols, undefined, '203.0.113', 1_000_000, 2_000_000)
     expect(sql).toBe(
       "SELECT COUNT(*) AS n FROM data WHERE rowid > ? AND rowid <= ? AND (c0 LIKE ? ESCAPE '\\' OR c1 LIKE ? ESCAPE '\\')"
     )
-    expect(params).toEqual([1_000_000, 2_000_000, '%185.220%', '%185.220%'])
+    expect(params).toEqual([1_000_000, 2_000_000, '%203.0.113%', '%203.0.113%'])
   })
 
   it('count chunk: with no predicate, just the rowid slice', () => {

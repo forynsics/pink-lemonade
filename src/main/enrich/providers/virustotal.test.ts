@@ -45,20 +45,20 @@ describe('normalizeIndicator', () => {
     expect(normalizeIndicator('AABB', 'sha256')).toBe('aabb')
   })
   it('leaves IPs and domains untouched', () => {
-    expect(normalizeIndicator('8.8.8.8', 'ipv4')).toBe('8.8.8.8')
+    expect(normalizeIndicator('198.51.100.8', 'ipv4')).toBe('198.51.100.8')
     expect(normalizeIndicator('Example.COM', 'domain')).toBe('Example.COM')
   })
 })
 
 describe('curateFields', () => {
   it('maps IP attributes and computes verdict/total/link', () => {
-    const f = curateFields('ipv4', '1.2.3.4', {
+    const f = curateFields('ipv4', '192.0.2.44', {
       last_analysis_stats: { malicious: 3, suspicious: 1, harmless: 50, undetected: 20 },
       reputation: -7,
       as_owner: 'EXAMPLE-AS',
       asn: 64500,
       country: 'US',
-      network: '1.2.3.0/24'
+      network: '192.0.2.0/24'
     })
     expect(f['VT Verdict']).toBe('Malicious')
     expect(f['VT Malicious']).toBe('3')
@@ -68,8 +68,8 @@ describe('curateFields', () => {
     expect(f['AS Owner']).toBe('EXAMPLE-AS')
     expect(f.ASN).toBe('AS64500')
     expect(f.Country).toBe('US')
-    expect(f.Network).toBe('1.2.3.0/24')
-    expect(f['VT Link']).toBe('https://www.virustotal.com/gui/ip-address/1.2.3.4')
+    expect(f.Network).toBe('192.0.2.0/24')
+    expect(f['VT Link']).toBe('https://www.virustotal.com/gui/ip-address/192.0.2.44')
   })
 
   it('maps domain attributes incl. joined categories and creation date', () => {
@@ -102,13 +102,13 @@ describe('curateFields', () => {
   })
 
   it('is defensive against missing fields (no throw, sane defaults)', () => {
-    const f = curateFields('ipv4', '9.9.9.9', {})
+    const f = curateFields('ipv4', '203.0.113.9', {})
     expect(f['VT Verdict']).toBe('Clean')
     expect(f['VT Malicious']).toBe('0')
     expect(f['VT Total']).toBe('0')
     expect(f.Reputation).toBeUndefined()
     expect(f['AS Owner']).toBeUndefined()
-    expect(f['VT Link']).toBe('https://www.virustotal.com/gui/ip-address/9.9.9.9')
+    expect(f['VT Link']).toBe('https://www.virustotal.com/gui/ip-address/203.0.113.9')
   })
 })
 

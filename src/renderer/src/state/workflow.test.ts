@@ -4,14 +4,14 @@ import { runWorkflow } from './workflow'
 
 describe('runWorkflow', () => {
   it('chains base64 decode -> extract IPv4 -> dedup', () => {
-    const b64 = btoa('see 8.8.8.8 and 8.8.8.8 and 9.9.9.9')
+    const b64 = btoa('see 192.0.2.10 and 192.0.2.10 and 198.51.100.20')
     const res = runWorkflow(b64, [
       { toolId: 'text.base64.decode', options: {} },
       { toolId: 'ioc.extract.ipv4', options: {} },
       { toolId: 'text.dedup', options: { sort: true } }
     ])
     expect(res.error).toBeUndefined()
-    expect(res.output.split('\n')).toEqual(['8.8.8.8', '9.9.9.9'])
+    expect(res.output.split('\n')).toEqual(['192.0.2.10', '198.51.100.20'])
   })
 
   it('returns input unchanged when there are no steps', () => {
@@ -33,14 +33,14 @@ describe('runWorkflow', () => {
   })
 
   it('bypasses a disabled step (passthrough) and continues the chain', () => {
-    const res = runWorkflow('see 8.8.8.8 here', [
+    const res = runWorkflow('see 203.0.113.7 here', [
       { toolId: 'ioc.extract.ipv4', options: {}, enabled: false },
       { toolId: 'text.case', options: { mode: 'upper' } }
     ])
     expect(res.error).toBeUndefined()
     // The extractor was skipped, so the uppercase step acts on the original input.
-    expect(res.output).toBe('SEE 8.8.8.8 HERE')
+    expect(res.output).toBe('SEE 203.0.113.7 HERE')
     expect(res.steps).toHaveLength(2)
-    expect(res.steps[0].output).toBe('see 8.8.8.8 here') // passthrough
+    expect(res.steps[0].output).toBe('see 203.0.113.7 here') // passthrough
   })
 })

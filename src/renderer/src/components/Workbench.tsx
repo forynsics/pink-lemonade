@@ -251,7 +251,7 @@ export function Workbench({
             <h4 className="text-xs font-bold uppercase tracking-wider text-citrus-dark dark:text-citrus-night-text">Input</h4>
           </div>
           <div className="flex items-center gap-1">
-            <button className={wrap ? pillActive : pill} onClick={() => setWrap((w) => !w)} title="Toggle word wrap">
+            <button className={wrap ? pillActive : pill} onClick={() => setWrap((w) => !w)}>
               Wrap
             </button>
             <button className={pill} onClick={loadFile}>
@@ -295,7 +295,7 @@ export function Workbench({
             <h4 className="text-xs font-bold uppercase tracking-wider text-citrus-dark dark:text-citrus-night-text">Output</h4>
           </div>
           <div className="flex items-center gap-1">
-            <button className={wrap ? pillActive : pill} onClick={() => setWrap((w) => !w)} title="Toggle word wrap">
+            <button className={wrap ? pillActive : pill} onClick={() => setWrap((w) => !w)}>
               Wrap
             </button>
             <button

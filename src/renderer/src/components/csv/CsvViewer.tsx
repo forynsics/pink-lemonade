@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { ChevronDown, Crosshair, Download, Loader2, Tags } from 'lucide-react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Crosshair, Download, Loader2, Sparkles, Tags, Trash2 } from 'lucide-react'
 import type { CsvColumn, CsvFilter, CsvSort } from '../../state/csvTypes'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 
@@ -16,6 +16,12 @@ export interface CsvViewerHandle {
   toggleTagFilter: (tag: TagId) => void
   excludeTagFilter: (tag: TagId) => void
   clearTagFilter: () => void
+  /** Reload tag markers from disk — used after the AI assistant tags rows in this source. */
+  reloadTags: () => void
+  /** Filter + highlight the grid to rows containing `value` — a keyword pivot from the chat. */
+  focusValue: (value: string) => void
+  /** Restrict the grid to exactly these rowids — the pivot to a constellation event's evidence. */
+  focusRids: (rids: number[]) => void
 }
 
 /** What the grid needs to render a source — satisfied by a workspace source view (or any table). */
@@ -35,10 +41,13 @@ import { SearchBar } from './SearchBar'
 import { ColumnMenu } from './ColumnMenu'
 import { ColumnPicker } from './ColumnPicker'
 import { DistinctPanel } from './DistinctPanel'
-import { SweepDialog } from './SweepDialog'
-import { SightingsPanel } from './SightingsPanel'
+import { SweepDialog, type SweepSource } from './SweepDialog'
 import { classifyIndicator } from '../../tools/ioc/classify'
+import { isInternalTimelineColumn, TIMELINE_PIVOT_SOURCE_COL, TIMELINE_PIVOT_RIDS_COL } from '../../state/timeline'
 import { CellPopout } from './CellPopout'
+import { RowPopout, type RowField } from './RowPopout'
+import { RecordEventDialog, type RecordEventSubmit } from './RecordEventDialog'
+import { JsonExtractDialog } from './JsonExtractDialog'
 
 const SEARCH_DEBOUNCE_MS = 250
 
@@ -57,20 +66,35 @@ function looksNumeric(rows: string[][], colIdx: number): boolean {
 export function CsvViewer({
   doc,
   onPivot,
+  searchTrailing,
   onReorderColumns,
+  onColumnsExtracted,
   savedHidden,
   onHiddenColumns,
   pendingSweep,
   onConsumePendingSweep,
+  pendingFocus,
+  onConsumePendingFocus,
+  onPivotEvidence,
   apiRef,
   onTagSummary,
+  onEventRecorded,
   onSendToEnrichment,
   sendIntelLabel = 'Intel',
-  intelDbPath
+  intelDbPath,
+  sweepSources,
+  onSightingsChanged,
+  onOpenSightings,
+  sightingRefreshKey
 }: {
   doc: CsvViewSource
   onPivot: (values: string[], label: string) => void
+  /** Workspace-scoped controls (Constellation / Timeline / Investigation / IOC toggles) rendered at
+   *  the trailing edge of the Search bar. Provided only for workspace sources. */
+  searchTrailing?: React.ReactNode
   onReorderColumns: (from: number, to: number) => void
+  /** Append columns just extracted from a JSON field to the live source (workspace sources only). */
+  onColumnsExtracted?: (cols: CsvColumn[]) => void
   /** Persisted hidden-column names for this source (restored on mount). */
   savedHidden?: string[]
   /** Report the hidden-column set up so it persists on the workspace source. */
@@ -80,16 +104,34 @@ export function CsvViewer({
   pendingSweep?: { values: string[]; token: number }
   /** Clear the pending pivot once consumed (so it doesn't re-open on the next render). */
   onConsumePendingSweep?: () => void
+  /** Set when a pivot targets THIS source — focuses specific evidence rows (rids) or a value. */
+  pendingFocus?: { value?: string; rids?: number[]; token: number }
+  onConsumePendingFocus?: () => void
+  /** Pivot to a source's exact evidence rows — wired for the materialized Timeline source, whose rows
+   *  carry a hidden (sourceId, rids) address. Double-clicking a row calls this. */
+  onPivotEvidence?: (sourceId: number, rids: number[]) => void
   /** Set on the ACTIVE source only — lets the sidebar drive this source's tag filter. */
   apiRef?: React.Ref<CsvViewerHandle>
   /** Set on the ACTIVE source only — reports tag counts + the active tag filter to the sidebar. */
   onTagSummary?: (s: TagSummary | null) => void
+  /** Called after the analyst records an event from selected rows, so the Constellation/Timeline reload. */
+  onEventRecorded?: () => void
   /** Send a cell value / a column's distinct values to this workspace's intel tab. */
   onSendToEnrichment?: (values: string[]) => void
   /** Label for the send-to-intel action ("Global Intel" or "Workspace Intel"). */
   sendIntelLabel?: string
   /** This workspace's Intel DB path — enables the Sweep dialog's "Flagged" (VT-malicious) source. */
   intelDbPath?: string
+  /** Every source in this workspace — lets the Sweep dialog fan out across more than this one file.
+   *  Absent on legacy/non-workspace tabs (the dialog then falls back to just this source). */
+  sweepSources?: SweepSource[]
+  /** Bubbled whenever this source's sightings change (a sweep finished, or a row sighting cleared) so
+   *  the workspace-wide Sightings view reloads. */
+  onSightingsChanged?: () => void
+  /** Open the workspace-wide Sightings results panel (the single Sightings surface, lives in App). */
+  onOpenSightings?: () => void
+  /** Bumped by App after a cross-source sighting change so this grid reloads its crosshair markers. */
+  sightingRefreshKey?: number
 }): JSX.Element {
   const [sort, setSort] = useState<CsvSort | undefined>()
   const [filters, setFilters] = useState<CsvFilter[]>([])
@@ -99,6 +141,26 @@ export function CsvViewer({
     showFilter?: boolean
   } | null>(null)
   const [popout, setPopout] = useState<{ label: string; value: string } | null>(null)
+  const [rowPopout, setRowPopout] = useState<{ title: string; fields: RowField[] } | null>(null)
+  // Selected rows pending "Record as event" (the analyst's own finding from these rows).
+  const [recordEvt, setRecordEvt] = useState<{ rids: number[]; rows: string[][] } | null>(null)
+  // The JSON column the analyst is extracting sub-fields from (opens JsonExtractDialog).
+  const [extractCol, setExtractCol] = useState<CsvColumn | null>(null)
+  // Visible columns = every column except the materialized Timeline's hidden pivot-address machinery
+  // (`_sourceId`/`_rids`). Used for the grid, picker, filter bar, export, copy, and count so those
+  // columns never surface; the raw row still carries them for the double-click pivot below.
+  const displayColumns = useMemo(() => doc.columns.filter((c) => !isInternalTimelineColumn(c.original)), [doc.columns])
+  // The raw c<n> indices of the pivot-address columns (materialized Timeline only), so a row click can
+  // read (sourceId, rids) straight out of the source-order row.
+  const pivotIdx = useMemo(() => {
+    const s = doc.columns.find((c) => c.original === TIMELINE_PIVOT_SOURCE_COL)
+    const r = doc.columns.find((c) => c.original === TIMELINE_PIVOT_RIDS_COL)
+    return s && r ? { s: Number(s.name.slice(1)), r: Number(r.name.slice(1)) } : null
+  }, [doc.columns])
+  // Build label/value pairs for a full-row modal from a SOURCE-ORDER row (rows arrive as c0..cN),
+  // mapped through the (possibly reordered) display columns by each column's stable `c<n>` index.
+  const rowFields = (row: string[]): RowField[] =>
+    displayColumns.map((col) => ({ label: col.original, value: row[Number(col.name.slice(1))] ?? '' }))
   // Columns the user has hidden, keyed by stable `c<n>` name (so reorder doesn't disturb them).
   // Pure display state — the query still selects every column; this only gates rendering. Seeded
   // from the persisted set and reported back up on change; pruned if the column set changes.
@@ -125,12 +187,12 @@ export function CsvViewer({
     setHidden((prev) => {
       if (prev.has(col.name)) return prev
       // Never hide the last visible column — the grid needs at least one.
-      if (doc.columns.length - prev.size <= 1) return prev
+      if (displayColumns.length - prev.size <= 1) return prev
       const next = new Set(prev)
       next.add(col.name)
       return next
     })
-  }, [doc.columns.length])
+  }, [displayColumns.length])
   const toggleColumn = useCallback((name: string): void => {
     setHidden((prev) => {
       const next = new Set(prev)
@@ -149,6 +211,8 @@ export function CsvViewer({
     at: { x: number; y: number }
     defaultMinutes?: number
     tagRids?: number[]
+    /** Full values (source column order) of the row(s) acted on — backs the "Copy row(s)" action. */
+    rows?: string[][]
   } | null>(null)
 
   // Row tags for this source, keyed by positional rowid. Tagging only applies to workspace sources
@@ -156,20 +220,55 @@ export function CsvViewer({
   const [wsId, sidStr] = doc.tabId.split(':')
   const sourceId = Number(sidStr)
   const taggable = sidStr !== undefined && Number.isInteger(sourceId)
+
+  // Record the selected rows as an analyst event (interpretation grounded in real rows). Columns are sent
+  // in canonical c0..cN order, aligned with the source-order row arrays (the display order may differ).
+  async function recordEventFromRows(payload: RecordEventSubmit): Promise<void> {
+    if (!recordEvt || !taggable) return
+    const columns = [...displayColumns]
+      .sort((a, b) => Number(a.name.slice(1)) - Number(b.name.slice(1)))
+      .map((c) => ({ name: c.name, original: c.original, time: c.time ?? null }))
+    const base = { wsId, sourceId, sourceName: doc.sourceName, rids: recordEvt.rids, rows: recordEvt.rows, columns }
+    if (payload.kind === 'existing') {
+      // Attach to an existing event — label/etc. are the event's own; backend ignores these here.
+      await window.api.csv.wsEventCreateFromRows({ ...base, label: '', description: null, technique: null, users: [], eventId: payload.eventId })
+    } else {
+      await window.api.csv.wsEventCreateFromRows({ ...base, label: payload.label, description: payload.description, technique: payload.technique, users: payload.users })
+    }
+    setRecordEvt(null)
+    onEventRecorded?.()
+  }
+
+  // Extract scalar JSON sub-fields of `extractCol` into new grid columns on this source (in place —
+  // rowids preserved). Lets the dialog surface a backend error by rejecting; closes only on success.
+  async function extractJsonFields(fields: Array<{ path: string; displayName: string }>): Promise<void> {
+    if (!extractCol || !taggable) return
+    const cols = await window.api.csv.wsAddDerivedColumns(wsId, sourceId, extractCol.name, fields)
+    onColumnsExtracted?.(cols)
+    setExtractCol(null)
+  }
   const [tags, setTags] = useState<Map<number, string>>(new Map())
-  useEffect(() => {
+  // AI-accountability marks (✨): rowid → the note the assistant left. Its own dimension (separate
+  // from intent tags), so the analyst can filter the grid to exactly what the assistant flagged.
+  const [aiMarks, setAiMarks] = useState<Map<number, string | null>>(new Map())
+  const reloadTags = useCallback(async (): Promise<void> => {
     if (!taggable) {
       setTags(new Map())
+      setAiMarks(new Map())
       return
     }
+    const [tagRows, markRows] = await Promise.all([window.api.csv.wsTagList(wsId, sourceId), window.api.csv.wsAiMarkList(wsId, sourceId)])
+    setTags(new Map(tagRows.map((r) => [r.rid, r.tag])))
+    setAiMarks(new Map(markRows.map((r) => [r.rid, r.note])))
+  }, [taggable, wsId, sourceId])
+  useEffect(() => {
     let live = true
-    void window.api.csv.wsTagList(wsId, sourceId).then((rows) => {
-      if (live) setTags(new Map(rows.map((r) => [r.rid, r.tag])))
-    })
+    void reloadTags().catch(() => {})
     return () => {
       live = false
+      void live
     }
-  }, [doc.tabId, taggable, wsId, sourceId])
+  }, [doc.tabId, reloadTags])
 
   // Intel-sweep sightings for this source: rowid → matched-indicator tooltip. Drives the grid's
   // crosshair marker + the "show only sightings" toggle. `sightingRev` bumps to reload after a sweep.
@@ -185,7 +284,6 @@ export function CsvViewer({
     setSweepKey((k) => k + 1)
     setSweepOpen(true)
   }, [])
-  const [sightingsPanelOpen, setSightingsPanelOpen] = useState(false)
   // An Intel-tab pivot landed on this source → open the Sweep dialog pre-filled, then clear it.
   const pendingToken = pendingSweep?.token
   useEffect(() => {
@@ -213,7 +311,7 @@ export function CsvViewer({
     return () => {
       live = false
     }
-  }, [doc.tabId, taggable, wsId, sourceId, sightingRev])
+  }, [doc.tabId, taggable, wsId, sourceId, sightingRev, sightingRefreshKey])
 
   // When tags change while a "show only tagged X" filter is active, the cached filtered view goes
   // stale; bump this to force a re-query/re-count. Tracked via a ref so applyTag stays stable.
@@ -255,12 +353,22 @@ export function CsvViewer({
     async (tag: TagId | null) => {
       if (!taggable) return
       await window.api.csv.wsTagByFilter(wsId, sourceId, filters, search, tag)
-      const rows = await window.api.csv.wsTagList(wsId, sourceId)
-      setTags(new Map(rows.map((r) => [r.rid, r.tag])))
+      await reloadTags()
       if (hasTagFilterRef.current) setTagRev((r) => r + 1)
     },
-    [taggable, wsId, sourceId, filters, search]
+    [taggable, wsId, sourceId, filters, search, reloadTags]
   )
+
+  // Remove every AI ✨ mark from this source (a "reset the assistant's marks" action). Two-click
+  // confirm — a native confirm() can't be used in the sandboxed renderer.
+  const [confirmClearMarks, setConfirmClearMarks] = useState(false)
+  const clearAiMarks = useCallback(async (): Promise<void> => {
+    if (!taggable) return
+    await window.api.csv.wsAiMarkClear(wsId, sourceId)
+    setFilters((prev) => prev.filter((f) => f.op !== 'aimark')) // drop the now-empty filter if active
+    await reloadTags()
+    setConfirmClearMarks(false)
+  }, [taggable, wsId, sourceId, reloadTags])
   const [bulkOpen, setBulkOpen] = useState(false)
 
   // Export the whole current view (all rows under the active filters/search/sort) to a CSV file.
@@ -277,7 +385,7 @@ export function CsvViewer({
       const base = doc.sourceName.replace(/\.(csv|tsv|txt)$/i, '')
       const name = `${base}${hasPredicate ? '-filtered' : ''}.csv`
       // Export the columns you can see, in the order you see them (visible-only, display order).
-      const columns = doc.columns.filter((c) => !hidden.has(c.name)).map((c) => c.name)
+      const columns = displayColumns.filter((c) => !hidden.has(c.name)).map((c) => c.name)
       const res = await window.api.csv.export(doc.tabId, name, { filters, search, sort, columns })
       if (!('canceled' in res)) setExportDone({ rows: res.rows, path: res.path })
     } finally {
@@ -370,6 +478,15 @@ export function CsvViewer({
     addFilter({ col: cell.colName, op: exclude ? 'neq' : 'eq', value: cell.value })
   }
 
+  // Right-click "Copy row(s)" → the whole row(s) as tab-separated lines (one header + a line per
+  // row), so it pastes cleanly into a spreadsheet, ticket, or note. Values are in source-column
+  // order (all columns). Multi-row copy covers the loaded rows of the current selection.
+  function copyRows(rows: string[][]): void {
+    const header = displayColumns.map((c) => c.original).join('\t')
+    const lines = rows.map((row) => displayColumns.map((_, i) => row[i] ?? '').join('\t'))
+    void navigator.clipboard?.writeText([header, ...lines].join('\n'))
+  }
+
   // Clicking an `in` chip re-opens its column's multi-select submenu (pre-checked).
   function editInFilter(f: CsvFilter, at: { x: number; y: number }): void {
     if (f.op !== 'in') return
@@ -450,88 +567,13 @@ export function CsvViewer({
   const clearTagFilter = useCallback((): void => {
     setFilters((fs) => fs.filter((f) => f.op !== 'tag'))
   }, [])
-  // Two sighting-filter slots can coexist: an INCLUDE one (no `exclude`) and an EXCLUDE one. Include
-  // with no indicators = "all sightings"; include with indicators = "zero in"; exclude = hide those.
-  // Left-click an indicator drives include, right-click drives exclude; a value sits in at most one.
-  const incSighting = filters.find((f) => f.op === 'sighting' && !f.exclude)
-  const excSighting = filters.find((f) => f.op === 'sighting' && f.exclude)
-  const activeIndicators = (incSighting?.op === 'sighting' ? incSighting.indicators : undefined) ?? []
-  const excludedIndicators = (excSighting?.op === 'sighting' ? excSighting.indicators : undefined) ?? []
-  const allSightings = !!incSighting && activeIndicators.length === 0
-  const hasSightingFilter = !!incSighting || !!excSighting
-
-  // Rebuild the (≤2) sighting filter entries from the desired include/exclude sets.
-  const rebuildSightings = (fs: CsvFilter[], incInds: string[], excInds: string[], incAll: boolean): CsvFilter[] => {
-    const out: CsvFilter[] = fs.filter((f) => f.op !== 'sighting')
-    if (incAll) out.push({ op: 'sighting' })
-    else if (incInds.length > 0) out.push({ op: 'sighting', indicators: incInds })
-    if (excInds.length > 0) out.push({ op: 'sighting', indicators: excInds, exclude: true })
-    return out
-  }
-
-  const toggleAllSightings = useCallback((): void => {
-    setFilters((fs) => {
-      const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
-      const isAll = inc?.op === 'sighting' && (inc.indicators?.length ?? 0) === 0
-      const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
-      const excInds = exc?.op === 'sighting' ? exc.indicators ?? [] : []
-      return rebuildSightings(fs, [], excInds, !isAll)
-    })
-  }, [])
-  const toggleIndicatorSighting = useCallback((indicator: string): void => {
-    setFilters((fs) => {
-      const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
-      const incInds = inc?.op === 'sighting' ? inc.indicators ?? [] : []
-      const isAll = !!inc && incInds.length === 0
-      const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
-      const excInds = (exc?.op === 'sighting' ? exc.indicators ?? [] : []).filter((x) => x !== indicator)
-      // From "all" clicking one narrows to just it; otherwise add/remove from the include set.
-      const nextInc = isAll
-        ? [indicator]
-        : incInds.includes(indicator)
-          ? incInds.filter((x) => x !== indicator)
-          : [...incInds, indicator]
-      return rebuildSightings(fs, nextInc, excInds, false)
-    })
-  }, [])
-  const excludeIndicatorSighting = useCallback((indicator: string): void => {
-    setFilters((fs) => {
-      const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
-      const incInds0 = inc?.op === 'sighting' ? inc.indicators ?? [] : []
-      const isAll = !!inc && incInds0.length === 0
-      const incInds = incInds0.filter((x) => x !== indicator) // a value can't be both included and excluded
-      const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
-      const excInds = exc?.op === 'sighting' ? exc.indicators ?? [] : []
-      const nextExc = excInds.includes(indicator) ? excInds.filter((x) => x !== indicator) : [...excInds, indicator]
-      return rebuildSightings(fs, incInds, nextExc, isAll)
-    })
-  }, [])
-  const clearAllSightings = useCallback(async (): Promise<void> => {
-    await window.api.csv.sightingClear(wsId, sourceId)
-    setFilters((fs) => fs.filter((f) => f.op !== 'sighting'))
-    setSightingRev((r) => r + 1)
-  }, [wsId, sourceId])
-  const clearIndicatorSighting = useCallback(
-    async (indicator: string): Promise<void> => {
-      await window.api.csv.sightingClear(wsId, sourceId, { indicator })
-      setFilters((fs) => {
-        const inc = fs.find((f) => f.op === 'sighting' && !f.exclude)
-        const incInds = (inc?.op === 'sighting' ? inc.indicators ?? [] : []).filter((x) => x !== indicator)
-        const isAll = inc?.op === 'sighting' && (inc.indicators?.length ?? 0) === 0
-        const exc = fs.find((f) => f.op === 'sighting' && f.exclude)
-        const excInds = (exc?.op === 'sighting' ? exc.indicators ?? [] : []).filter((x) => x !== indicator)
-        return rebuildSightings(fs, incInds, excInds, isAll)
-      })
-      setSightingRev((r) => r + 1)
-    },
-    [wsId, sourceId]
-  )
   const clearRowSighting = useCallback(
     async (rid: number): Promise<void> => {
       await window.api.csv.sightingClear(wsId, sourceId, { rid })
       setSightingRev((r) => r + 1)
+      onSightingsChanged?.() // keep the workspace-wide Sightings panel in sync
     },
-    [wsId, sourceId]
+    [wsId, sourceId, onSightingsChanged]
   )
   const incTagFilter = filters.find((f) => f.op === 'tag' && !f.exclude)
   const excTagFilter = filters.find((f) => f.op === 'tag' && f.exclude)
@@ -540,10 +582,30 @@ export function CsvViewer({
   hasTagFilterRef.current = activeTags.length > 0 || excludedTags.length > 0
 
   // The active source exposes its tag-filter controls and reports its tag rollup to the sidebar.
+  const focusValue = useCallback((value: string): void => {
+    const v = String(value ?? '')
+    setSearchInput(v)
+    setSearch(v) // immediate (skip the debounce) so the pivot lands at once
+  }, [])
+  // Show EXACTLY a set of rows (a constellation event's evidence) — a rowid filter, not a keyword.
+  const focusRids = useCallback((rids: number[]): void => {
+    setSearchInput('')
+    setSearch('')
+    setFilters((prev) => [...prev.filter((f) => f.op !== 'rids'), { op: 'rids', rids }])
+  }, [])
+  // A constellation "jump to evidence" / chat pivot landed on this source → focus it, then clear.
+  const focusToken = pendingFocus?.token
+  useEffect(() => {
+    if (!pendingFocus) return
+    if (pendingFocus.rids) focusRids(pendingFocus.rids)
+    else if (pendingFocus.value != null) focusValue(pendingFocus.value)
+    onConsumePendingFocus?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusToken])
   useImperativeHandle(
     apiRef,
-    () => ({ toggleTagFilter, excludeTagFilter, clearTagFilter }),
-    [toggleTagFilter, excludeTagFilter, clearTagFilter]
+    () => ({ toggleTagFilter, excludeTagFilter, clearTagFilter, reloadTags: () => void reloadTags(), focusValue, focusRids }),
+    [toggleTagFilter, excludeTagFilter, clearTagFilter, reloadTags, focusValue, focusRids]
   )
   const activeTagsKey = `${activeTags.join(',')}|${excludedTags.join(',')}`
   // The rollup must reflect the *view* predicate (column filters + search) but NOT the tag filter —
@@ -603,7 +665,7 @@ export function CsvViewer({
           {doc.sourceName}
         </span>
         <span className="text-citrus-muted dark:text-citrus-night-muted font-mono">
-          {doc.columns.length} cols · {total.toLocaleString()}
+          {displayColumns.length} cols · {total.toLocaleString()}
           {counting ? '+' : ''} rows
           {counting && ' (counting…)'}
           {(filters.length > 0 || search !== '') && ` (of ${doc.rowCount.toLocaleString()})`}
@@ -616,30 +678,61 @@ export function CsvViewer({
             <button
               onClick={() => openSweep('')}
               className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text"
-              title="Sweep this source for known indicators (intel set)"
+              title="Sweep this source for indicators"
             >
               <Crosshair className="w-3.5 h-3.5" />
               Intel Sweep
             </button>
           )}
-          {taggable && sightings.size > 0 && (
+          {taggable && sightings.size > 0 && onOpenSightings && (
             <button
-              onClick={() => {
-                setDistinctCol(null) // one side panel at a time
-                setSightingsPanelOpen((o) => !o)
-              }}
-              className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-semibold transition-colors ${
-                hasSightingFilter || sightingsPanelOpen
-                  ? 'border-red-500/50 bg-red-500/10 text-red-600 dark:border-red-400/50 dark:text-red-400'
-                  : 'border-citrus-border text-citrus-dark hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text'
-              }`}
-              title="Sightings — aggregate, filter, and clear"
+              onClick={onOpenSightings}
+              className="inline-flex items-center gap-1 rounded-md border border-citrus-border px-1.5 py-0.5 text-[11px] font-semibold text-citrus-dark transition-colors hover:border-red-500/40 hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-text"
+              title="Open workspace Sightings"
             >
               <Crosshair className="w-3.5 h-3.5" />
               {sightings.size.toLocaleString()} {sightings.size === 1 ? 'sighting' : 'sightings'}
             </button>
           )}
-          <ColumnPicker columns={doc.columns} hidden={hidden} onToggle={toggleColumn} onShowAll={showAllColumns} />
+          {taggable && aiMarks.size > 0 && (
+            <span className="inline-flex items-center">
+              <button
+                onClick={() => {
+                  setConfirmClearMarks(false)
+                  setFilters((prev) =>
+                    prev.some((f) => f.op === 'aimark') ? prev.filter((f) => f.op !== 'aimark') : [...prev, { op: 'aimark' }]
+                  )
+                }}
+                className={`inline-flex items-center gap-1 rounded-l-md border px-1.5 py-0.5 text-[11px] font-semibold transition-colors ${
+                  filters.some((f) => f.op === 'aimark')
+                    ? 'border-citrus-pink/50 bg-citrus-pink/10 text-citrus-pink'
+                    : 'border-citrus-border text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text'
+                }`}
+                title="Filter to AI-marked rows"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                {aiMarks.size.toLocaleString()} AI-marked
+              </button>
+              {confirmClearMarks ? (
+                <button
+                  onClick={() => void clearAiMarks()}
+                  className="inline-flex items-center gap-1 rounded-r-md border border-l-0 border-red-500/60 bg-red-500/10 px-1.5 py-0.5 text-[11px] font-semibold text-red-600 dark:border-red-400/60 dark:text-red-400"
+                  title="Confirm — remove all AI marks"
+                >
+                  Clear all?
+                </button>
+              ) : (
+                <button
+                  onClick={() => setConfirmClearMarks(true)}
+                  className="inline-flex items-center rounded-r-md border border-l-0 border-citrus-border px-1 py-0.5 text-citrus-muted hover:text-red-600 dark:border-citrus-night-border dark:text-citrus-night-muted"
+                  title="Remove all AI marks"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </span>
+          )}
+          <ColumnPicker columns={displayColumns} hidden={hidden} onToggle={toggleColumn} onShowAll={showAllColumns} />
           <button
             onClick={() => setExportOpen(true)}
             disabled={exporting}
@@ -712,10 +805,11 @@ export function CsvViewer({
           setSearch('')
         }}
         onStep={stepMatch}
+        trailing={searchTrailing}
       />
 
       <FilterBar
-        columns={doc.columns}
+        columns={displayColumns}
         filters={filters}
         onAdd={addFilter}
         onUpdate={updateFilter}
@@ -726,10 +820,11 @@ export function CsvViewer({
 
       <div className="flex flex-1 min-w-0 min-h-0">
         <VirtualGrid
-          columns={doc.columns}
+          columns={displayColumns}
           rows={rows}
           rids={rids}
           tags={taggable ? tags : undefined}
+          aiMarks={taggable ? aiMarks : undefined}
           sightings={taggable ? sightings : undefined}
           hidden={hidden}
           anchorRid={anchorRid ?? undefined}
@@ -741,8 +836,24 @@ export function CsvViewer({
           onToggleSort={toggleSort}
           onOpenColumnMenu={(col, anchor) => setMenu({ col, anchor })}
           onCellOpen={(value, label) => setPopout({ value, label })}
+          onRowOpen={(fields, title) => setRowPopout({ fields, title })}
+          onRowActivate={
+            pivotIdx && onPivotEvidence
+              ? (row) => {
+                  const sid = Number(row[pivotIdx.s])
+                  let evRids: number[] = []
+                  try {
+                    const parsed = JSON.parse(row[pivotIdx.r] || '[]')
+                    if (Array.isArray(parsed)) evRids = parsed.filter((n): n is number => Number.isInteger(n))
+                  } catch {
+                    evRids = []
+                  }
+                  if (Number.isInteger(sid) && sid >= 0 && evRids.length) onPivotEvidence(sid, evRids)
+                }
+              : undefined
+          }
           getLongest={(colName) => window.api.csv.longest(doc.tabId, colName)}
-          onCellContext={(cell, at, ctxRids) => setCellMenu({ cell, at, tagRids: taggable ? ctxRids : undefined })}
+          onCellContext={(cell, at, ctxRids, rows) => setCellMenu({ cell, at, tagRids: taggable ? ctxRids : undefined, rows })}
           ensureRange={ensureRange}
           controllerRef={gridRef}
           onReorderColumns={onReorderColumns}
@@ -756,23 +867,6 @@ export function CsvViewer({
             onPivot={onPivot}
             onSendToEnrichment={onSendToEnrichment}
             sendIntelLabel={sendIntelLabel}
-          />
-        )}
-        {sightingsPanelOpen && taggable && (
-          <SightingsPanel
-            wsId={wsId}
-            sourceId={sourceId}
-            totalRows={sightings.size}
-            reloadKey={sightingRev}
-            activeIndicators={activeIndicators}
-            excludedIndicators={excludedIndicators}
-            allActive={allSightings}
-            onToggleAll={toggleAllSightings}
-            onToggleIndicator={toggleIndicatorSighting}
-            onExcludeIndicator={excludeIndicatorSighting}
-            onClearAll={() => void clearAllSightings()}
-            onClearIndicator={(ind) => void clearIndicatorSighting(ind)}
-            onClose={() => setSightingsPanelOpen(false)}
           />
         )}
       </div>
@@ -789,14 +883,32 @@ export function CsvViewer({
           initialShowFilter={menu.showFilter}
           onClose={() => setMenu(null)}
           onShowDistinct={(col) => {
-            setSightingsPanelOpen(false) // one side panel at a time
             setDistinctCol(col)
           }}
           onApplyInFilter={applyInFilter}
           onHide={hideColumn}
+          onExtractJson={taggable ? (col) => setExtractCol(col) : undefined}
         />
       )}
       {popout && <CellPopout label={popout.label} value={popout.value} onClose={() => setPopout(null)} />}
+      {rowPopout && <RowPopout title={rowPopout.title} fields={rowPopout.fields} onClose={() => setRowPopout(null)} />}
+      {recordEvt && (
+        <RecordEventDialog
+          rowCount={recordEvt.rids.length}
+          sourceName={doc.sourceName}
+          wsId={wsId}
+          onSubmit={(payload) => void recordEventFromRows(payload)}
+          onClose={() => setRecordEvt(null)}
+        />
+      )}
+      {extractCol && (
+        <JsonExtractDialog
+          tabId={doc.tabId}
+          col={extractCol}
+          onSubmit={extractJsonFields}
+          onClose={() => setExtractCol(null)}
+        />
+      )}
       {cellMenu && (
         <CellContextMenu
           cell={cellMenu.cell}
@@ -805,6 +917,18 @@ export function CsvViewer({
           tagRids={cellMenu.tagRids}
           currentTag={cellMenu.tagRids?.length === 1 ? tags.get(cellMenu.tagRids[0]) : undefined}
           onFilter={applyValueFilter}
+          onViewRow={
+            cellMenu.rows?.length === 1
+              ? () => setRowPopout({ title: 'Row', fields: rowFields(cellMenu.rows![0]) })
+              : undefined
+          }
+          onRecordEvent={
+            taggable && cellMenu.rows?.length && cellMenu.tagRids?.length
+              ? () => setRecordEvt({ rids: cellMenu.tagRids!, rows: cellMenu.rows! })
+              : undefined
+          }
+          onCopyRow={cellMenu.rows?.length ? () => copyRows(cellMenu.rows!) : undefined}
+          copyRowCount={cellMenu.rows?.length}
           onPickTime={applyTimeAround}
           onPickBound={applyTimeBound}
           onTag={applyTag}
@@ -826,18 +950,20 @@ export function CsvViewer({
       {sweepOpen && (
         <SweepDialog
           key={sweepKey}
-          tabId={doc.tabId}
-          columns={doc.columns}
-          sourceName={doc.sourceName}
+          wsId={wsId}
+          sources={sweepSources ?? [{ sourceId, name: doc.sourceName, columns: displayColumns, rowCount: doc.rowCount }]}
+          initialSourceId={sourceId}
           initialText={sweepInitial}
           intelDbPath={intelDbPath}
           onClose={() => setSweepOpen(false)}
-          existingCount={sightings.size}
-          onSwept={() => setSightingRev((r) => r + 1)}
+          onSwept={() => {
+            setSightingRev((r) => r + 1)
+            onSightingsChanged?.()
+            onOpenSightings?.() // a finished sweep lands you on the results (Notepad++-style)
+          }}
           onSeeSightings={() => {
             setSweepOpen(false)
-            setDistinctCol(null)
-            setSightingsPanelOpen(true)
+            onOpenSightings?.()
           }}
         />
       )}

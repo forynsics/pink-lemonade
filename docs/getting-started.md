@@ -14,6 +14,10 @@ what to do first. Your work is saved under `%APPDATA%\pink-lemonade` and comes b
 
 ## The Home screen
 
+<p align="center">
+  <img src="assets/welcome.png" alt="pink-lemonade Home screen" width="820" />
+</p>
+
 Home is your launchpad. From here you can:
 
 - **Import CSV / TSV…** — pick a tabular file; it opens in a new workspace as your first source.
@@ -27,6 +31,15 @@ Below the actions, **Recent workspaces** lists what you’ve opened lately — c
 straight back in (tags and all).
 
 You can return to Home anytime with the **🏠 Home** button at the top-left of the tab bar.
+
+## The top bar
+
+The header is always available, wherever you are:
+
+- **Global Intel** — opens the [Intel tab](intel.md) (bulk lookups + watchlists).
+- **Assistant** — opens the [AI assistant](ai.md), a grounded Claude analyst that works the open
+  workspace with you.
+- **Light / Dark** — theme toggle (remembered).
 
 ## Tabs
 

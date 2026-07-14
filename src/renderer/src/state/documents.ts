@@ -22,6 +22,10 @@ export interface WorkspaceSource {
   name: string
   columns: CsvColumn[]
   rowCount: number
+  /** Absolute path the file was imported from — used to detect re-imports (optional on old docs). */
+  originalPath?: string
+  /** Analyst-assigned grouping label (host/system/origin the evidence belongs to); null/absent = ungrouped. */
+  group?: string | null
   /** Column names (`c<n>`) hidden from the grid — display-only, persisted so it survives a reload. */
   hiddenColumns?: string[]
 }

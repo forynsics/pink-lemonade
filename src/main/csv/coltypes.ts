@@ -40,8 +40,10 @@ function looksLikeTimeName(header?: string): boolean {
 
 /**
  * Decide a column's time kind from a sample of its values. Requires a dominant kind covering
- * ≥90% of the non-empty sample. Epoch detection additionally needs a time-ish header so a
- * column of 10-/13-digit IDs isn't misread as a timestamp; ISO text is unambiguous on its own.
+ * ≥90% of the non-empty sample. Epoch detection additionally needs a time-ish header AND a few
+ * samples so a column of 10-/13-digit IDs isn't misread as a timestamp. ISO text is unambiguous
+ * on its own, so even a single ISO value is accepted — this is what lets a single-row source
+ * (e.g. a one-row RBCmd export whose only `DeletedOn` is "2025-03-19 12:18:52") get tagged.
  */
 export function detectColumnTime(samples: string[], header?: string): TimeKind | null {
   const counts: Record<TimeKind, number> = { iso: 0, epoch_s: 0, epoch_ms: 0 }
@@ -52,9 +54,13 @@ export function detectColumnTime(samples: string[], header?: string): TimeKind |
     const k = classifyTime(v)
     if (k) counts[k]++
   }
-  if (nonEmpty < 3) return null
+  if (nonEmpty === 0) return null
   const [kind, n] = (Object.entries(counts) as [TimeKind, number][]).sort((a, b) => b[1] - a[1])[0]
-  if (n / nonEmpty < 0.9) return null
-  if ((kind === 'epoch_s' || kind === 'epoch_ms') && !looksLikeTimeName(header)) return null
+  if (n === 0 || n / nonEmpty < 0.9) return null
+  // Epoch values are bare numbers — demand a time-ish header and a few samples to avoid mistaking
+  // numeric IDs for timestamps. ISO text is self-describing, so a lone value is enough.
+  if (kind === 'epoch_s' || kind === 'epoch_ms') {
+    if (!looksLikeTimeName(header) || nonEmpty < 3) return null
+  }
   return kind
 }

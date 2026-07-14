@@ -7,16 +7,16 @@ const refang = (s: string): string => getById('ioc.refang')!.run(s)
 
 describe('defang / refang tools', () => {
   it('defangs scheme and dots', () => {
-    expect(defang('http://1.2.3.4/payload')).toBe('hxxp://1[.]2[.]3[.]4/payload')
-    expect(defang('https://evil.com')).toBe('hxxps://evil[.]com')
+    expect(defang('http://192.0.2.44/payload')).toBe('hxxp://192[.]0[.]2[.]44/payload')
+    expect(defang('https://host9.example')).toBe('hxxps://host9[.]example')
   })
 
   it('refangs back to live form', () => {
-    expect(refang('hxxp://1[.]2[.]3[.]4')).toBe('http://1.2.3.4')
+    expect(refang('hxxp://198[.]51[.]100[.]22')).toBe('http://198.51.100.22')
   })
 
   it('round-trips a URL', () => {
-    const url = 'https://bad.example.com/a.b'
+    const url = 'https://node4.example.com/a.b'
     expect(refang(defang(url))).toBe(url)
   })
 })

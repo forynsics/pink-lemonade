@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, Clock, Crosshair, MapPin, MoreVertical } from 'lucide-react'
+import { ArrowDown, ArrowUp, Clock, Crosshair, MapPin, MoreVertical, Sparkles } from 'lucide-react'
 import type { CsvColumn, CsvSort, TimeKind } from '../../state/csvTypes'
 import { classifyCellTime } from '../../state/timeKind'
 import { tagDef } from '../../state/tags'
@@ -116,6 +116,7 @@ export function VirtualGrid({
   rows,
   rids,
   tags,
+  aiMarks,
   sightings,
   hidden,
   anchorRid,
@@ -127,6 +128,8 @@ export function VirtualGrid({
   onToggleSort,
   onOpenColumnMenu,
   onCellOpen,
+  onRowOpen,
+  onRowActivate,
   getLongest,
   onCellContext,
   ensureRange,
@@ -139,6 +142,8 @@ export function VirtualGrid({
   rids: number[]
   /** Map of rowid → tag id; drives the colored left marker. Undefined when the source is untagged. */
   tags?: Map<number, string>
+  /** Rowid → AI-accountability note. Drives the ✨ gutter marker (independent of intent tags). */
+  aiMarks?: Map<number, string | null>
   /** Map of rowid → the indicators that matched on that row; drives the gutter marker + cell highlight. */
   sightings?: Map<number, string[]>
   /** Column names (`c<n>`) the user has hidden — skipped in render only; all indices stay full-width. */
@@ -155,14 +160,21 @@ export function VirtualGrid({
   onToggleSort: (col: string) => void
   onOpenColumnMenu: (col: CsvColumn, anchor: { left: number; bottom: number }) => void
   onCellOpen: (value: string, label: string) => void
+  /** Open a modal listing every column of a row (double-click the row-number gutter). Fields are
+   *  in display order; `value` is the cell's full text. */
+  onRowOpen: (fields: Array<{ label: string; value: string }>, title: string) => void
+  /** Row-activate override (materialized Timeline): when set, double-clicking a row's gutter or any
+   *  cell calls this with the raw source-order row instead of opening the field/cell popout. */
+  onRowActivate?: (row: string[]) => void
   /** Fetch a column's longest value (whole table) for double-click auto-fit. */
   getLongest: (colName: string) => Promise<string>
   /**
    * Right-clicking any cell opens the cell menu (filter/exclude, + time pivots if applicable).
-   * `rids` are the rows a Tag-as action should hit: the clicked row, or — when the click lands
-   * inside a multi-row selection — every loaded row in that selection.
+   * `rids` are the rows a Tag-as action should hit, and `rows` their full data (for "Copy rows"):
+   * the clicked row, or — when the click lands inside a multi-row selection — every loaded row in
+   * that selection.
    */
-  onCellContext: (cell: CellRef, at: { x: number; y: number }, rids: number[]) => void
+  onCellContext: (cell: CellRef, at: { x: number; y: number }, rids: number[], rows: string[][]) => void
   ensureRange: (first: number, last: number) => void
   /** Parent ref for imperative control (scroll-to-match). */
   controllerRef?: React.Ref<VirtualGridHandle>
@@ -465,20 +477,25 @@ export function VirtualGrid({
       // loaded row in that selection; otherwise just this row (and we re-anchor onto it).
       const sr = sel ? rect(sel) : null
       let ctxRids: number[]
+      let ctxRows: string[][] // full data rows (all columns, source order) — backs "Copy rows"
       if (sr && sr.maxR > sr.minR && r >= sr.minR && r <= sr.maxR) {
         ctxRids = []
+        ctxRows = []
         for (let rr = sr.minR; rr <= sr.maxR; rr++) {
           const rid = rids[rr - baseOffset]
+          const row = rows[rr - baseOffset]
           if (rid != null) ctxRids.push(rid)
+          if (row != null) ctxRows.push(row)
         }
       } else {
         setSel({ anchor: { r, c }, focus: { r, c } }) // highlight what we're acting on
         const rid = rids[r - baseOffset]
         ctxRids = rid != null ? [rid] : []
+        ctxRows = [rows[r - baseOffset] ?? []]
       }
       const tkind = col.time ?? classifyCellTime(value) ?? undefined
       const rid = rids[r - baseOffset]
-      onCellContext({ colName: col.name, original: col.original, value, tkind, rid }, { x: e.clientX, y: e.clientY }, ctxRids)
+      onCellContext({ colName: col.name, original: col.original, value, tkind, rid }, { x: e.clientX, y: e.clientY }, ctxRids, ctxRows)
     },
     [columns, rows, rids, baseOffset, dataIdx, sel, onCellContext]
   )
@@ -574,6 +591,8 @@ export function VirtualGrid({
           const row = wi >= 0 && wi < rows.length ? rows[wi] : undefined
           const rid = row ? rids[wi] : undefined
           const tag = tags && rid != null ? tagDef(tags.get(rid)) : undefined
+          const aiMarked = rid != null && (aiMarks?.has(rid) ?? false)
+          const aiNote = aiMarked && rid != null ? aiMarks?.get(rid) : undefined
           const sightingVals = sightings && rid != null ? sightings.get(rid) : undefined
           const isAnchor = anchorRid != null && rid != null && rid === anchorRid
           // Highlight terms for this row's cells: matched indicators (red) + the search term (pink).
@@ -606,12 +625,7 @@ export function VirtualGrid({
               }`}
               style={{ position: 'absolute', top, height: ROW_H, width: totalWidth }}
             >
-              {tag && (
-                <div
-                  className={`absolute left-0 top-0 h-full w-[3px] ${tag.bar}`}
-                  title={tag.label}
-                />
-              )}
+              {tag && <div className={`absolute left-0 top-0 h-full w-[3px] ${tag.bar}`} title={tag.label} />}
               <div
                 className={`shrink-0 flex items-center justify-end gap-0.5 pr-2 text-[10px] select-none cursor-pointer hover:text-citrus-pink ${
                   isAnchor ? 'font-bold text-citrus-pink' : 'text-citrus-muted/70 dark:text-citrus-night-muted/70'
@@ -619,7 +633,21 @@ export function VirtualGrid({
                 style={{ width: IDX_W }}
                 onMouseDown={(e) => beginRow(e, abs)}
                 onMouseEnter={() => enterRow(abs)}
-                title={isAnchor ? 'Pivot anchor — the row you pivoted from' : 'Select row'}
+                onDoubleClick={() =>
+                  onRowActivate
+                    ? onRowActivate(row)
+                    : onRowOpen(
+                        columns.map((col, i) => ({ label: col.original, value: row[dataIdx[i]] ?? '' })),
+                        `Row ${abs + 1}`
+                      )
+                }
+                title={
+                  onRowActivate
+                    ? 'Double-click to jump to evidence rows'
+                    : isAnchor
+                      ? 'Pivot anchor — double-click to view all fields'
+                      : 'Double-click to view all fields'
+                }
               >
                 {sightingVals != null && (
                   <button
@@ -633,6 +661,11 @@ export function VirtualGrid({
                   >
                     <Crosshair className="w-3 h-3" />
                   </button>
+                )}
+                {aiMarked && (
+                  <span className="shrink-0 flex" title={aiNote || 'Marked by the AI Assistant'}>
+                    <Sparkles className="w-3 h-3 text-citrus-pink" />
+                  </span>
                 )}
                 {isAnchor && <MapPin className="w-3 h-3 shrink-0" />}
                 {abs + 1}
@@ -653,7 +686,7 @@ export function VirtualGrid({
                     onMouseDown={(e) => beginCell(e, abs, c)}
                     onMouseEnter={() => enterCell(abs, c)}
                     onContextMenu={(e) => onContextMenu(e, abs, c)}
-                    onDoubleClick={() => onCellOpen(v, `Row ${abs + 1} · ${col.original}`)}
+                    onDoubleClick={() => (onRowActivate ? onRowActivate(row) : onCellOpen(v, `Row ${abs + 1} · ${col.original}`))}
                   >
                     <span className="truncate">{cellTerms.length ? highlightTerms(v, cellTerms) : v}</span>
                   </div>

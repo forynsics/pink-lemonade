@@ -125,7 +125,7 @@ export function DistinctPanel({
             className={`${btn} border border-citrus-pink/40 text-citrus-pink hover:bg-citrus-pink-light dark:hover:bg-citrus-night-elev`}
             onClick={() => onSendToEnrichment(rows.map((r) => r.val))}
             disabled={loading || rows.length === 0}
-            title={`Send these distinct values to ${sendIntelLabel} (only recognized indicators)`}
+            title={`Send recognized indicators to ${sendIntelLabel}`}
           >
             <Radar className="w-3.5 h-3.5" /> Send to {sendIntelLabel}
           </button>

@@ -53,8 +53,7 @@ export function IntelSweepTargetDialog({
 
         <div className="px-5 py-4">
           <p className="mb-3 text-xs text-citrus-muted dark:text-citrus-night-muted">
-            Choose which source to sweep these indicators into. The Sweep dialog opens pre-filled so you can pick
-            columns and how to merge.
+            Choose a source to sweep into. The Sweep dialog opens pre-filled.
           </p>
 
           <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">

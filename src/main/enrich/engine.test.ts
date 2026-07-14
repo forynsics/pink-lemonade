@@ -48,9 +48,9 @@ describe('engine.bulkLookup', () => {
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       noProgress,
@@ -62,28 +62,28 @@ describe('engine.bulkLookup', () => {
 
   it('serves cache hits without calling the provider, and marks them fromCache', async () => {
     cacheGet.mockReturnValue(
-      new Map([['8.8.8.8', { indicator: '8.8.8.8', kind: 'ipv4', status: 'ok', fields: { Country: 'US' }, fetchedAt: 0 }]])
+      new Map([['11.22.33.44', { indicator: '11.22.33.44', kind: 'ipv4', status: 'ok', fields: { Country: 'US' }, fetchedAt: 0 }]])
     )
     lookup.mockResolvedValue({ status: 'ok', fields: { Country: 'AU' } } as EnrichmentResult)
     const res = await bulkLookup(
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       noProgress,
       noAbort
     )
     expect(lookup).toHaveBeenCalledTimes(1) // only the miss
-    expect(res.rows.find((r) => r.indicator === '8.8.8.8')?.fromCache).toBe(true)
-    expect(res.rows.find((r) => r.indicator === '1.1.1.1')?.fromCache).toBe(false)
+    expect(res.rows.find((r) => r.indicator === '11.22.33.44')?.fromCache).toBe(true)
+    expect(res.rows.find((r) => r.indicator === '12.34.56.78')?.fromCache).toBe(false)
   })
 
   it('skips indicator kinds the provider does not support (no lookup, status=skipped)', async () => {
     cacheGet.mockReturnValue(new Map())
-    const res = await bulkLookup('db', 'fake', [{ value: 'evil.com', kind: 'domain' }], 1000, noProgress, noAbort)
+    const res = await bulkLookup('db', 'fake', [{ value: 'mal-x7q2.test', kind: 'domain' }], 1000, noProgress, noAbort)
     expect(lookup).not.toHaveBeenCalled()
     expect(res.rows[0].status).toBe('skipped')
   })
@@ -91,14 +91,14 @@ describe('engine.bulkLookup', () => {
   it('does not cache error results, but does cache ok/notfound', async () => {
     cacheGet.mockReturnValue(new Map())
     lookup.mockImplementation((v: string) =>
-      Promise.resolve(v === '1.1.1.1' ? { status: 'error', fields: {} } : { status: 'ok', fields: { Country: 'US' } })
+      Promise.resolve(v === '12.34.56.78' ? { status: 'error', fields: {} } : { status: 'ok', fields: { Country: 'US' } })
     )
     await bulkLookup(
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       noProgress,
@@ -106,7 +106,7 @@ describe('engine.bulkLookup', () => {
     )
     expect(cachePut).toHaveBeenCalledTimes(1)
     const entries = cachePut.mock.calls[0][2] as Array<{ indicator: string }>
-    expect(entries.map((e) => e.indicator)).toEqual(['8.8.8.8']) // the error one was not persisted
+    expect(entries.map((e) => e.indicator)).toEqual(['11.22.33.44']) // the error one was not persisted
   })
 
   it('persists each ok result immediately (incremental writes, not one batch at the end)', async () => {
@@ -116,8 +116,8 @@ describe('engine.bulkLookup', () => {
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       noProgress,
@@ -126,8 +126,8 @@ describe('engine.bulkLookup', () => {
     // Two single-entry puts (one per result), so closing the app mid-run keeps completed lookups —
     // not one batched put at the end that a crash would lose.
     expect(cachePut).toHaveBeenCalledTimes(2)
-    expect((cachePut.mock.calls[0][2] as Array<{ indicator: string }>).map((e) => e.indicator)).toEqual(['8.8.8.8'])
-    expect((cachePut.mock.calls[1][2] as Array<{ indicator: string }>).map((e) => e.indicator)).toEqual(['1.1.1.1'])
+    expect((cachePut.mock.calls[0][2] as Array<{ indicator: string }>).map((e) => e.indicator)).toEqual(['11.22.33.44'])
+    expect((cachePut.mock.calls[1][2] as Array<{ indicator: string }>).map((e) => e.indicator)).toEqual(['12.34.56.78'])
   })
 
   it('streams each finished row through onProgress (live render)', async () => {
@@ -138,8 +138,8 @@ describe('engine.bulkLookup', () => {
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       (p) => {
@@ -147,7 +147,7 @@ describe('engine.bulkLookup', () => {
       },
       noAbort
     )
-    expect(streamed).toEqual(['8.8.8.8', '1.1.1.1'])
+    expect(streamed).toEqual(['11.22.33.44', '12.34.56.78'])
   })
 
   it('aborts mid-batch when shouldAbort() flips, returning canceled', async () => {
@@ -159,8 +159,8 @@ describe('engine.bulkLookup', () => {
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       noProgress,
@@ -178,7 +178,7 @@ describe('engine.bulkLookup', () => {
     lookup
       .mockRejectedValueOnce(new RateLimitError('429', { retryAfter: 0 })) // retryAfter 0 → no real wait
       .mockResolvedValueOnce({ status: 'ok', fields: { Country: 'US' } } as EnrichmentResult)
-    const res = await bulkLookup('db', 'fake', [{ value: '8.8.8.8', kind: 'ipv4' }], 1000, noProgress, noAbort)
+    const res = await bulkLookup('db', 'fake', [{ value: '11.22.33.44', kind: 'ipv4' }], 1000, noProgress, noAbort)
     expect(lookup).toHaveBeenCalledTimes(2)
     expect(res.rows[0].status).toBe('ok')
     expect(res.stats?.retryCount).toBe(1)
@@ -192,8 +192,8 @@ describe('engine.bulkLookup', () => {
       'db',
       'fake',
       [
-        { value: '8.8.8.8', kind: 'ipv4' },
-        { value: '1.1.1.1', kind: 'ipv4' }
+        { value: '11.22.33.44', kind: 'ipv4' },
+        { value: '12.34.56.78', kind: 'ipv4' }
       ],
       1000,
       noProgress,
@@ -210,7 +210,7 @@ describe('engine.bulkLookup', () => {
     lookup
       .mockRejectedValueOnce(new RateLimitError('429', { retryAfter: 0 }))
       .mockRejectedValueOnce(new RateLimitError('429 again', { retryAfter: 0 }))
-    const res = await bulkLookup('db', 'fake', [{ value: '8.8.8.8', kind: 'ipv4' }], 1000, noProgress, noAbort)
+    const res = await bulkLookup('db', 'fake', [{ value: '11.22.33.44', kind: 'ipv4' }], 1000, noProgress, noAbort)
     expect(lookup).toHaveBeenCalledTimes(2)
     expect(res.aborted).toBe('quota')
   })
@@ -221,9 +221,9 @@ describe('engine.bulkLookup', () => {
       cacheGet.mockReturnValue(new Map())
       lookup.mockResolvedValue({ status: 'ok', fields: {} } as EnrichmentResult)
       const items = [
-        { value: '8.8.8.8', kind: 'ipv4' as const },
-        { value: '1.1.1.1', kind: 'ipv4' as const },
-        { value: '9.9.9.9', kind: 'ipv4' as const }
+        { value: '11.22.33.44', kind: 'ipv4' as const },
+        { value: '12.34.56.78', kind: 'ipv4' as const },
+        { value: '23.45.67.89', kind: 'ipv4' as const }
       ]
       // rpm=2: the first two fire immediately, the third must wait out the 60s window.
       const p = bulkLookup('db', 'fake', items, Date.now(), noProgress, noAbort, { requestsPerMinute: 2 })

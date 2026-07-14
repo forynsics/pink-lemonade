@@ -26,6 +26,9 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   renameWorkspace: db.renameWorkspace,
   setWorkspaceIntelMode: db.setWorkspaceIntelMode,
   renameSource: db.renameSource,
+  setSourceGroup: db.setSourceGroup,
+  addDerivedColumns: db.addDerivedColumns,
+  buildTimelineSource: db.buildTimelineSource,
   removeSource: db.removeSource,
   closeWorkspace: db.closeWorkspace,
   deleteWorkspace: db.deleteWorkspace,
@@ -33,11 +36,44 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   setTags: db.setTags,
   tagByFilter: db.tagByFilter,
   getTagCounts: db.getTagCounts,
+  listAiMarks: db.listAiMarks,
+  setAiMarks: db.setAiMarks,
+  aiMarkByFilter: db.aiMarkByFilter,
+  clearAiMarks: db.clearAiMarks,
+  recordFinding: db.recordFinding,
+  listFindings: db.listFindings,
+  deleteFinding: db.deleteFinding,
+  clearFindings: db.clearFindings,
+  recordEvent: db.recordEvent,
+  getEvent: db.getEvent,
+  listEvents: db.listEvents,
+  deleteEvent: db.deleteEvent,
+  clearEvents: db.clearEvents,
+  updateEvent: db.updateEvent,
+  deleteEvidence: db.deleteEvidence,
+  recordIoc: db.recordIoc,
+  listIocs: db.listIocs,
+  deleteIoc: db.deleteIoc,
+  clearIocs: db.clearIocs,
+  markCoverage: db.markCoverage,
+  listCoverage: db.listCoverage,
+  clearCoverage: db.clearCoverage,
+  getInvestigation: db.getInvestigation,
+  setInvestigationPlan: db.setInvestigationPlan,
+  setInvestigationNotes: db.setInvestigationNotes,
+  listConversations: db.listConversations,
+  getConversation: db.getConversation,
+  upsertConversation: db.upsertConversation,
+  renameConversation: db.renameConversation,
+  deleteConversation: db.deleteConversation,
   listSightings: db.listSightings,
   sightingSummary: db.sightingSummary,
+  sightingsByIndicator: db.sightingsByIndicator,
   clearSightings: db.clearSightings,
   locateRow: db.locateRow,
   queryRows: db.queryRows,
+  findInFiles: db.findInFiles,
+  iocEventLinks: db.iocEventLinks,
   exportRows: db.exportRows,
   ensureSortIndex: db.ensureSortIndex,
   getColumnUniqueValues: db.getColumnUniqueValues,
@@ -60,6 +96,10 @@ const FNS: Record<string, (...a: never[]) => unknown> = {
   enrichCacheCount: enrichCache.indicatorCount,
   enrichDefaultDb: enrichCache.defaultDbPath,
   enrichClose: enrichCache.close,
+  // AI assistant config (non-secret settings + the encrypted Anthropic key blob). settings.json is
+  // worker-owned (single writer), so the AI surface in main routes its config reads/writes here.
+  getAiConfig: db.getAiConfig,
+  setAiConfig: db.setAiConfig,
   // Watchlists (global context lists).
   wlListLists: watchlistStore.listLists,
   wlGetEntries: watchlistStore.getEntries,
@@ -84,7 +124,7 @@ let enrichAbort: AbortController | null = null
 
 type Msg =
   | { t: 'call'; id: number; fn: string; args: unknown[] }
-  | { t: 'ingest'; id: number; fn: 'ingestCsv' | 'addSource'; cancelKey: string; args: Record<string, unknown> }
+  | { t: 'ingest'; id: number; fn: 'ingestCsv' | 'addSource' | 'addXlsxSources'; cancelKey: string; args: Record<string, unknown> }
   | { t: 'cancel'; cancelKey: string }
   | { t: 'count'; id: number; tabId: string; reqId: number; filters?: unknown; search?: string }
   | { t: 'distinct'; id: number; tabId: string; reqId: number; col: string; filters?: unknown; limit: number }
@@ -124,7 +164,9 @@ port.on('message', async (msg: Msg) => {
         const value =
           msg.fn === 'ingestCsv'
             ? await db.ingestCsv(args as Parameters<typeof db.ingestCsv>[0])
-            : await db.addSource(args as Parameters<typeof db.addSource>[0])
+            : msg.fn === 'addXlsxSources'
+              ? await db.addXlsxSources(args as Parameters<typeof db.addXlsxSources>[0])
+              : await db.addSource(args as Parameters<typeof db.addSource>[0])
         port.postMessage({ t: 'result', id: msg.id, ok: true, value })
       } catch (e) {
         // A canceled ingest resolves to null (the IPC layer's existing contract), not an error.

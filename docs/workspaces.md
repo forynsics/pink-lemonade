@@ -5,17 +5,20 @@ nav_order: 4
 
 # Workspaces
 
-A **workspace** is a self-contained investigation. It holds one or more imported CSV/TSV files
-(called **sources**) plus any tags and [sightings](intel-sweep.md) you’ve added — all in a single
-`.workspace` file on disk. Think of it as “the case I’m working on,” which you can close and reopen
-later exactly where you left off.
+A **workspace** is a self-contained investigation. It holds one or more imported files (called
+**sources**) plus everything you build on them — tags, [sightings](intel-sweep.md), and the
+[AI assistant](ai.md)'s findings (events, IOCs, and its investigation plan) — in a single `.workspace`
+file on disk. Think of it as “the case I’m working on,” which you can close and reopen later exactly
+where you left off.
 
 ## Creating a workspace
 
-Two ways:
+A few ways:
 
 - **Import CSV / TSV…** (from Home or the sidebar) creates a workspace with that file as its first
-  source.
+  source. **Excel** workbooks (`.xlsx` / `.xlsm`) work too — each non-empty worksheet becomes a source.
+- **Import folder…** points at a folder (e.g. a parsed KAPE package) and brings in **every** CSV / TSV
+  / Excel file under it at once — you pick which to include, and can group them on the way in.
 - **New workspace** creates an empty one; import files into it afterward.
 
 ## Sources (imported files)
@@ -29,6 +32,14 @@ with its row count. Click one to view it; the active source is highlighted.
 - **Remove a source** — the ✕ on a source row drops it from the workspace (after a confirm).
 
 Each source is independent — it can have completely different columns from the others.
+
+## Grouping sources by host / system
+
+When a case spans several machines, give each source a **group** — the host / system / origin it came
+from (e.g. `DESKTOP6`, `PaloAlto-Perimeter`). Set it from a source's **Layers** icon, on a multi-selected
+set (ctrl/shift-click → **Group…**), or at folder-import time. The sidebar then lists sources under
+group headers. Groups keep a multi-host investigation straight — and the AI assistant uses them to scope
+its reasoning and attribute findings to the right system.
 
 ## Renaming the workspace
 

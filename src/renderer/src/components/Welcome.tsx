@@ -1,4 +1,4 @@
-import { NotebookPen, FolderPlus, FolderOpen, Clock, Plus, X, HardDrive, Radar } from 'lucide-react'
+import { NotebookPen, FolderPlus, FolderOpen, FolderInput, Clock, Plus, X, HardDrive, Radar } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
@@ -49,6 +49,7 @@ export function Welcome({
   onOpenRecent,
   onNewWorkspace,
   onImportCsv,
+  onImportFolder,
   onOpenWorkspace,
   onNewScratch,
   onNewEnrichment,
@@ -61,6 +62,7 @@ export function Welcome({
   onOpenRecent: (f: RecentFile) => void
   onNewWorkspace: () => void
   onImportCsv: () => void
+  onImportFolder: () => void
   onOpenWorkspace: () => void
   onNewScratch: () => void
   onNewEnrichment: () => void
@@ -74,18 +76,16 @@ export function Welcome({
   return (
     <div className="welcome flex-1 min-h-0 overflow-auto bg-citrus-cream/40 dark:bg-citrus-night">
       <div className="mx-auto max-w-2xl px-8 py-12">
-        <div className="flex items-center gap-3 mb-1">
+        <div className="flex items-center gap-3 mb-8">
           <Logo />
           <span className="text-2xl font-bold tracking-tight text-citrus-dark dark:text-citrus-night-text">
             pink<span className="text-citrus-pink">lemonade</span>
           </span>
         </div>
-        <p className="text-sm text-citrus-muted dark:text-citrus-night-muted mb-8">
-          Local investigation toolkit — parse, pivot, and triage all in one space.
-        </p>
 
         <div className="grid grid-cols-2 gap-3 mb-10">
-          <Action cls="welcome__import-csv" onClick={onImportCsv} icon={<Plus className={ico} />} title="Import CSV / TSV…" sub="Pull a file into a workspace as a source" />
+          <Action cls="welcome__import-csv" onClick={onImportCsv} icon={<Plus className={ico} />} title="Import CSV / TSV…" sub="Add a file to a workspace" />
+          <Action cls="welcome__import-folder" onClick={onImportFolder} icon={<FolderInput className={ico} />} title="Import folder…" sub="Every CSV in a folder as one workspace" />
           <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start an empty investigation" />
           <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Open an existing .workspace file" />
           <Action cls="welcome__new" onClick={onNewScratch} icon={<NotebookPen className={ico} />} title="New notepad" sub="Text transforms + workflow" />
@@ -122,7 +122,7 @@ export function Welcome({
 
         {recent.length === 0 ? (
           <div className="rounded-xl border border-dashed border-citrus-border px-4 py-8 text-center text-xs text-citrus-muted dark:border-citrus-night-border dark:text-citrus-night-muted">
-            No recent workspaces yet — import a CSV or create a workspace to see it here.
+            No recent workspaces yet.
           </div>
         ) : (
           <ul className="flex flex-col gap-1">

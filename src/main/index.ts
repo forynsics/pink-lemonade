@@ -6,7 +6,11 @@ import { existsSync } from 'fs'
 import { basename } from 'path'
 import { registerCsvIpc } from './csv/ipc'
 import { registerEnrichIpc } from './enrich/ipc'
+import { registerAiIpc } from './ai/ipc'
 import { initDbWorker, call as dbCall } from './csv/dbClient'
+
+// The primary application window — popouts forward their pivots back to it.
+let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   // Dev: the running binary is electron.exe, so set the window/taskbar icon explicitly. Prod: the
@@ -32,6 +36,10 @@ function createWindow(): void {
   })
 
   win.on('ready-to-show', () => win.show())
+  mainWindow = win
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
 
   // Allow Ctrl + mouse-wheel / pinch zoom in addition to the menu accelerators.
   win.webContents.setVisualZoomLevelLimits(1, 3)
@@ -46,6 +54,58 @@ function createWindow(): void {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+// A detached pop-out window — the same renderer bundle, but routed (via the URL hash) to render a
+// single feature full-window instead of the app (e.g. the Artifact Constellation, which is too
+// cramped in the side panel). The payload travels in the hash so the popout is self-contained on
+// first paint; it reaches back through IPC only to forward a pivot to the main grid.
+function createPopoutWindow(payload: unknown): void {
+  const hash = 'popout=' + encodeURIComponent(JSON.stringify(payload))
+  const iconPath = join(__dirname, '../../build/icon.ico')
+  const win = new BrowserWindow({
+    width: 1100,
+    height: 760,
+    minWidth: 600,
+    minHeight: 420,
+    show: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#16131c',
+    title: 'pink-lemonade',
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  win.on('ready-to-show', () => win.show())
+  win.webContents.setVisualZoomLevelLimits(1, 3)
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  if (devUrl) {
+    win.loadURL(`${devUrl}#${hash}`)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), { hash })
+  }
+}
+
+// Renderer (any window) asks to open a feature in its own window.
+ipcMain.handle('popout:open', (_event, payload: unknown): null => {
+  createPopoutWindow(payload)
+  return null
+})
+
+// A popout relays a grid/doc action (pivot, build-timeline, apply-group, refresh) to the main
+// window, which owns the grid + workspace doc state. A pivot also raises the main window to front.
+ipcMain.on('popout:relay', (_event, data: unknown) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if ((data as { type?: string })?.type === 'pivot') {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+    mainWindow.webContents.send('popout:relay', data)
+  }
+})
 
 // IPC: minimal local file open/save. All transforms run in the renderer;
 // these handlers exist so users can pull data in from / push results out to disk.
@@ -117,6 +177,7 @@ app.whenReady().then(() => {
   void dbCall('sweepStaleTempDbs') // clear any temp CSV dbs left by a prior crash
   registerCsvIpc()
   registerEnrichIpc() // threat-intel/enrichment surface (cache DB + providers live in the worker)
+  registerAiIpc() // AI assistant surface (model I/O + agent loop run in main; tools reuse the proxies)
   buildMenu()
   createWindow()
   app.on('activate', () => {

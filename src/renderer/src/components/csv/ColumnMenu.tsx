@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, EyeOff, Filter, ListTree, Loader2 } from 'lucide-react'
+import { Braces, Check, EyeOff, Filter, ListTree, Loader2 } from 'lucide-react'
 import type { CsvViewSource } from './CsvViewer'
 import type { CsvColumn, CsvDistinctRow, CsvFilter } from '../../state/csvTypes'
 
@@ -25,7 +25,8 @@ export function ColumnMenu({
   onClose,
   onShowDistinct,
   onApplyInFilter,
-  onHide
+  onHide,
+  onExtractJson
 }: {
   doc: CsvViewSource
   col: CsvColumn
@@ -40,6 +41,8 @@ export function ColumnMenu({
   onApplyInFilter: (col: string, values: string[]) => void
   /** Hide this column from the grid (restore via the toolbar's Columns picker). */
   onHide: (col: CsvColumn) => void
+  /** Extract scalar JSON sub-fields of this column into new grid columns (workspace sources only). */
+  onExtractJson?: (col: CsvColumn) => void
 }): JSX.Element {
   const [showFilter, setShowFilter] = useState(!!initialShowFilter)
   const [rows, setRows] = useState<CsvDistinctRow[]>([])
@@ -145,10 +148,21 @@ export function ColumnMenu({
         Distinct values
       </button>
 
-      <button className={item} onClick={() => { onHide(col); onClose() }} title="Hide this column (restore it from the Columns picker)">
+      <button className={item} onClick={() => { onHide(col); onClose() }} title="Restore later from the Columns picker">
         <EyeOff className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
         Hide column
       </button>
+
+      {onExtractJson && (
+        <button
+          className={item}
+          onClick={() => { onExtractJson(col); onClose() }}
+          title="Extract scalar fields into new columns"
+        >
+          <Braces className="w-3.5 h-3.5 shrink-0 text-citrus-pink" />
+          Extract JSON field…
+        </button>
+      )}
 
       <div className="border-t border-citrus-border/60 dark:border-citrus-night-border/60" />
       <button className={item} onClick={() => setShowFilter((v) => !v)} title="Filter the grid to one or more values">

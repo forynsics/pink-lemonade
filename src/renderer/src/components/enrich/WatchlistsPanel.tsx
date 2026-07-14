@@ -197,7 +197,7 @@ export function WatchlistsPanel({ open, onClose, onChanged }: {
           <div className="min-w-0">
             <div className="text-sm font-bold text-citrus-dark dark:text-citrus-night-text">Watchlists</div>
             <div className="text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-              Curated context lists — match indicators with the “Watchlist” provider.
+              Curated context lists for the Watchlist provider.
             </div>
           </div>
           <button onClick={attemptClose} title="Close" className="shrink-0 text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted">
@@ -245,7 +245,7 @@ export function WatchlistsPanel({ open, onClose, onChanged }: {
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void createList(); if (e.key === 'Escape') { setCreating(false); setNewName('') } }}
-                placeholder="List name (e.g. Corporate)"
+                placeholder="List name"
                 className="min-w-0 flex-1 rounded border border-citrus-border bg-citrus-cream px-2 py-1 text-xs text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
               />
               <button
@@ -366,7 +366,7 @@ export function WatchlistsPanel({ open, onClose, onChanged }: {
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center px-6 text-center text-[12px] text-citrus-muted dark:text-citrus-night-muted">
-            {creating ? 'Name your list and pick a type.' : 'Create a watchlist to get started.'}
+            {creating ? 'Name it and pick a type.' : 'Create a watchlist.'}
           </div>
         )}
 

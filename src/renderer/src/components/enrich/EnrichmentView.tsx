@@ -184,7 +184,12 @@ export function EnrichmentView({
   // for the persisted indicators (cache read, no lookup).
   useEffect(() => {
     if (!doc.dbPath) return
-    void window.api.enrich.cacheCount(doc.dbPath).then(setEntryCount)
+    void window.api.enrich.cacheCount(doc.dbPath).then((n) => {
+      setEntryCount(n)
+      // Opening an Intel tab shows its contents automatically — no manual "Load all". Only when the
+      // tab has no list yet (a persisted list is hydrated via the cacheGet path below instead).
+      if (n > 0 && doc.indicators.length === 0) loadAll(true)
+    })
     if (doc.indicators.length > 0) {
       void window.api.enrich.cacheGet(doc.dbPath, doc.indicators.map((i) => i.value)).then(mergeCacheRows)
     }
@@ -244,8 +249,9 @@ export function EnrichmentView({
     })
   }
 
-  // "Load all": pull every entry in the bound DB into the working list + results (capped).
-  function loadAll(): void {
+  // "Load all": pull every entry in the bound DB into the working list + results (capped). `silent`
+  // skips the status note — used by the auto-load on tab open, where the populated grid is feedback enough.
+  function loadAll(silent = false): void {
     if (!doc.dbPath) return
     void window.api.enrich.cacheDump(doc.dbPath, LOAD_CAP).then((rows) => {
       const have = new Set(doc.indicators.map((i) => i.value))
@@ -258,11 +264,12 @@ export function EnrichmentView({
       }
       if (add.length > 0) onPatch({ indicators: [...doc.indicators, ...add] })
       mergeCacheRows(rows)
-      setAddNote(
-        rows.length >= LOAD_CAP
-          ? `loaded first ${LOAD_CAP.toLocaleString()} entries from the database`
-          : `loaded ${add.length} from the database`
-      )
+      if (!silent)
+        setAddNote(
+          rows.length >= LOAD_CAP
+            ? `loaded first ${LOAD_CAP.toLocaleString()} entries from the database`
+            : `loaded ${add.length} from the database`
+        )
     })
   }
 
@@ -418,9 +425,9 @@ export function EnrichmentView({
         </button>
         <button
           className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
-          onClick={loadAll}
+          onClick={() => loadAll()}
           disabled={!doc.dbPath || entryCount === 0}
-          title="Load every entry stored in this database into the table"
+          title="Load all entries"
         >
           <ListTree className="w-3 h-3" /> Load all
         </button>
@@ -473,7 +480,7 @@ export function EnrichmentView({
           <button
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
             onClick={() => setWatchlistsOpen(true)}
-            title="Edit the curated context lists matched by the Watchlist provider"
+            title="Edit watchlists"
           >
             <ListChecks className="w-3 h-3" /> Watchlists
           </button>
@@ -503,16 +510,15 @@ export function EnrichmentView({
             )}
           </div>
           <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-            MaxMind GeoLite2 is free but needs a one-time license key (their rule since 2019). Create a free
-            account at <span className="font-mono">maxmind.com/geolite2/signup</span>, generate a license key,
-            paste it below, and the app downloads + installs GeoLite2-City + ASN for you.
+            Free, but needs a one-time license key. Create an account at{' '}
+            <span className="font-mono">maxmind.com/geolite2/signup</span>, generate a key, and paste it below.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
               type="password"
               value={keyDraft}
               onChange={(e) => setKeyDraft(e.target.value)}
-              placeholder={hasKey ? 'Key saved — leave blank to reuse' : 'Paste MaxMind license key'}
+              placeholder={hasKey ? 'Saved — leave blank to reuse' : 'Paste MaxMind license key'}
               className="w-60 px-2 py-1 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
             />
             <button
@@ -521,12 +527,12 @@ export function EnrichmentView({
               disabled={setupBusy || (!keyDraft.trim() && !hasKey)}
             >
               {setupBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-              Download GeoLite2 (City + ASN)
+              Download GeoLite2
             </button>
             <button
               className="px-2 py-1 rounded text-[11px] font-semibold border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:border-citrus-pink/40 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted"
               onClick={() => void pickDb()}
-              title="Already have a .mmdb? Point at it instead."
+              title="Already have a .mmdb?"
             >
               Set .mmdb manually…
             </button>
@@ -559,16 +565,15 @@ export function EnrichmentView({
             )}
           </div>
           <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-            Paste your VirusTotal API key (free at <span className="font-mono">virustotal.com</span> → your profile → API key).
-            It's stored encrypted on this machine and never leaves it in plaintext. We detect your tier automatically and
-            pace requests to fit — no setup needed.
+            Free at <span className="font-mono">virustotal.com</span> → your profile → API key. Stored encrypted on this
+            machine; tier and rate are detected automatically.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
               type="password"
               value={vtKeyDraft}
               onChange={(e) => setVtKeyDraft(e.target.value)}
-              placeholder={vtHasKey ? 'Key saved — paste a new one to replace' : 'Paste VirusTotal API key'}
+              placeholder={vtHasKey ? 'Saved — paste to replace' : 'Paste VirusTotal API key'}
               className="w-72 px-2 py-1 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && vtKeyDraft.trim()) void saveVtKey()
@@ -580,7 +585,7 @@ export function EnrichmentView({
               disabled={vtBusy || !vtKeyDraft.trim()}
             >
               {vtBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
-              Validate &amp; save key
+              Save key
             </button>
             {vtHasKey && (
               <button
@@ -607,7 +612,7 @@ export function EnrichmentView({
           <textarea
             className="pane__text w-full min-w-0 resize-none overflow-auto px-2 py-1 text-xs font-mono rounded-t border border-citrus-border bg-citrus-card text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night-card dark:text-citrus-night-text"
             style={{ height: paneH }}
-            placeholder="Paste IPs / domains / hashes (whitespace, comma, or newline separated), then Add. Ctrl+Enter to add."
+            placeholder="Paste IPs / domains / hashes — one per line"
             value={doc.draft}
             onChange={(e) => {
               onPatch({ draft: e.target.value })
@@ -630,7 +635,7 @@ export function EnrichmentView({
           className="inline-flex items-center gap-1 px-2.5 py-1 mt-0.5 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors disabled:opacity-40"
           onClick={addFromDraft}
           disabled={doc.draft.trim() === ''}
-          title="Append these indicators to the list (select rows + right-click to look them up)"
+          title="Add to the list"
         >
           <Plus className="w-3 h-3" /> Add
         </button>

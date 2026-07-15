@@ -1063,6 +1063,19 @@ export function IntelGrid({
           >
             <Download className="w-3 h-3" /> Export CSV
           </button>
+          {/* The way BACK to class grouping. The `class` column is grouping-only and has no header,
+              so it has no column menu — without this, dismissing the Class chip would be one-way. */}
+          <button
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border transition-colors ${
+              grouping.includes('class')
+                ? 'border-citrus-pink/40 text-citrus-pink bg-citrus-pink-light/60 dark:bg-citrus-night-elev'
+                : 'border-citrus-border text-citrus-muted hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted'
+            }`}
+            onClick={() => table.getColumn('class')?.toggleGrouping()}
+            title="Group indicators into Network / File / Other sections"
+          >
+            <Layers className="w-3 h-3" /> Sections
+          </button>
           <button
             className={`px-2 py-0.5 rounded text-[11px] font-semibold border transition-colors ${
               wrap

@@ -4,6 +4,7 @@ import { mkdirSync } from 'fs'
 import * as dbw from '../csv/dbClient'
 import { downloadEdition, DEFAULT_EDITIONS } from './maxmindSetup'
 import { VT_API_BASE, deriveTier } from './providers/vtShared'
+import { PROVIDER_CONFIG, keySpec, needsKeyAtLookup } from './providers/descriptors'
 
 // Registers the enrich:* IPC surface. Like csv:*, every op is forwarded to the worker thread
 // (which owns the cache DB and runs the providers) so a slow lookup never blocks the main process.
@@ -30,6 +31,38 @@ function decryptKey(b64: string): string | null {
     return safeStorage.decryptString(Buffer.from(b64, 'base64'))
   } catch {
     return null
+  }
+}
+
+/** Optional per-provider check run BEFORE a key is stored, so a bad key is rejected at the point the
+ *  user pastes it rather than failing every row later. `extra` is stored alongside the key. A provider
+ *  without a validator simply has its key stored. */
+type KeyValidator = (key: string) => Promise<{ ok: true; extra?: Record<string, unknown> } | { ok: false; error: string }>
+
+const KEY_VALIDATORS: Record<string, KeyValidator> = {
+  // Validate + detect quotas in one authenticated request; the key is the user's own id here.
+  virustotal: async (k) => {
+    let res: Response
+    try {
+      res = await fetch(`${VT_API_BASE}/users/${encodeURIComponent(k)}`, {
+        headers: { 'x-apikey': k, accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000)
+      })
+    } catch {
+      return { ok: false, error: 'Could not verify key (network error)' }
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, error: 'Invalid API key' }
+    if (res.status === 429) return { ok: false, error: 'Could not verify key (rate limited) — try again shortly' }
+    if (!res.ok) return { ok: false, error: `Could not verify key (HTTP ${res.status})` }
+
+    let tier: ReturnType<typeof deriveTier>
+    try {
+      const body = (await res.json()) as { data?: { attributes?: Record<string, unknown> } }
+      tier = deriveTier(body?.data?.attributes)
+    } catch {
+      tier = deriveTier(undefined) // safe free-tier default
+    }
+    return { ok: true, extra: { vtRequestsPerMinute: tier.requestsPerMinute, vtDailyQuota: tier.dailyQuota ?? undefined } }
   }
 }
 
@@ -88,19 +121,28 @@ export function registerEnrichIpc(): void {
     return path
   })
 
-  // Whether a MaxMind license key is already stored (so the UI can offer "Update" without re-asking).
-  ipcMain.handle('enrich:hasKey', async () => {
-    const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
-    return typeof c.maxmindKeyEnc === 'string' && c.maxmindKeyEnc !== ''
+  // --- Key handling. A key is stored ONLY as a safeStorage-encrypted blob and the plaintext NEVER
+  //     crosses back to the renderer: this surface is write-only, and the only thing readable is a
+  //     boolean per provider. Main decrypts and injects per-run (see enrich:bulk). ---
+
+  // What each provider's key field should look like in the settings dialog. Deliberately omits the
+  // storage field name and usedAtLookup — the renderer has no business knowing either.
+  ipcMain.handle('enrich:keySpecs', () => {
+    const out: Record<string, { label: string; help: string; signupUrl?: string }> = {}
+    for (const [id, spec] of Object.entries(PROVIDER_CONFIG)) {
+      if (spec.key) out[id] = { label: spec.key.label, help: spec.key.help, ...(spec.key.signupUrl ? { signupUrl: spec.key.signupUrl } : {}) }
+    }
+    return out
   })
 
-  // --- VirusTotal key handling: stored only as a safeStorage-encrypted blob; the plaintext key never
-  //     reaches the renderer. Main decrypts it and injects it into the worker per-run to make the request. ---
-
-  // Whether a VirusTotal API key is stored.
-  ipcMain.handle('enrich:vtHasKey', async () => {
+  // Which providers have a key stored. Booleans only — never the keys themselves.
+  ipcMain.handle('enrich:keyStatus', async () => {
     const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
-    return typeof c.vtKeyEnc === 'string' && c.vtKeyEnc !== ''
+    const out: Record<string, boolean> = {}
+    for (const [id, spec] of Object.entries(PROVIDER_CONFIG)) {
+      if (spec.key) out[id] = typeof c[spec.key.field] === 'string' && c[spec.key.field] !== ''
+    }
+    return out
   })
 
   // The auto-detected pace/quota (read-only) for the renderer's run estimate.
@@ -112,45 +154,34 @@ export function registerEnrichIpc(): void {
     }
   })
 
-  // Save (or clear) the VirusTotal key. The user just pastes their key — we validate it AND detect
-  // its tier/quotas in one authenticated request (GET /users/{key}), then store the key encrypted and
-  // the detected pace. No plaintext fallback: if safeStorage is unavailable we refuse to store.
-  ipcMain.handle('enrich:vtSetKey', async (_e, { key }: { key?: string }) => {
+  // Save (or clear) any provider's key. Validated first when that provider has a validator, then
+  // stored encrypted. NO PLAINTEXT FALLBACK: if safeStorage is unavailable we refuse to store rather
+  // than write the key to disk in the clear.
+  ipcMain.handle('enrich:setProviderKey', async (_e, { providerId, key }: { providerId?: string; key?: string }) => {
+    const spec = keySpec(String(providerId ?? ''))
+    if (!spec) return { ok: false, error: 'Unknown provider' }
+
     const k = (key ?? '').trim()
     if (!k) {
-      await dbw.call('enrichSetConfig', { vtKeyEnc: '', vtRequestsPerMinute: undefined, vtDailyQuota: undefined })
+      // Clearing drops the key AND anything derived from it (a stale pace would outlive its key).
+      const patch: Record<string, unknown> = { [spec.field]: '' }
+      for (const f of spec.extraFields ?? []) patch[f] = undefined
+      await dbw.call('enrichSetConfig', patch)
       return { ok: true }
     }
-    // Validate + detect quotas. The key is the user's own id for the users endpoint.
-    let res: Response
-    try {
-      res = await fetch(`${VT_API_BASE}/users/${encodeURIComponent(k)}`, {
-        headers: { 'x-apikey': k, accept: 'application/json' },
-        signal: AbortSignal.timeout(15_000)
-      })
-    } catch {
-      return { ok: false, error: 'Could not verify key (network error)' }
-    }
-    if (res.status === 401 || res.status === 403) return { ok: false, error: 'Invalid API key' }
-    if (res.status === 429) return { ok: false, error: 'Could not verify key (rate limited) — try again shortly' }
-    if (!res.ok) return { ok: false, error: `Could not verify key (HTTP ${res.status})` }
 
-    let tier: ReturnType<typeof deriveTier>
-    try {
-      const body = (await res.json()) as { data?: { attributes?: Record<string, unknown> } }
-      tier = deriveTier(body?.data?.attributes)
-    } catch {
-      tier = deriveTier(undefined) // safe free-tier default
+    let extra: Record<string, unknown> | undefined
+    const validate = KEY_VALIDATORS[String(providerId)]
+    if (validate) {
+      const v = await validate(k)
+      if (!v.ok) return v
+      extra = v.extra
     }
 
     const enc = encryptKey(k)
     if (!enc) return { ok: false, error: 'Secure storage unavailable' }
-    await dbw.call('enrichSetConfig', {
-      vtKeyEnc: enc,
-      vtRequestsPerMinute: tier.requestsPerMinute,
-      vtDailyQuota: tier.dailyQuota ?? undefined
-    })
-    return { ok: true, tier: tier.tier, dailyQuota: tier.dailyQuota, requestsPerMinute: tier.requestsPerMinute }
+    await dbw.call('enrichSetConfig', { [spec.field]: enc, ...extra })
+    return { ok: true }
   })
 
   // Open a URL in the user's default browser (e.g. "View on VirusTotal").
@@ -210,13 +241,19 @@ export function registerEnrichIpc(): void {
       e,
       { reqId, dbPath, providerId, items }: { reqId: number; dbPath: string; providerId: string; items: Array<{ value: string; kind: string }> }
     ) => {
-      // Network providers (VirusTotal) need their secret decrypted here in main and injected per run —
-      // the worker has no safeStorage. The key stays a local var: never logged, never returned.
+      // A network provider needs its secret decrypted here in main and injected per run — the worker
+      // has no safeStorage. Driven by the provider's descriptor rather than a hardcoded id, so a new
+      // keyed provider actually receives its key instead of silently erroring on every row.
+      // The key stays a local var: never logged, never returned.
       let secrets: { apiKey?: string; requestsPerMinute?: number } | undefined
-      if (providerId === 'virustotal') {
+      if (needsKeyAtLookup(providerId)) {
+        const spec = keySpec(providerId)!
         const c = await dbw.call<Record<string, unknown>>('enrichGetConfig')
-        const apiKey = typeof c.vtKeyEnc === 'string' && c.vtKeyEnc ? (decryptKey(c.vtKeyEnc) ?? undefined) : undefined
-        secrets = { apiKey, requestsPerMinute: typeof c.vtRequestsPerMinute === 'number' ? c.vtRequestsPerMinute : 4 }
+        const enc = c[spec.field]
+        const apiKey = typeof enc === 'string' && enc ? (decryptKey(enc) ?? undefined) : undefined
+        // Pace from the tier detected at save time; absent, the engine uses the provider's own rate.
+        const pace = spec.paceField ? c[spec.paceField] : undefined
+        secrets = { apiKey, ...(typeof pace === 'number' ? { requestsPerMinute: pace } : {}) }
       }
       return dbw.enrichBulk(
         reqId,

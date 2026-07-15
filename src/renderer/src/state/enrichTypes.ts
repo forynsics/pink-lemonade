@@ -17,6 +17,14 @@ export interface EnrichProviderInfo {
   detail: string
 }
 
+/** How to render a provider's key field in the settings dialog. Carries no secret and no storage
+ *  detail — keys are write-only across the bridge and can never be read back. */
+export interface ProviderKeySpec {
+  label: string
+  help: string
+  signupUrl?: string
+}
+
 export interface EnrichResultRow {
   indicator: string
   kind: string

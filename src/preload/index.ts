@@ -151,13 +151,14 @@ const api = {
     providers: () => ipcRenderer.invoke('enrich:providers'),
     pickMmdb: () => ipcRenderer.invoke('enrich:pickMmdb'),
     // MaxMind "set it up for me": download GeoLite2 with the user's free key (key stored encrypted).
-    hasKey: () => ipcRenderer.invoke('enrich:hasKey'),
     maxmindSetup: (key: string | undefined, editions?: string[]) =>
       ipcRenderer.invoke('enrich:maxmindSetup', { key, editions }),
-    // VirusTotal: paste a key — main validates it + auto-detects the tier/quota, then stores it
-    // encrypted. The key never comes back to the renderer (only the detected tier does).
-    vtHasKey: () => ipcRenderer.invoke('enrich:vtHasKey'),
-    vtSetKey: (key: string) => ipcRenderer.invoke('enrich:vtSetKey', { key }),
+    // Provider keys. WRITE-ONLY by design: the renderer can set a key or ask whether one exists, and
+    // there is deliberately no way to read one back — main stores it safeStorage-encrypted and injects
+    // the plaintext into the worker per run. Never add a getter here.
+    keySpecs: () => ipcRenderer.invoke('enrich:keySpecs'),
+    keyStatus: () => ipcRenderer.invoke('enrich:keyStatus'),
+    setProviderKey: (providerId: string, key: string) => ipcRenderer.invoke('enrich:setProviderKey', { providerId, key }),
     vtGetSettings: () => ipcRenderer.invoke('enrich:vtGetSettings'),
     onSetupProgress: (cb: (p: unknown) => void) => {
       const h = (_e: unknown, p: unknown): void => cb(p)

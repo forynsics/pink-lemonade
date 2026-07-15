@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Database, Download, FilePlus, FolderOpen, KeyRound, ListChecks, ListTree, Loader2, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Database, FilePlus, FolderOpen, ListChecks, ListTree, Loader2, Plus, RefreshCw, Settings, Trash2, X } from 'lucide-react'
 import { classifyIndicator } from '../../tools/ioc/classify'
 import { WatchlistsPanel } from './WatchlistsPanel'
+import { ProviderSettings } from './ProviderSettings'
 import { IntelGrid } from './IntelGrid'
 import type { EnrichmentDoc } from '../../state/documents'
 import type { EnrichCachedRow, EnrichItem, EnrichProgress, EnrichProviderInfo, EnrichResultRow } from '../../state/enrichTypes'
@@ -61,35 +62,26 @@ export function EnrichmentView({
   // Resizable paste box (full-width bottom drag bar).
   const [paneH, setPaneH] = useState(56)
 
-  // MaxMind setup state (download GeoLite2 with the user's free license key).
-  const [keyDraft, setKeyDraft] = useState('')
-  const [hasKey, setHasKey] = useState(false)
+  // MaxMind GeoLite2 download progress (the one piece of provider setup that isn't just a key).
   const [setup, setSetup] = useState<{ editionId: string; pct: number } | null>(null)
   const [setupErr, setSetupErr] = useState<string | null>(null)
   const setupBusy = setup !== null
 
-  // VirusTotal key state — the user only pastes a key; main validates it + auto-detects the tier/pace.
-  const [vtKeyDraft, setVtKeyDraft] = useState('')
-  const [vtHasKey, setVtHasKey] = useState(false)
-  const [vtBusy, setVtBusy] = useState(false)
-  const [vtErr, setVtErr] = useState<string | null>(null)
   const [vtSettings, setVtSettings] = useState<{ requestsPerMinute: number; dailyQuota: number | null } | null>(null)
   // VirusTotal re-check confirmation (some targets already cached) and run-level (quota) banner.
   const [vtConfirm, setVtConfirm] = useState<{ newItems: EnrichItem[]; cachedItems: EnrichItem[] } | null>(null)
   const [runErr, setRunErr] = useState<string | null>(null)
-  // Which already-configured provider's setup card is open for editing (re-key / remove). The cards
-  // otherwise only show until the provider is ready, so this re-opens one to change it afterward.
-  const [manageProvider, setManageProvider] = useState<string | null>(null)
+  // Credentials live in one dialog rather than inline cards, which used to push the grid down by
+  // ~200px on a fresh install.
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
-  const refreshProviders = useCallback(() => {
-    void window.api.enrich.providers().then(setProviders)
+  const refreshProviders = useCallback(async (): Promise<void> => {
+    setProviders(await window.api.enrich.providers())
+    setVtSettings(await window.api.enrich.vtGetSettings())
   }, [])
-  useEffect(refreshProviders, [refreshProviders])
   useEffect(() => {
-    void window.api.enrich.hasKey().then(setHasKey)
-    void window.api.enrich.vtHasKey().then(setVtHasKey)
-    void window.api.enrich.vtGetSettings().then(setVtSettings)
-  }, [])
+    void refreshProviders()
+  }, [refreshProviders])
   useEffect(() => {
     return window.api.enrich.onSetupProgress((p) => {
       const ev = p as { editionId: string; received: number; total: number }
@@ -113,6 +105,14 @@ export function EnrichmentView({
 
   const maxmind = providers.find((p) => p.id === 'maxmind')
   const virustotal = providers.find((p) => p.id === 'virustotal')
+
+  // VirusTotal's detail line — the pace comes from the tier detected when the key was saved. Shared
+  // by the provider pill and the settings dialog so the two can't drift.
+  const vtPace = vtSettings
+    ? vtSettings.requestsPerMinute > 0
+      ? `${vtSettings.dailyQuota ? 'free' : 'paced'} · ${vtSettings.requestsPerMinute}/min`
+      : 'premium · unthrottled'
+    : null
 
   // Look up `items` against one provider, writing to this tab's intel DB and merging results.
   const runLookup = useCallback((providerId: string, items: EnrichItem[]) => {
@@ -302,50 +302,16 @@ export function EnrichmentView({
 
   async function pickDb(): Promise<void> {
     const path = await window.api.enrich.pickMmdb()
-    if (path) refreshProviders()
+    if (path) void refreshProviders()
   }
+  // Download GeoLite2 using the license key already stored (the dialog saves it; main decrypts it).
   async function runSetup(): Promise<void> {
     setSetupErr(null)
     setSetup({ editionId: '…', pct: 0 })
-    const res = await window.api.enrich.maxmindSetup(keyDraft.trim() || undefined)
+    const res = await window.api.enrich.maxmindSetup(undefined)
     setSetup(null)
-    if (res.ok) {
-      setHasKey(true)
-      setKeyDraft('')
-      setManageProvider(null)
-      refreshProviders()
-    } else {
-      setSetupErr(res.error)
-    }
-  }
-
-  async function saveVtKey(): Promise<void> {
-    setVtErr(null)
-    setVtBusy(true)
-    const res = await window.api.enrich.vtSetKey(vtKeyDraft.trim())
-    setVtBusy(false)
-    if (res.ok) {
-      setVtKeyDraft('')
-      setVtHasKey(true)
-      setManageProvider(null)
-      void window.api.enrich.vtGetSettings().then(setVtSettings)
-      refreshProviders()
-    } else {
-      setVtErr(res.error)
-    }
-  }
-
-  // Remove the stored VirusTotal key (clears the encrypted blob + detected pace in main).
-  async function removeVtKey(): Promise<void> {
-    setVtErr(null)
-    setVtBusy(true)
-    await window.api.enrich.vtSetKey('')
-    setVtBusy(false)
-    setVtKeyDraft('')
-    setVtHasKey(false)
-    setVtSettings(null)
-    setManageProvider(null)
-    refreshProviders()
+    if (res.ok) void refreshProviders()
+    else setSetupErr(res.error)
   }
 
   // Run VirusTotal; on a forced re-check, drop the cached rows first so they're re-fetched.
@@ -447,13 +413,7 @@ export function EnrichmentView({
             <span className="font-semibold text-citrus-dark dark:text-citrus-night-text">{p.name}</span>
             <span className="text-citrus-muted dark:text-citrus-night-muted">
               ·{' '}
-              {!p.ready
-                ? 'needs key'
-                : p.id === 'virustotal' && vtSettings
-                  ? vtSettings.requestsPerMinute > 0
-                    ? `${vtSettings.dailyQuota ? 'free' : 'paced'} · ${vtSettings.requestsPerMinute}/min`
-                    : 'premium · unthrottled'
-                  : p.detail}
+              {!p.ready ? 'needs key' : p.id === 'virustotal' && vtPace ? vtPace : p.detail}
             </span>
             {p.ready && p.id === 'maxmind' && (
               <button
@@ -465,18 +425,16 @@ export function EnrichmentView({
                 <RefreshCw className={`w-3 h-3 ${setupBusy ? 'animate-spin' : ''}`} />
               </button>
             )}
-            {p.ready && (p.id === 'maxmind' || p.id === 'virustotal') && (
-              <button
-                className={`ml-0.5 hover:text-citrus-pink dark:text-citrus-night-muted ${manageProvider === p.id ? 'text-citrus-pink' : 'text-citrus-muted'}`}
-                onClick={() => setManageProvider((m) => (m === p.id ? null : p.id))}
-                title={`Edit ${p.name} key`}
-              >
-                <KeyRound className="w-3 h-3" />
-              </button>
-            )}
           </span>
         ))}
         <div className="ml-auto flex items-center gap-2">
+          <button
+            className="enrich__settings inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
+            onClick={() => setSettingsOpen(true)}
+            title="Configure providers"
+          >
+            <Settings className="w-3 h-3" /> Providers
+          </button>
           <button
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev"
             onClick={() => setWatchlistsOpen(true)}
@@ -498,113 +456,6 @@ export function EnrichmentView({
         </div>
       </div>
 
-      {/* MaxMind setup card — shown until a database is installed, or re-opened via the pill's edit button. */}
-      {maxmind && (!maxmind.ready || manageProvider === 'maxmind') && (
-        <div className="mx-4 my-2 rounded-lg border border-citrus-border bg-citrus-card px-3 py-2.5 dark:border-citrus-night-border dark:bg-citrus-night-card">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-citrus-dark dark:text-citrus-night-text">
-            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> {maxmind.ready ? 'GeoLite2 settings' : 'Set up GeoLite2 (free)'}
-            {manageProvider === 'maxmind' && (
-              <button className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted" onClick={() => setManageProvider(null)} title="Close">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-          <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-            Free, but needs a one-time license key. Create an account at{' '}
-            <span className="font-mono">maxmind.com/geolite2/signup</span>, generate a key, and paste it below.
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input
-              type="password"
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              placeholder={hasKey ? 'Saved — leave blank to reuse' : 'Paste MaxMind license key'}
-              className="w-60 px-2 py-1 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
-            />
-            <button
-              className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors disabled:opacity-40"
-              onClick={() => void runSetup()}
-              disabled={setupBusy || (!keyDraft.trim() && !hasKey)}
-            >
-              {setupBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-              Download GeoLite2
-            </button>
-            <button
-              className="px-2 py-1 rounded text-[11px] font-semibold border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:border-citrus-pink/40 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted"
-              onClick={() => void pickDb()}
-              title="Already have a .mmdb?"
-            >
-              Set .mmdb manually…
-            </button>
-          </div>
-          {setupBusy && (
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-              <div className="h-1 w-40 overflow-hidden rounded-full bg-citrus-sand dark:bg-citrus-night-elev">
-                <div className="h-full rounded-full bg-citrus-pink transition-[width] duration-150" style={{ width: `${setup?.pct ?? 0}%` }} />
-              </div>
-              <span className="font-mono truncate">Downloading {setup?.editionId} · {setup?.pct ?? 0}%</span>
-            </div>
-          )}
-          {setupErr && (
-            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-400">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {setupErr}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* VirusTotal setup card — shown until a key is stored, or re-opened via the pill's edit button. */}
-      {virustotal && (!virustotal.ready || manageProvider === 'virustotal') && (
-        <div className="mx-4 my-2 rounded-lg border border-citrus-border bg-citrus-card px-3 py-2.5 dark:border-citrus-night-border dark:bg-citrus-night-card">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-citrus-dark dark:text-citrus-night-text">
-            <KeyRound className="w-3.5 h-3.5 text-citrus-pink" /> {virustotal.ready ? 'VirusTotal key' : 'Connect VirusTotal'}
-            {manageProvider === 'virustotal' && (
-              <button className="ml-auto text-citrus-muted hover:text-citrus-pink dark:text-citrus-night-muted" onClick={() => setManageProvider(null)} title="Close">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-          <p className="mt-1 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
-            Free at <span className="font-mono">virustotal.com</span> → your profile → API key. Stored encrypted on this
-            machine; tier and rate are detected automatically.
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input
-              type="password"
-              value={vtKeyDraft}
-              onChange={(e) => setVtKeyDraft(e.target.value)}
-              placeholder={vtHasKey ? 'Saved — paste to replace' : 'Paste VirusTotal API key'}
-              className="w-72 px-2 py-1 text-xs rounded border border-citrus-border bg-citrus-cream text-citrus-dark outline-none focus:border-citrus-pink dark:border-citrus-night-border dark:bg-citrus-night dark:text-citrus-night-text"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && vtKeyDraft.trim()) void saveVtKey()
-              }}
-            />
-            <button
-              className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-citrus-pink text-white hover:bg-citrus-pink-hover transition-colors disabled:opacity-40"
-              onClick={() => void saveVtKey()}
-              disabled={vtBusy || !vtKeyDraft.trim()}
-            >
-              {vtBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
-              Save key
-            </button>
-            {vtHasKey && (
-              <button
-                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold border border-citrus-border text-citrus-muted hover:text-red-600 hover:border-red-500/40 transition-colors disabled:opacity-40 dark:border-citrus-night-border dark:text-citrus-night-muted"
-                onClick={() => void removeVtKey()}
-                disabled={vtBusy}
-                title="Remove the stored VirusTotal key from this machine"
-              >
-                <Trash2 className="w-3 h-3" /> Remove key
-              </button>
-            )}
-          </div>
-          {vtErr && (
-            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-400">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {vtErr}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Paste box — drag the bottom bar to resize; scrolls when full. Add only appends to the list. */}
       <div className="flex items-start gap-2 px-4 py-2 border-b border-citrus-border dark:border-citrus-night-border">
@@ -698,6 +549,18 @@ export function EnrichmentView({
         open={watchlistsOpen}
         onClose={() => setWatchlistsOpen(false)}
         onChanged={() => void window.api.enrich.providers().then(setProviders)}
+      />
+
+      <ProviderSettings
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        providers={providers}
+        vtDetail={vtPace}
+        onChanged={refreshProviders}
+        onMaxmindSetup={() => void runSetup()}
+        onPickMmdb={() => void pickDb()}
+        setupBusy={setupBusy}
+        setupProgress={setupErr ?? (setup ? `${setup.editionId} ${setup.pct}%` : null)}
       />
 
       {/* VirusTotal re-check confirm: some targets are already cached (VT never auto-expires). Look up

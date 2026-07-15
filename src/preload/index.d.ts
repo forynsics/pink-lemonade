@@ -398,9 +398,13 @@ export type EnrichBulkResult = {
   message?: string
   stats?: EnrichBulkStats
 }
-export type VtSetKeyResult =
-  | { ok: true; tier?: 'free' | 'premium'; dailyQuota?: number | null; requestsPerMinute?: number }
-  | { ok: false; error: string }
+export type SetProviderKeyResult = { ok: true } | { ok: false; error: string }
+/** How to render a provider's key field. Carries no secret and no storage detail. */
+export interface ProviderKeySpec {
+  label: string
+  help: string
+  signupUrl?: string
+}
 export interface VtSettings {
   requestsPerMinute: number
   dailyQuota: number | null
@@ -426,10 +430,10 @@ export type MaxmindSetupResult =
 export interface EnrichApi {
   providers: () => Promise<EnrichProviderInfo[]>
   pickMmdb: () => Promise<string | null>
-  hasKey: () => Promise<boolean>
   maxmindSetup: (key: string | undefined, editions?: string[]) => Promise<MaxmindSetupResult>
-  vtHasKey: () => Promise<boolean>
-  vtSetKey: (key: string) => Promise<VtSetKeyResult>
+  keySpecs: () => Promise<Record<string, ProviderKeySpec>>
+  keyStatus: () => Promise<Record<string, boolean>>
+  setProviderKey: (providerId: string, key: string) => Promise<SetProviderKeyResult>
   vtGetSettings: () => Promise<VtSettings>
   onSetupProgress: (cb: (p: EnrichSetupProgress) => void) => () => void
   defaultDb: () => Promise<string>

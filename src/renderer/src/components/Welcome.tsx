@@ -1,10 +1,13 @@
-import { NotebookPen, FolderPlus, FolderOpen, FolderInput, Clock, Plus, X, HardDrive, Radar } from 'lucide-react'
+import { NotebookPen, FolderPlus, FolderOpen, FolderInput, Clock, Plus, X, HardDrive, Radar, Sparkles } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
-// First-run / home screen: the primary entry points (new notepad, new workspace, import CSV, open
-// workspace) plus a list of recent workspaces. Shown via the Home button or on first launch.
-// `recent` entries now describe workspaces — path = the .workspace db path, sourceName = its name.
+// First-run / home screen: the primary entry points plus a list of recent workspaces. Shown via the
+// Home button or on first launch. `recent` entries describe workspaces — path = the .workspace db
+// path, sourceName = its name.
+//
+// The actions are banded by intent — getting an investigation open vs. the standalone tools — because
+// a flat grid gave no clue that Notepad and Global Intel aren't part of the workspace flow.
 
 function ago(ms: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000))
@@ -15,6 +18,11 @@ function ago(ms: number): string {
   if (h < 24) return `${h}h ago`
   const d = Math.floor(h / 24)
   return `${d}d ago`
+}
+
+/** Section label above a group of actions — same style as the Recent workspaces header. */
+function Band({ children }: { children: string }): JSX.Element {
+  return <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">{children}</div>
 }
 
 function Action({
@@ -83,13 +91,25 @@ export function Welcome({
           </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mb-10">
-          <Action cls="welcome__import-csv" onClick={onImportCsv} icon={<Plus className={ico} />} title="Import CSV / TSV…" sub="Add a file to a workspace" />
-          <Action cls="welcome__import-folder" onClick={onImportFolder} icon={<FolderInput className={ico} />} title="Import folder…" sub="Every CSV in a folder as one workspace" />
-          <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start an empty investigation" />
-          <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Open an existing .workspace file" />
+        <Band>Investigate</Band>
+        <div className="grid grid-cols-2 gap-3 mb-8">
+          <Action cls="welcome__import-csv" onClick={onImportCsv} icon={<Plus className={ico} />} title="Import file…" sub="CSV, TSV, or Excel" />
+          <Action cls="welcome__import-folder" onClick={onImportFolder} icon={<FolderInput className={ico} />} title="Import folder…" sub="Every file in a folder as one workspace" />
+          <Action cls="welcome__new-workspace" onClick={onNewWorkspace} icon={<FolderPlus className={ico} />} title="New workspace" sub="Start empty, import later" />
+          <Action cls="welcome__open-workspace" onClick={onOpenWorkspace} icon={<FolderOpen className={ico} />} title="Open workspace…" sub="Reopen a saved investigation" />
+        </div>
+
+        <Band>Tools</Band>
+        <div className="grid grid-cols-2 gap-3 mb-3">
           <Action cls="welcome__new" onClick={onNewScratch} icon={<NotebookPen className={ico} />} title="New notepad" sub="Text transforms + workflow" />
           <Action cls="welcome__new-enrichment" onClick={onNewEnrichment} icon={<Radar className={ico} />} title="Global Intel" sub="Bulk-look-up IPs / domains / hashes" />
+        </div>
+
+        {/* The Assistant has no card of its own: it works on an open workspace, so a button here would
+            land you in an empty panel. Point at where it lives instead. */}
+        <div className="mb-10 flex items-center gap-1.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+          <Sparkles className="w-3 h-3 shrink-0 text-citrus-pink" />
+          Open a workspace to investigate it with the Assistant.
         </div>
 
         <div className="welcome__ws-dir mb-10 flex items-center gap-2 rounded-lg border border-citrus-border/70 bg-citrus-card/50 px-3 py-2 text-[11px] dark:border-citrus-night-border/70 dark:bg-citrus-night-card/40">

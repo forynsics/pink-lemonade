@@ -408,12 +408,12 @@ export function WorkspaceSidebar({
               className="mt-1 flex items-center gap-2 rounded-md border border-dashed border-citrus-border px-2 py-1.5 text-xs font-semibold text-citrus-muted hover:border-citrus-pink/40 hover:text-citrus-pink disabled:opacity-60 dark:border-citrus-night-border dark:text-citrus-night-muted"
             >
               {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-              {importing ? 'Importing…' : 'Import CSV / TSV…'}
+              {importing ? 'Importing…' : 'Import file…'}
             </button>
             <button
               onClick={onImportFolder}
               disabled={importing}
-              title="Import a folder of CSVs"
+              title="Import a folder of files"
               className="flex items-center gap-2 rounded-md border border-dashed border-citrus-border px-2 py-1.5 text-xs font-semibold text-citrus-muted hover:border-citrus-pink/40 hover:text-citrus-pink disabled:opacity-60 dark:border-citrus-night-border dark:text-citrus-night-muted"
             >
               <FolderInput className="w-3.5 h-3.5" />

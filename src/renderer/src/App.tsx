@@ -506,8 +506,8 @@ export default function App(): JSX.Element {
     return totalRows
   }
 
-  /** Scan a folder of CSVs (e.g. a parsed KAPE package) and open the review dialog to pick which to
-   *  import as ONE new workspace. */
+  /** Scan a folder of tabular files — CSV/TSV or Excel (e.g. a parsed KAPE package) — and open the
+   *  review dialog to pick which to import as ONE new workspace. */
   async function newWorkspaceFromFolder(): Promise<void> {
     const picked = await window.api.csv.pickFolder()
     if (!picked || picked.files.length === 0) return

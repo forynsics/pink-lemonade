@@ -42,7 +42,23 @@ const STATUS_STYLE: Record<string, string> = {
   private: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
 }
 
-// VirusTotal verdict colors (red/amber/green) + the grey "Unknown" for a 404 (no record ≠ clean).
+/** Broad class of an indicator, used to section the grid. "Other" is deliberately a catch-all: a kind
+ *  we can't enrich well yet still belongs in the list, it just doesn't need a taxonomy decision. */
+export function indicatorClass(kind: string): 'Network' | 'File' | 'Other' {
+  if (kind === 'ipv4' || kind === 'ipv6' || kind === 'domain' || kind === 'url') return 'Network'
+  if (kind === 'md5' || kind === 'sha1' || kind === 'sha256') return 'File'
+  return 'Other'
+}
+
+/** The field a provider grades an indicator with, if any — found by name rather than by provider id,
+ *  so a new provider that emits a "… Verdict" field gets a verdict chip for free. A provider that
+ *  doesn't grade anything (MaxMind geolocates; Watchlist reports membership, and can't even fail)
+ *  has no verdict, and therefore gets no Status column at all. */
+export function verdictFieldOf(fields: string[]): string | undefined {
+  return fields.find((f) => /verdict$/i.test(f))
+}
+
+// Verdict colors (red/amber/green) + the grey "Unknown" for a 404 (no record ≠ clean).
 const VT_VERDICT_STYLE: Record<string, string> = {
   Malicious: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
   Suspicious: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
@@ -50,40 +66,45 @@ const VT_VERDICT_STYLE: Record<string, string> = {
   Unknown: 'bg-citrus-sand text-citrus-muted dark:bg-citrus-night-elev dark:text-citrus-night-muted'
 }
 
-/** Status/verdict cell content. VirusTotal shows a colored verdict chip (from the worker-computed
- *  `VT Verdict` field) + an N/total detections count; 404 → grey "Unknown". Everything else (and all
- *  other providers) shows the raw status chip with its message. */
-function StatusCell({ pid, r }: { pid: string; r: EnrichResultRow }): JSX.Element {
-  if (pid === 'virustotal') {
-    if (r.status === 'ok') {
-      const verdict = r.fields['VT Verdict'] || 'Clean'
-      const mal = r.fields['VT Malicious']
-      const total = r.fields['VT Total']
-      return (
-        <span className="inline-flex items-center gap-1.5">
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${VT_VERDICT_STYLE[verdict] ?? ''}`}>{verdict}</span>
-          {mal !== undefined && total !== undefined && (
-            <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">
-              {mal}/{total}
-            </span>
-          )}
-        </span>
-      )
-    }
-    if (r.status === 'notfound') {
-      return (
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${VT_VERDICT_STYLE.Unknown}`} title={r.message}>
-          Unknown
-        </span>
-      )
-    }
+/** The Status cell, shown ONLY for a provider that actually grades an indicator. A colored verdict
+ *  chip + an N/total detections count when the fields carry them; 404 → grey "Unknown" (no record is
+ *  not the same as clean). A failed lookup falls back to the raw status + its message. */
+function StatusCell({ verdictField, r }: { verdictField: string; r: EnrichResultRow }): JSX.Element {
+  if (r.status === 'ok') {
+    const verdict = r.fields[verdictField] || 'Clean'
+    const mal = r.fields['VT Malicious']
+    const total = r.fields['VT Total']
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${VT_VERDICT_STYLE[verdict] ?? ''}`}>{verdict}</span>
+        {mal !== undefined && total !== undefined && (
+          <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+            {mal}/{total}
+          </span>
+        )}
+      </span>
+    )
   }
+  if (r.status === 'notfound') {
+    return (
+      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${VT_VERDICT_STYLE.Unknown}`} title={r.message}>
+        Unknown
+      </span>
+    )
+  }
+  return <ProblemChip r={r} />
+}
+
+/** A non-ok result for a provider with no Status column of its own. Those providers' fields go blank
+ *  on a failure, so without this a private IP or an unconfigured database would render as an
+ *  unexplained empty row. Shown in the bucket's first field cell. */
+function ProblemChip({ r }: { r: EnrichResultRow }): JSX.Element {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${STATUS_STYLE[r.status] ?? ''}`} title={r.message}>
         {r.status}
       </span>
-      {r.status !== 'ok' && r.message && <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">{r.message}</span>}
+      {r.message && <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">{r.message}</span>}
     </span>
   )
 }
@@ -166,6 +187,8 @@ interface Leaf {
 interface IntelRow {
   value: string
   kind: string
+  /** Broad class (Network / File / Other) — the grid's default section grouping. */
+  cls: string
   cells: Record<string, string>
   byP: Record<string, EnrichResultRow>
   hay: string
@@ -391,9 +414,21 @@ export function IntelGrid({
     ]
     for (const pid of providerIds) {
       const name = providerName(pid)
-      out.push({ colId: `p:${pid}:status`, label: `${name} Status`, pid, ckind: 'status', firstInBucket: true })
-      for (const f of fieldsByProvider[pid]) out.push({ colId: `p:${pid}:f:${f}`, label: `${name} ${f}`, pid, ckind: 'field', field: f })
-      out.push({ colId: `p:${pid}:source`, label: `${name} Source`, pid, ckind: 'source' })
+      const all = fieldsByProvider[pid]
+      const vf = verdictFieldOf(all)
+      // Only a provider that grades gets a Status column; the others would just say "ok" forever.
+      let first = true
+      if (vf) {
+        out.push({ colId: `p:${pid}:status`, label: `${name} Status`, pid, ckind: 'status', firstInBucket: true })
+        first = false
+      }
+      for (const f of all) {
+        // The verdict IS the Status chip — don't also render it as a redundant text column.
+        if (f === vf) continue
+        out.push({ colId: `p:${pid}:f:${f}`, label: `${name} ${f}`, pid, ckind: 'field', field: f, firstInBucket: first })
+        first = false
+      }
+      out.push({ colId: `p:${pid}:source`, label: `${name} Checked`, pid, ckind: 'source' })
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -407,14 +442,14 @@ export function IntelGrid({
       for (const pid of Object.keys(byP)) {
         const r = byP[pid]
         cells[`p:${pid}:status`] = r.status
-        cells[`p:${pid}:source`] = r.fromCache ? 'cached' : 'fresh'
+        cells[`p:${pid}:source`] = r.fetchedAt ? agoLabel(r.fetchedAt) : ''
         hay += ` ${r.status} ${r.message ?? ''}`
         for (const f of Object.keys(r.fields)) {
           cells[`p:${pid}:f:${f}`] = r.fields[f]
           hay += ` ${r.fields[f]}`
         }
       }
-      return { value: ind.value, kind: ind.kind, cells, byP, hay: hay.toLowerCase() }
+      return { value: ind.value, kind: ind.kind, cls: indicatorClass(ind.kind), cells, byP, hay: hay.toLowerCase() }
     })
   }, [indicators, results])
 
@@ -433,6 +468,9 @@ export function IntelGrid({
       size: defaultSize(l.ckind),
       minSize: MIN_W
     }))
+    // Grouping-only: sections the grid by indicator class. Never rendered as a column of its own —
+    // the group header already says "Class: Network", so a column repeating it on every row is noise.
+    cols.push({ id: 'class', accessorFn: (r) => r.cls, enableGlobalFilter: false, enableSorting: false, enableGrouping: true })
     cols.push({ id: '__search', accessorFn: (r) => r.hay, enableGlobalFilter: true, enableSorting: false, enableGrouping: false })
     return cols
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -446,8 +484,11 @@ export function IntelGrid({
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => savedVisibility ?? {})
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => savedSizing ?? {})
-  const [grouping, setGrouping] = useState<GroupingState>([])
-  const [expanded, setExpanded] = useState<ExpandedState>({})
+  // Sectioned by indicator class out of the box, so IPs and file hashes never sit in one flat list.
+  const [grouping, setGrouping] = useState<GroupingState>(['class'])
+  // Sections are grouped by default, so they must also be OPEN by default — a collapsed-by-default
+  // grid greets you with nothing but two section headers.
+  const [expanded, setExpanded] = useState<ExpandedState>(true)
 
   // Persist view state to the doc whenever it changes, debounced so a resize drag writes once on
   // settle (not per mousemove). The ref keeps the callback fresh without retriggering the effect,
@@ -475,6 +516,9 @@ export function IntelGrid({
     filterFns: { inSet },
     globalFilterFn: 'includesString',
     enableMultiSort: true,
+    // Results stream in after mount, and every data change would otherwise auto-reset `expanded`
+    // back to {} — collapsing the sections the moment the first lookup lands.
+    autoResetExpanded: false,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
@@ -494,7 +538,7 @@ export function IntelGrid({
 
   const rows = table.getRowModel().rows
   const visibleValues = useMemo(() => rows.map((r) => r.original?.value ?? ''), [rows])
-  const labelFor = (colId: string): string => leaves.find((l) => l.colId === colId)?.label ?? colId
+  const labelFor = (colId: string): string => (colId === 'class' ? 'Class' : (leaves.find((l) => l.colId === colId)?.label ?? colId))
   const widthOf = (colId: string): number => table.getColumn(colId)?.getSize() ?? 150
   const isVis = (colId: string): boolean => table.getColumn(colId)?.getIsVisible() ?? true
 
@@ -502,11 +546,15 @@ export function IntelGrid({
   const visBuckets = useMemo(() => {
     return providerIds
       .map((pid) => {
-        const showStatus = isVis(`p:${pid}:status`)
+        const all = fieldsByProvider[pid]
+        // No verdict → no Status column at all (isVis() defaults true for a column that doesn't
+        // exist, so the verdict check has to gate this, not visibility alone).
+        const verdictField = verdictFieldOf(all)
+        const showStatus = !!verdictField && isVis(`p:${pid}:status`)
         const showSource = isVis(`p:${pid}:source`)
-        const fields = fieldsByProvider[pid].filter((f) => isVis(`p:${pid}:f:${f}`))
+        const fields = all.filter((f) => f !== verdictField && isVis(`p:${pid}:f:${f}`))
         const count = (showStatus ? 1 : 0) + fields.length + (showSource ? 1 : 0)
-        return { pid, name: providerName(pid), showStatus, showSource, fields, count }
+        return { pid, name: providerName(pid), showStatus, showSource, fields, count, verdictField }
       })
       .filter((b) => b.count > 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -887,7 +935,7 @@ export function IntelGrid({
         } ${dropAt?.colId === l.colId ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/60' : ''}`}
         onClick={(e) => table.getColumn(l.colId)?.toggleSorting(undefined, e.shiftKey)}
       >
-        <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Source' : l.field}</span>
+        <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Checked' : l.field}</span>
         {sortBadge(l.colId)}
         {colDots(l.colId)}
         {resizeHandle(l.colId)}
@@ -905,6 +953,13 @@ export function IntelGrid({
   const headPin = 'bg-citrus-cream dark:bg-citrus-night'
   const pinBg = (sel: boolean): string => (sel ? 'bg-citrus-pink-light dark:bg-citrus-night-elev' : 'bg-citrus-cream dark:bg-citrus-night')
   const sticky = (left: number, w: number, z: number): React.CSSProperties => ({ position: 'sticky', left, width: w, minWidth: w, maxWidth: w, zIndex: z })
+  // Total width of the frozen identity block, and the id of its last column. Scrolled columns pass
+  // UNDER this block, so without an edge shadow a half-hidden column reads as a mystery header
+  // ("Network" showing only "work") rather than as content sliding beneath.
+  const pinnedW = SELECT_W + NUM_W + indW + (isVis('kind') ? widthOf('kind') : 0)
+  const lastPinnedId = isVis('kind') ? 'kind' : isVis('value') ? 'value' : null
+  const PIN_EDGE = 'shadow-[8px_0_8px_-8px_rgba(35,39,38,0.35)] dark:shadow-[8px_0_8px_-8px_rgba(0,0,0,0.75)]'
+  const pinEdge = (colId: string): string => (colId === lastPinnedId ? PIN_EDGE : '')
   const totalCols = 2 + (isVis('value') ? 1 : 0) + (isVis('kind') ? 1 : 0) + visBuckets.reduce((n, b) => n + b.count, 0)
 
   return (
@@ -989,7 +1044,7 @@ export function IntelGrid({
                         <span className={`shrink-0 w-3.5 h-3.5 rounded-sm border flex items-center justify-center ${isVis(l.colId) ? 'bg-citrus-pink border-citrus-pink text-white' : 'border-citrus-border dark:border-citrus-night-border'}`}>
                           {isVis(l.colId) && <Check className="w-2.5 h-2.5" />}
                         </span>
-                        <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Source' : l.ckind === 'field' ? l.field : l.label}</span>
+                        <span className="truncate">{l.ckind === 'status' ? 'Status' : l.ckind === 'source' ? 'Checked' : l.ckind === 'field' ? l.field : l.label}</span>
                       </button>
                     </Fragment>
                   ))}
@@ -1050,7 +1105,7 @@ export function IntelGrid({
                   </th>
                 )}
                 {isVis('kind') && (
-                  <th rowSpan={2} style={sticky(PIN_KIND_L, widthOf('kind'), 30)} className={`${headTh} ${headPin} cursor-pointer hover:text-citrus-pink`} onClick={(e) => table.getColumn('kind')?.toggleSorting(undefined, e.shiftKey)}>
+                  <th rowSpan={2} style={sticky(PIN_KIND_L, widthOf('kind'), 30)} className={`${headTh} ${headPin} ${pinEdge('kind')} cursor-pointer hover:text-citrus-pink`} onClick={(e) => table.getColumn('kind')?.toggleSorting(undefined, e.shiftKey)}>
                     Kind{sortBadge('kind')}
                     {colDots('kind')}
                     {resizeHandle('kind')}
@@ -1078,11 +1133,17 @@ export function IntelGrid({
                     }}
                     onDragEnd={() => { setDragP(null); setDropAt(null) }}
                     title="Drag to reorder this bucket"
-                    className={`relative px-2 py-1 font-bold text-center text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${
+                    className={`relative px-2 py-1 font-bold text-left text-citrus-pink border-l-[3px] border-citrus-pink/50 dark:border-citrus-pink/40 cursor-move ${
                       dragP === b.pid ? 'opacity-40' : ''
                     } ${dropAt?.colId === `bucket:${b.pid}` ? 'bg-citrus-pink-light/50 dark:bg-citrus-night-elev/60' : ''}`}
                   >
-                    {b.name}
+                    {/* Sticky, not centered. A bucket is routinely wider than the viewport, so centering
+                        parked the label at the colSpan's midpoint — often off-screen, or stranded over
+                        the frozen columns with none of its own in sight. Sticking it just right of the
+                        frozen block keeps it beside its columns, and it slides away with them. */}
+                    <span className="sticky inline-block" style={{ left: pinnedW + 8 }}>
+                      {b.name}
+                    </span>
                     {dropLine(`bucket:${b.pid}`)}
                   </th>
                 ))}
@@ -1161,9 +1222,9 @@ export function IntelGrid({
                       <input type="checkbox" checked={isSel} onMouseDown={(e) => e.stopPropagation()} onChange={row.getToggleSelectedHandler()} />
                     </td>
                     <td style={sticky(SELECT_W, NUM_W, 20)} className={`px-2 py-1 text-right font-mono tabular-nums text-citrus-muted/70 dark:text-citrus-night-muted/70 ${pinBg(isSel)}`}>{i + 1}</td>
-                    {isVis('value') && <ValueCell text={rr.value} wrap={wrap} mono style={sticky(PIN_VALUE_L, indW, 20)} className={pinBg(isSel)} />}
+                    {isVis('value') && <ValueCell text={rr.value} wrap={wrap} mono style={sticky(PIN_VALUE_L, indW, 20)} className={`${pinBg(isSel)} ${pinEdge('value')}`} />}
                     {isVis('kind') && (
-                      <td style={sticky(PIN_KIND_L, widthOf('kind'), 20)} className={`px-2 py-1 font-mono text-citrus-muted dark:text-citrus-night-muted overflow-hidden text-ellipsis whitespace-nowrap ${pinBg(isSel)}`}>
+                      <td style={sticky(PIN_KIND_L, widthOf('kind'), 20)} className={`px-2 py-1 font-mono text-citrus-muted dark:text-citrus-night-muted overflow-hidden text-ellipsis whitespace-nowrap ${pinBg(isSel)} ${pinEdge('kind')}`}>
                         {rr.kind}
                       </td>
                     )}
@@ -1175,18 +1236,30 @@ export function IntelGrid({
                           {b.showStatus && (
                             <td style={{ width: sw, minWidth: sw, maxWidth: sw }} className="px-2 py-1 border-l-[3px] border-citrus-pink/40 dark:border-citrus-pink/30 overflow-hidden whitespace-nowrap">
                               {r ? (
-                                <StatusCell pid={b.pid} r={r} />
+                                <StatusCell verdictField={b.verdictField!} r={r} />
                               ) : (
                                 <span className="text-citrus-muted/50 dark:text-citrus-night-muted/50">—</span>
                               )}
                             </td>
                           )}
-                          {b.fields.map((f) => {
+                          {b.fields.map((f, fi) => {
                             const fw = widthOf(`p:${b.pid}:f:${f}`)
                             const style = { width: fw, minWidth: fw, maxWidth: fw }
+                            // The bucket's left divider normally rides on the Status cell; without one
+                            // it has to move to the first field, or the bucket loses its boundary.
+                            const div = !b.showStatus && fi === 0 ? 'border-l-[3px] border-citrus-pink/40 dark:border-citrus-pink/30' : ''
+                            // A verdict-less provider has no Status column, so a failed lookup would
+                            // otherwise be a silently blank row. Surface it in the bucket's first cell.
+                            if (!b.showStatus && fi === 0 && r && r.status !== 'ok') {
+                              return (
+                                <td key={f} style={style} className={`px-2 py-1 ${div} overflow-hidden whitespace-nowrap`}>
+                                  <ProblemChip r={r} />
+                                </td>
+                              )
+                            }
                             if (b.pid === 'watchlist' && f === 'Lists') {
                               return (
-                                <td key={f} style={style} className="px-2 py-1 align-top overflow-hidden">
+                                <td key={f} style={style} className={`px-2 py-1 ${div} align-top overflow-hidden`}>
                                   {r?.fields[f] ? (
                                     <span className="flex flex-wrap gap-1">
                                       {r.fields[f].split(', ').map((name) => (
@@ -1209,7 +1282,7 @@ export function IntelGrid({
                             if (b.pid === 'virustotal' && f === 'VT Link') {
                               const url = r?.fields[f]
                               return (
-                                <td key={f} style={style} className="px-2 py-1 overflow-hidden whitespace-nowrap">
+                                <td key={f} style={style} className={`px-2 py-1 ${div} overflow-hidden whitespace-nowrap`}>
                                   {url ? (
                                     <button
                                       onClick={() => void window.api.enrich.openExternal(url)}
@@ -1224,16 +1297,17 @@ export function IntelGrid({
                                 </td>
                               )
                             }
-                            return <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} style={style} />
+                            return <ValueCell key={f} text={r?.fields[f] ?? ''} wrap={wrap} style={style} className={div} />
                           })}
                           {b.showSource && (
                             <td
                               style={{ width: widthOf(`p:${b.pid}:source`) }}
                               className="px-2 py-1 text-[10px] text-citrus-muted dark:text-citrus-night-muted overflow-hidden whitespace-nowrap"
-                              title={r?.fetchedAt ? `fetched ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
+                              title={r?.fetchedAt ? `Looked up ${new Date(r.fetchedAt).toLocaleString()}` : undefined}
                             >
-                              {/* VirusTotal verdicts never auto-expire — show how stale the cached row is. */}
-                              {r ? (b.pid === 'virustotal' && r.fetchedAt ? agoLabel(r.fetchedAt) : r.fromCache ? 'cached ✓' : 'fresh') : ''}
+                              {/* WHEN it was looked up, for every provider. Cached results never auto-expire,
+                                  so the age is the thing worth knowing — "cached"/"fresh" said nothing. */}
+                              {r?.fetchedAt ? agoLabel(r.fetchedAt) : ''}
                             </td>
                           )}
                         </Fragment>

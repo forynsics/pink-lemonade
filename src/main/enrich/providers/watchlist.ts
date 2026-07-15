@@ -10,7 +10,9 @@ import type { EnrichmentProvider, EnrichmentResult, IndicatorKind, ProviderStatu
 
 export const watchlistProvider: EnrichmentProvider = {
   id: 'watchlist',
-  name: 'Watchlist',
+  // "Custom" distinguishes the analyst's own lists from a vendor feed — the name reads as the noun
+  // it is in all three places it surfaces (the right-click menu, the status pill, the bucket header).
+  name: 'Custom Watchlists',
   kinds: ['ipv4', 'ipv6', 'domain', 'md5', 'sha1', 'sha256'],
   ttlSeconds: 0, // volatile — never cache a membership; a list edit takes effect on the next run
   matchesPrivateIps: true, // Corporate lists ARE private ranges — must match them, not skip them

@@ -9,6 +9,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "resolveJsonModule": true,
     "types": ["node"]
   },
   "include": ["src/main/**/*", "src/preload/**/*", "electron.vite.config.ts"]

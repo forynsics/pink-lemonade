@@ -355,7 +355,7 @@ export const TOOL_DEFS: AiTool[] = [
       properties: {
         label: { type: 'string', description: 'Short title of the action/event (e.g. "AnyDesk remote-access installed").' },
         description: { type: 'string', description: 'What happened and why it matters.' },
-        technique: { type: 'string', description: 'Optional MITRE ATT&CK technique id or name (e.g. "T1562.001" or "Impair Defenses: Disable or Modify Tools").' },
+        technique: { type: 'string', description: 'Optional MITRE ATT&CK technique id or name (e.g. "T1685" or "Disable or Modify Tools"). A retired id is upgraded to its current one automatically.' },
         users: {
           type: 'array',
           items: { type: 'string' },

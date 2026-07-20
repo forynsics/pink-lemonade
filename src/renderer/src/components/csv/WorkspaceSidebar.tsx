@@ -1,5 +1,5 @@
-import { useMemo, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
-import { CheckSquare, Database, FileText, FolderOpen, FolderInput, Filter, Layers, Loader2, Pencil, Plus, Radar, Square, X } from 'lucide-react'
+import { useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { CheckSquare, ChevronDown, ChevronRight, Database, FileText, FolderOpen, FolderInput, Filter, Layers, Loader2, Pencil, Plus, Radar, Square, X } from 'lucide-react'
 import type { WorkspaceDoc, WorkspaceSource } from '../../state/documents'
 import { TAG_DEFS, type TagId } from '../../state/tags'
 import type { TagSummary } from './CsvViewer'
@@ -9,6 +9,22 @@ function fmtRows(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`
   if (n >= 1_000) return `${Math.round(n / 1000)}k`
   return String(n)
+}
+
+// Collapsed groups, remembered PER WORKSPACE — a case's shape is stable across sessions, so which
+// hosts you keep folded is worth persisting. With several hosts imported the flat list is a wall of
+// filenames and you cannot see at a glance which machines are even in the case; folding a host answers
+// that in one look.
+const groupsKey = (wsId: string): string => `pink-lemonade:groups-collapsed:${wsId}`
+
+function loadCollapsed(wsId: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(groupsKey(wsId))
+    const arr = raw ? (JSON.parse(raw) as unknown) : null
+    return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set() // a locked-down profile can throw; never break the sidebar over a preference
+  }
 }
 
 const SIDEBAR_W_KEY = 'pink-lemonade:sidebar-w'
@@ -122,8 +138,36 @@ export function WorkspaceSidebar({
     return order.map((g) => ({ group: g, sources: m.get(g)! }))
   }, [doc.sources])
   const hasGroups = doc.sources.some((s) => s.group)
+  // Re-read when the workspace changes so each case keeps its own folded set.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsed(doc.wsId))
+  useEffect(() => setCollapsed(loadCollapsed(doc.wsId)), [doc.wsId])
+  const persistCollapsed = (next: Set<string>): void => {
+    setCollapsed(next)
+    try {
+      localStorage.setItem(groupsKey(doc.wsId), JSON.stringify([...next]))
+    } catch {
+      /* persistence is a convenience; never block the toggle */
+    }
+  }
+  const groupKeyOf = (g: string | null): string => g ?? '__ungrouped'
+  const toggleGroup = (g: string | null): void => {
+    const k = groupKeyOf(g)
+    const next = new Set(collapsed)
+    next.has(k) ? next.delete(k) : next.add(k)
+    persistCollapsed(next)
+  }
+  const allCollapsed = grouped.length > 0 && grouped.every((g) => collapsed.has(groupKeyOf(g.group)))
+  const toggleAll = (): void =>
+    persistCollapsed(allCollapsed ? new Set() : new Set(grouped.map((g) => groupKeyOf(g.group))))
+
   // Source ids in the order they actually render (grouped or flat) — the basis for shift-range select.
-  const visualIds = useMemo(() => (hasGroups ? grouped.flatMap((g) => g.sources.map((s) => s.sourceId)) : doc.sources.map((s) => s.sourceId)), [grouped, hasGroups, doc.sources])
+  const visualIds = useMemo(
+    () =>
+      hasGroups
+        ? grouped.filter((g) => !collapsed.has(g.group ?? '__ungrouped')).flatMap((g) => g.sources.map((s) => s.sourceId))
+        : doc.sources.map((s) => s.sourceId),
+    [grouped, hasGroups, doc.sources, collapsed]
+  )
 
   // Multi-select: ctrl/cmd-click toggles a source, shift-click selects a range, plain click opens it
   // (and clears the selection). When ≥1 selected, an action bar can group them all at once.
@@ -336,8 +380,17 @@ export function WorkspaceSidebar({
         </div>
 
         <div>
-          <div className="px-1 mb-1.5 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
-            Imported files
+          <div className="px-1 mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:text-citrus-night-muted">
+            <span className="flex-1">Imported files</span>
+            {hasGroups && grouped.length > 1 && (
+              <button
+                onClick={toggleAll}
+                title={allCollapsed ? 'Expand every group' : 'Collapse every group — the fastest way to see which hosts are in this case'}
+                className="normal-case tracking-normal font-semibold hover:text-citrus-pink"
+              >
+                {allCollapsed ? 'Expand all' : 'Collapse all'}
+              </button>
+            )}
           </div>
           {selected.size > 0 && (
             <div className="mb-1.5 rounded-md border border-citrus-pink/40 bg-citrus-pink/5 px-2 py-1.5 text-[11px]">
@@ -389,18 +442,30 @@ export function WorkspaceSidebar({
               </div>
             )}
             {hasGroups
-              ? grouped.map(({ group, sources }) => (
-                  <div key={group ?? '__ungrouped'} className="mb-1">
-                    <div className="px-1 mb-0.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-citrus-muted/80 dark:text-citrus-night-muted/80">
-                      <Layers className="w-2.5 h-2.5 shrink-0" />
-                      <span className="flex-1 truncate normal-case tracking-normal font-bold" title={group ?? 'Ungrouped'}>
-                        {group ?? 'Ungrouped'}
-                      </span>
-                      <span className="font-mono">{sources.length}</span>
+              ? grouped.map(({ group, sources }) => {
+                  const isCollapsed = collapsed.has(groupKeyOf(group))
+                  // A folded group that holds the OPEN file gets a dot, so the sidebar never loses
+                  // track of where the file on screen actually lives.
+                  const holdsActive = sources.some((s) => s.sourceId === doc.activeSourceId)
+                  return (
+                    <div key={group ?? '__ungrouped'} className="mb-1">
+                      <button
+                        onClick={() => toggleGroup(group)}
+                        title={isCollapsed ? `Expand ${group ?? 'Ungrouped'}` : `Collapse ${group ?? 'Ungrouped'}`}
+                        className="w-full px-1 mb-0.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-citrus-muted/80 hover:text-citrus-pink dark:text-citrus-night-muted/80"
+                      >
+                        {isCollapsed ? <ChevronRight className="w-2.5 h-2.5 shrink-0" /> : <ChevronDown className="w-2.5 h-2.5 shrink-0" />}
+                        <Layers className="w-2.5 h-2.5 shrink-0" />
+                        <span className="flex-1 truncate text-left normal-case tracking-normal font-bold" title={group ?? 'Ungrouped'}>
+                          {group ?? 'Ungrouped'}
+                        </span>
+                        {isCollapsed && holdsActive && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-citrus-pink" title="The open file is in this group" />}
+                        <span className="font-mono">{sources.length}</span>
+                      </button>
+                      {!isCollapsed && sources.map(sourceRow)}
                     </div>
-                    {sources.map(sourceRow)}
-                  </div>
-                ))
+                  )
+                })
               : doc.sources.map(sourceRow)}
             <button
               onClick={onImport}

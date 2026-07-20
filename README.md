@@ -63,15 +63,21 @@ a sortable Intel grid. Curate **watchlists** (IP / CIDR / ASN / domain / hash) f
 both ways — **send a cell or column to Intel**, or right-click indicators in the Intel grid to **run
 a sweep** against any open workspace source.
 
-### 🤖 AI assistant — a grounded Claude analyst
-An embedded **Claude** analyst that operates the open workspace — it searches your sources, correlates
-across them and over time, reads the intel cache, and records what it concludes into clickable review
-surfaces: an **Artifact Constellation** (events/TTPs backed by the exact corroborating rows, with MITRE
-ATT&CK + user attribution), a curated **Timeline**, an **IOC catalog**, and a resumable **investigation
-plan** — plus ✨ marks on the exact rows that back each claim. It's **grounded**: it calls the app's
-real tools (SQL layer, intel cache, classifiers) for every fact instead of guessing, and data-changing
-actions (tagging, grouping) need your approval. It runs on **your own Claude Code login** — your Claude
-subscription, no API key (Claude Code must be installed and signed in).
+### 🤖 Drive it from your own AI agent
+There's no chatbot in the app. Instead it **hosts an MCP server on `127.0.0.1`**, and you point **your
+own AI agent** at it from a terminal (today **Claude Code**). The agent works the open case through
+~40 real tools — search across every source, ±N-second cross-artifact time pivots, read-only SQL,
+the intel cache — and records what it concludes into clickable review surfaces: an **Artifact
+Constellation** (events backed by the exact corroborating rows, with MITRE ATT&CK + account
+attribution), a curated **Timeline**, an **IOC catalog**, **Systems & Accounts** (the case's subjects,
+and which hosts were never collected), a resumable **investigation plan**, and a **Case Report** where
+you approve or reject every claim — plus ✨ marks on the rows behind each one.
+
+It's **grounded by construction**, not by instruction: `record_event` validates its corroborating rows,
+`record_negative` runs the search itself and refuses to record an absence that matches anything, and
+`query_sql` is a single read-only `SELECT` that gets logged into the case. Importing evidence, tagging
+and re-grouping prompt you every time; marking an entity *Cleared* and setting a report verdict are
+yours alone.
 
 > Extract structured fields, too: pull scalar sub-fields out of a JSON column (e.g. O365 `AuditData`,
 > Hayabusa `Details`) into new first-class grid columns you can filter, sort, sweep, and tag.
@@ -119,9 +125,10 @@ src/
   main/        Electron main process — window + IPC; the DB runs in a worker thread
     csv/       SQLite-backed CSV/workspace engine + Intel Sweep (db.ts, worker.ts, sql.ts, sweep.ts)
     enrich/    enrichment engine + cache, MaxMind + VirusTotal providers, watchlists
-    ai/        the grounded AI assistant — Claude Code runner + the grounding tools it calls
+    ai/        the MCP server an external agent connects to + the grounding tools it calls
+      mcp/     localhost server, app bridge, and the terminal-folder provisioner
   preload/     contextBridge surface exposed to the renderer (window.api)
-  renderer/    React UI (tools palette, notepad, CSV grid, Intel grid, AI panel, sidebars)
+  renderer/    React UI (tools palette, notepad, CSV grid, Intel grid, review panels, sidebars)
     src/tools/ the text-transform tool registry (pure functions)
 docs/          user guide + screenshots
 ```

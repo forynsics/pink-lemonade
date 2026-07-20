@@ -18,17 +18,30 @@ what to do first. Your work is saved under `%APPDATA%\pink-lemonade` and comes b
   <img src="assets/welcome.png" alt="pink-lemonade Home screen" width="820" />
 </p>
 
-Home is your launchpad. From here you can:
+Home is your launchpad, split into two bands.
 
-- **Import CSV / TSV…** — pick a tabular file; it opens in a new workspace as your first source.
-- **New workspace** — start an empty workspace and import files into it later.
+**Investigate**
+
+- **Import file…** — pick a tabular file (CSV, TSV, or **Excel**); it opens in a new workspace as your
+  first source. An `.xlsx` / `.xlsm` workbook comes in as **one source per worksheet**.
+- **Import folder…** — every file in a folder as one workspace (e.g. a parsed KAPE package).
+- **New workspace** — start empty and import files later.
 - **Open workspace…** — reopen a `.workspace` file you saved before.
+
+**Tools**
+
 - **New notepad** — a blank text scratchpad for transforms.
 - **Global Intel** — the [Intel tab](intel.md): bulk-look-up IPs / domains / hashes and keep
   watchlists.
 
-Below the actions, **Recent workspaces** lists what you’ve opened lately — click one to jump
-straight back in (tags and all).
+Below those, two folder settings:
+
+- **Workspace folder** — where new workspaces are saved (**Change…**).
+- **Evidence folder** — the only place [your AI agent](ai.md) may read files from. Until you set one,
+  it reads *“Not set — the AI agent cannot import evidence”*.
+
+Then **Recent workspaces** lists what you’ve opened lately — click one to jump straight back in (tags
+and all).
 
 You can return to Home anytime with the **🏠 Home** button at the top-left of the tab bar.
 
@@ -37,8 +50,10 @@ You can return to Home anytime with the **🏠 Home** button at the top-left of 
 The header is always available, wherever you are:
 
 - **Global Intel** — opens the [Intel tab](intel.md) (bulk lookups + watchlists).
-- **Assistant** — opens the [AI assistant](ai.md), a grounded Claude analyst that works the open
-  workspace with you.
+- **Terminal** — opens *Drive from a terminal*, the setup for pointing [your own AI agent](ai.md) at
+  the open workspace. The dot beside it shows the local server's state: 🟢 running, 🟡 starting,
+  🔴 error.
+- **ⓘ** — About (version and build info).
 - **Light / Dark** — theme toggle (remembered).
 
 ## Tabs
@@ -59,7 +74,7 @@ build a chain.
 
 ## Your first import
 
-Click **Import CSV / TSV…** and choose a file. It loads into a workspace and you’re dropped into
+Click **Import file…** and choose a file. It loads into a workspace and you’re dropped into
 the data grid. The left sidebar shows the file you imported; the main area is the spreadsheet view.
 
 → [More on workspaces](workspaces.md) and [exploring data](exploring-data.md)

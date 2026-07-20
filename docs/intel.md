@@ -20,6 +20,16 @@ indicator values**, **copy as CSV**, run a provider, or send them to a sweep; th
 [workspace grid keyboard shortcuts](exploring-data.md#keyboard), and adds **Ctrl+Shift+C** to copy
 just the indicators and **Delete** to remove selected rows from the list.
 
+### Sections — the grid grouped by indicator class
+
+By default the grid **groups indicators by class** into **Network** (IPs, domains, URLs), **File**
+(MD5 / SHA-1 / SHA-256) and **Other**, with a section row like `Class: Network (24)` that you can
+click to collapse. Mixed sets of indicators stay readable this way — file hashes don't get lost among
+a few hundred IPs.
+
+Toggle it with the **Sections** button in the toolbar (beside *Export CSV* and *Wrap*), or dismiss the
+**Class** chip to turn it off. Either way the Sections button turns it back on.
+
 Every lookup is cached in an **app-wide store**, keyed by `(provider, indicator)`. So a result is
 **never fetched twice** — look the same IP up in another workspace or next week and it comes straight
 from the cache. (Clear a cached result from the row’s right-click menu to force a fresh lookup.)
@@ -41,9 +51,24 @@ from the cache. (Clear a cached result from the row’s right-click menu to forc
   **unthrottled** — no client-side limit, so the app uses your tier’s higher quota and only backs off
   on the API’s own rate-limit (429). Either way, to avoid burning lookups, results **never
   auto-expire** and re-looking-up an already-cached indicator takes an explicit, warned confirm.
+- **Custom Watchlists** *(no key, local)* — matches each indicator against
+  [your own watchlists](#watchlists), so your curated context sits in the grid beside the external
+  providers.
 
-Already-configured providers can be changed: click the **🔑 key icon** on a provider’s pill in the
-**Providers** strip to re-enter or **remove** its key.
+Only providers that actually grade an indicator get a **Status** column — VirusTotal does; MaxMind and
+Custom Watchlists don't, so anything they can't answer shows as a chip in their first field instead.
+
+### Configuring providers
+
+Every provider is set up in one place: the **Providers** button (⚙️) beside **Watchlists**, above the
+grid. It opens a dialog listing each provider with its status, a **Get a key** link where one is
+needed, a key field, and **Save** / **Remove**. MaxMind additionally offers **Download GeoLite2** and
+**Use an existing .mmdb…**.
+
+Keys are **write-only** — once saved, a key only ever reads back as *Saved*, and there's no way to
+retrieve it from the UI. A new key is **validated before it's stored**, so a bad one is rejected
+without clobbering a working one. Keys are encrypted by your OS keychain; if secure storage isn't
+available the app **refuses to store the key** rather than falling back to plaintext.
 
 ### Global vs. workspace Intel
 

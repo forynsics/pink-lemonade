@@ -15,7 +15,9 @@ export default defineConfig({
         // The DB runs in a worker thread; emit it next to the main entry as out/main/worker.js.
         input: {
           index: resolve('src/main/index.ts'),
-          worker: resolve('src/main/csv/worker.ts')
+          worker: resolve('src/main/csv/worker.ts'),
+          // Agent SQL runs on its OWN thread so a runaway query can't starve the DB worker.
+          sqlWorker: resolve('src/main/csv/sqlWorker.ts')
         }
       }
     }

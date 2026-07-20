@@ -12,7 +12,6 @@ import { RateLimitError } from './errors'
 import { VT_API_BASE, curateFields, normalizeIndicator } from './vtShared'
 import type { EnrichmentProvider, EnrichmentResult, IndicatorKind, LookupContext, ProviderStatus } from './types'
 
-export { deriveVerdict } from './vtShared'
 
 const REQUEST_TIMEOUT_MS = 15_000
 

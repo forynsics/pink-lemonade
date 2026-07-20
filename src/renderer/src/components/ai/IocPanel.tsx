@@ -1,21 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Fingerprint, Radar, Trash2, X } from 'lucide-react'
 import type { CsvIoc } from '../../state/csvTypes'
+import { ENRICHABLE, IOC_TYPES as TYPE_LABEL, TYPE_ORDER } from '../../../../shared/iocTypes'
+import { usePanelWidth } from '../../state/panelWidth'
 
-// The case IOC catalog — a side panel listing indicators the assistant (or analyst) recorded,
+// The case IOC catalog — a side panel listing indicators the AI agent (or analyst) recorded,
 // grouped by taxonomy type. Nothing here is enriched automatically; "Send to Intel" is a manual,
 // per-IOC handoff to the enrichment grid (only for enrichable types).
 
-const TYPE_LABEL: Record<string, string> = {
-  ip: 'IP', domain: 'Domain', url: 'URL', email: 'Email', hash: 'File Hash',
-  filename: 'Filename', filepath: 'File Path', process: 'Process', commandline: 'Command Line', useragent: 'User Agent', cloud: 'Cloud Identifier',
-  registry: 'Registry', service: 'Service', scheduledtask: 'Scheduled Task', mutex: 'Mutex', namedpipe: 'Named Pipe', tlsfingerprint: 'TLS Fingerprint', certificate: 'Certificate', pdbpath: 'PDB Path'
-}
-const TYPE_ORDER = Object.keys(TYPE_LABEL)
-const ENRICHABLE = new Set(['ip', 'domain', 'url', 'email', 'hash'])
-
-const MIN_W = 320
-const MAX_W = 640
 
 export function IocPanel({
   open,
@@ -31,7 +23,9 @@ export function IocPanel({
   onSendToIntel: (values: string[]) => void
 }): JSX.Element | null {
   const [iocs, setIocs] = useState<CsvIoc[]>([])
-  const [width, setWidth] = useState(380)
+  // Persisted + viewport-relative: this panel used to reopen at a fixed width every time,
+  // which is why it always needed resizing (see state/panelWidth).
+  const { width, setWidth, clamp } = usePanelWidth({ key: 'pink-lemonade:panel-w:ioc', min: 320, max: 700, defaultFraction: 0.26 })
   const [confirmClear, setConfirmClear] = useState(false)
 
   const reload = useCallback(async (): Promise<void> => {
@@ -60,7 +54,7 @@ export function IocPanel({
     e.preventDefault()
     const startX = e.clientX
     const startW = width
-    const onMove = (ev: MouseEvent): void => setWidth(Math.min(MAX_W, Math.max(MIN_W, startW + (startX - ev.clientX))))
+    const onMove = (ev: MouseEvent): void => setWidth(clamp(startW + (startX - ev.clientX)))
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -129,7 +123,7 @@ export function IocPanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
         {iocs.length === 0 && (
           <div className="px-2 py-6 text-center text-[12px] text-citrus-muted dark:text-citrus-night-muted">
-            No IOCs yet — the Assistant catalogs indicators here.
+            No IOCs yet — your AI agent catalogs indicators here.
           </div>
         )}
         {grouped.map((g) => (

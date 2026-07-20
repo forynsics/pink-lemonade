@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Clock, Crosshair, Fingerprint, Maximize2, Pencil, Radar, Share2, Trash2, User, X } from 'lucide-react'
 import type { CsvEvent, CsvIoc } from '../../state/csvTypes'
 import { deriveIocLinks } from '../../state/iocLinks'
+import { IOC_TYPES, TYPE_ORDER, ENRICHABLE } from '../../../../shared/iocTypes'
 
 // The Artifact Constellation — host-agnostic so it can live in a side panel OR a pop-out window.
 // Nodes are EVENTS (actions that transpired — TTPs). Two views: GRAPH (each event branches to the
@@ -24,18 +25,14 @@ const IHEADER_H = 24
 
 type Mode = 'graph' | 'timeaxis' | 'iocs'
 
-// IOC taxonomy labels + which types can be enriched (mirrors IocPanel). Unknown types fall back to raw.
-const IOC_TYPE_LABEL: Record<string, string> = {
-  ip: 'IP', domain: 'Domain', url: 'URL', email: 'Email', hash: 'File Hash',
-  filename: 'Filename', filepath: 'File Path', process: 'Process', commandline: 'Command Line', useragent: 'User Agent', cloud: 'Cloud Identifier',
-  registry: 'Registry', service: 'Service', scheduledtask: 'Scheduled Task', mutex: 'Mutex', namedpipe: 'Named Pipe', tlsfingerprint: 'TLS Fingerprint', certificate: 'Certificate', pdbpath: 'PDB Path'
-}
-const IOC_TYPE_ORDER = Object.keys(IOC_TYPE_LABEL)
-const IOC_ENRICHABLE = new Set(['ip', 'domain', 'url', 'email', 'hash'])
-const iocTypeLabel = (t: string): string => IOC_TYPE_LABEL[t] ?? t
+// IOC taxonomy labels/order/enrichability come from src/shared — the ONE definition, shared with the
+// IOC panel and the AI toolbox. A local copy here had already drifted (it was missing `account`), so
+// an account IOC rendered with its raw type and sorted last: exactly the silent failure src/shared
+// exists to prevent. Unknown types still fall back to raw.
+const iocTypeLabel = (t: string): string => IOC_TYPES[t] ?? t
 const iocTypeRank = (t: string): number => {
-  const i = IOC_TYPE_ORDER.indexOf(t)
-  return i === -1 ? IOC_TYPE_ORDER.length : i
+  const i = TYPE_ORDER.indexOf(t)
+  return i === -1 ? TYPE_ORDER.length : i
 }
 /** Shorten a long indicator (e.g. a SHA256) for the node label; full value stays in the tooltip. */
 const shortIoc = (v: string): string => (v.length > 24 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v)
@@ -71,7 +68,8 @@ export function Constellation({
   onDelete,
   onUpdate,
   onDeleteEvidence,
-  onSendToIntel
+  onSendToIntel,
+  focusEventId
 }: {
   events: CsvEvent[]
   /** Catalogued IOCs, for the "IOCs" view (indicators linked to the events they appear in). */
@@ -90,10 +88,18 @@ export function Constellation({
   onDeleteEvidence?: (evidenceId: number) => void
   /** Send an enrichable IOC's value to the Intel grid (omitted in the pop-out window). */
   onSendToIntel?: (values: string[]) => void
+  /** Drive selection from outside — the Case Report's "open" jumps here with the event selected so its
+   *  citations are visible. A {id,token} so re-opening the SAME event re-selects it. */
+  focusEventId?: { id: string; token: number } | null
 }): JSX.Element {
   const [view, setView] = useState({ tx: 0, ty: 0, scale: 1 })
   const [mode, setMode] = useState<Mode>('graph')
   const [selected, setSelected] = useState<string | null>(null)
+  // Honour an external focus request (from the Case Report). Keyed on token so clicking the same
+  // event twice still re-selects it, even though its id did not change.
+  useEffect(() => {
+    if (focusEventId?.id) setSelected(focusEventId.id)
+  }, [focusEventId?.id, focusEventId?.token])
   const [selIoc, setSelIoc] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
@@ -299,7 +305,7 @@ export function Constellation({
   if (events.length === 0) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center text-[12px] text-citrus-muted dark:text-citrus-night-muted">
-        No events yet — the Assistant records them here as it investigates, each linked to its corroborating rows.
+        No events yet — your AI agent records them here as it investigates, each linked to its corroborating rows.
       </div>
     )
   }
@@ -468,7 +474,7 @@ export function Constellation({
             <>
               {iocLayout.iocNodes.length === 0 && (
                 <text x={IOCX} y={TOP} fontSize={11} className="fill-citrus-muted dark:fill-citrus-night-muted">
-                  No IOCs catalogued yet — as the Assistant records indicators, they appear here linked to the events they show up in.
+                  No IOCs catalogued yet — as your AI agent records indicators, they appear here linked to the events they show up in.
                 </text>
               )}
               {iocLayout.edges.map((e) => {
@@ -612,7 +618,28 @@ export function Constellation({
                         analyst
                       </span>
                     )}
+                    {/* The host(s) this happened on. Without it, three genuinely distinct per-host
+                        actions ("event logs cleared") read as duplicates of each other. Two hosts on
+                        one event is not an error — a lateral movement has evidence at both ends. */}
+                    {sel.hosts?.map((h) => (
+                      <span
+                        key={h}
+                        className="shrink-0 rounded-full border border-citrus-border px-1.5 text-[9px] font-bold uppercase tracking-wide text-citrus-muted dark:border-citrus-night-border dark:text-citrus-night-muted"
+                        title="Host this event's evidence came from"
+                      >
+                        {h}
+                      </span>
+                    ))}
                   </div>
+                  {/* A contested reading must not render like a settled one. This is the whole point
+                      of the field: a memory-dump tool that ran in an attacker window but sat on disk
+                      a week early looked identical to a DCSync until it could say so. */}
+                  {sel.uncertainty && (
+                    <div className="mt-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-1 text-[10px] leading-snug text-amber-700 dark:text-amber-400">
+                      <span className="font-bold uppercase tracking-wide">Unsettled — </span>
+                      {sel.uncertainty}
+                    </div>
+                  )}
                   {sel.technique && (
                     <span className="mt-0.5 inline-block rounded-full bg-citrus-pink/10 px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink">{sel.technique}</span>
                   )}
@@ -687,17 +714,21 @@ export function Constellation({
               <div key={e.id ?? i} className="group flex items-stretch gap-1">
                 <button
                   onClick={() => onPivot(e.sourceId, e.rids)}
-                  title={`Jump to ${e.rids.length} row(s) in ${e.sourceName}`}
-                  className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-citrus-border px-2 py-1 text-left text-[11px] text-citrus-dark hover:border-citrus-pink/50 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
+                  title={`Jump to ${e.rids.length} row(s) in ${e.sourceName}${e.why ? ` — ${e.why}` : ''}`}
+                  className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md border border-citrus-border px-2 py-1 text-left text-[11px] text-citrus-dark hover:border-citrus-pink/50 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text"
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className="text-citrus-muted dark:text-citrus-night-muted">{e.sourceName}:</span>{' '}
-                    <span className="font-mono">{e.matched || 'selected rows'}</span>
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="text-citrus-muted dark:text-citrus-night-muted">{e.sourceName}:</span>{' '}
+                      <span className="font-mono">{e.matched || 'selected rows'}</span>
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 text-citrus-muted dark:text-citrus-night-muted">
+                      {e.rids.length < e.count ? `${e.rids.length} of ${e.count.toLocaleString()}` : e.count.toLocaleString()}
+                      <Crosshair className="w-3 h-3" />
+                    </span>
                   </span>
-                  <span className="inline-flex shrink-0 items-center gap-1 text-citrus-muted dark:text-citrus-night-muted">
-                    {e.rids.length < e.count ? `${e.rids.length} of ${e.count.toLocaleString()}` : e.count.toLocaleString()}
-                    <Crosshair className="w-3 h-3" />
-                  </span>
+                  {/* The agent's per-row rationale — why THIS row backs the event. */}
+                  {e.why && <span className="w-full truncate text-[10px] italic text-citrus-muted dark:text-citrus-night-muted">{e.why}</span>}
                 </button>
                 {onDeleteEvidence && e.id != null && (
                   <button
@@ -728,7 +759,7 @@ export function Constellation({
                   <div className="break-all font-mono text-[12px] font-bold text-citrus-dark dark:text-citrus-night-text">{ioc.value}</div>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="inline-block rounded-full bg-citrus-pink/10 px-1.5 py-0.5 text-[10px] font-semibold text-citrus-pink">{iocTypeLabel(ioc.type)}</span>
-                    {IOC_ENRICHABLE.has(ioc.type) && onSendToIntel && (
+                    {ENRICHABLE.has(ioc.type) && onSendToIntel && (
                       <button
                         onClick={() => onSendToIntel([ioc.value])}
                         title="Send to the Intel grid"

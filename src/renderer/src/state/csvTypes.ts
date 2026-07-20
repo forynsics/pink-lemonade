@@ -8,6 +8,9 @@ export interface CsvColumn {
   original: string
   /** Detected timestamp kind, if this is a time column. */
   time?: TimeKind
+  /** True when the column's values are numbers, so sorting compares them numerically rather than
+   *  as text (0, 1, 2 … not 0, 1, 10). Decided once at ingest so the grid and the agent agree. */
+  numeric?: boolean
 }
 
 export interface CsvOpenResult {
@@ -24,23 +27,6 @@ export interface CsvSort {
   numeric?: boolean
 }
 
-/** Where a finding was validated to appear: one per source it was found in. */
-export interface CsvFindingHit {
-  sourceId: number
-  sourceName: string
-  count: number
-  rids: number[]
-}
-/** A finding (constellation node): a validated indicator/artifact + its per-source presence. */
-export interface CsvFinding {
-  id: string
-  value: string
-  kind: string | null
-  label: string | null
-  note: string | null
-  createdAt: number
-  hits: CsvFindingHit[]
-}
 /** One time column's epoch-second span over an evidence item (kind = the source's column header). */
 export interface CsvEvidenceSpan {
   kind: string
@@ -62,6 +48,8 @@ export interface CsvEventEvidence {
   /** Epoch-second envelope across the spans; null when undated. */
   tsMin: number | null
   tsMax: number | null
+  /** The agent's per-row rationale for this evidence item; null when none. */
+  why?: string | null
 }
 /** An event (Artifact Constellation node): an action that transpired + its corroborating evidence. */
 export interface CsvEvent {
@@ -72,6 +60,13 @@ export interface CsvEvent {
   createdAt: number
   /** Who authored this event's interpretation — 'analyst' events are badged + protected from AI overwrite. */
   actor: 'ai' | 'analyst'
+  /** What is UNSETTLED about this event, in words. Evidence proves it OCCURRED; this says what the
+   *  occurrence does not settle — a contested attribution on an otherwise certain execution. Null
+   *  means nothing was contested, NOT that the reading is confirmed. */
+  uncertainty: string | null
+  /** Host(s) this happened on, derived from the group of every source its evidence cites. An ARRAY
+   *  because a lateral-movement event legitimately has evidence on both ends of the connection. */
+  hosts: string[]
   /** User account(s) the event involves (curated attribution) — fills the Timeline's User column. */
   users: string[]
   evidence: CsvEventEvidence[]
@@ -83,6 +78,82 @@ export interface CsvIoc {
   type: string
   context: string | null
   createdAt: number
+}
+
+/**
+ * One adjudicable claim in the Case Report — an event, lead, proven absence, evidence gap or entity
+ * verdict, plus what the analyst decided about it. Assembled on read from the stores that hold the
+ * claims; the verdict is the only thing this view owns.
+ */
+export interface CsvCaseReportItem {
+  kind: 'event' | 'lead' | 'negative' | 'entity'
+  id: string
+  title: string
+  detail: string | null
+  hosts: string[]
+  actor: 'ai' | 'analyst'
+  verdict: 'pending' | 'approved' | 'rejected'
+  reason: string | null
+  reviewedAt: number | null
+  support: number
+  flags: string[]
+}
+/**
+ * A SYSTEM or ACCOUNT — a subject of the case, as opposed to an IOC you would hunt or share.
+ *
+ * `origin` and `collected` are INDEPENDENT axes. Evidenced + not collected is the one the panel calls
+ * out: a host the data names whose artifacts nobody ever pulled.
+ */
+export interface CsvEntity {
+  id: string
+  kind: 'system' | 'account'
+  name: string
+  origin: 'evidenced' | 'asserted'
+  status: 'compromised' | 'suspected' | 'cleared' | 'unknown'
+  role: string | null
+  notes: string | null
+  /** Do we hold its data? Derived from the sources — curation cannot fake it. */
+  collected: boolean
+  eventCount: number
+  evidenced: boolean
+  aliases: string[]
+  groundingCount: number
+  /** HOW we concluded we hold its data: 'group' (it IS a source group), 'shortName' (an FQDN whose
+   *  short name matches one — an inference), 'alias' (a confirmed alias is one). Null when we don't. */
+  collectedVia: 'group' | 'shortName' | 'alias' | null
+  /** Who added it — shown as an AI/Analyst badge. Null when it came out of the data itself. */
+  actor: 'ai' | 'analyst' | null
+  /** Null when nothing is curated — i.e. it exists only in the derived spine. */
+  createdAt: number | null
+  updatedAt: number | null
+}
+
+/** A LEAD: an AI hypothesis/inference (unproven), grounded in real rows — shown in the Investigation
+ *  panel for the analyst to pursue, promote to an event, or dismiss. Kept out of the Constellation. */
+export interface CsvLeadGrounding {
+  id: number
+  sourceId: number
+  sourceName: string
+  matched: string
+  count: number
+  rids: number[]
+  tsMin: number | null
+  tsMax: number | null
+}
+export interface CsvLead {
+  id: string
+  statement: string
+  whyUncertain: string | null
+  nextStep: string | null
+  createdAt: number
+  /** open | refuted | superseded | promoted. A resolved lead is KEPT (a ruled-out hypothesis is a
+   *  durable record); only its rendering changes. */
+  status: 'open' | 'refuted' | 'superseded' | 'promoted'
+  resolution: string | null
+  resolvedAt: number | null
+  supersededBy: string | null
+  promotedEventId: string | null
+  grounding: CsvLeadGrounding[]
 }
 
 /** One step of the AI investigation plan (an analyst-editable to-do / lead). */

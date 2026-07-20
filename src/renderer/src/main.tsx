@@ -14,7 +14,7 @@ import { loadTheme } from './state/theme'
 import App from './App'
 import { ConstellationPopout, type ConstellationPopoutPayload } from './components/ai/ConstellationPopout'
 import { TimelinePopout, type TimelinePopoutPayload } from './components/ai/TimelinePopout'
-import { AiPopout, type AiPopoutPayload } from './components/ai/AiPopout'
+import { CaseReportPopout, type CaseReportPopoutPayload } from './components/ai/CaseReportPopout'
 import './styles/app.css'
 
 // Apply the saved theme before first paint to avoid a flash.
@@ -41,8 +41,8 @@ function Root(): JSX.Element {
   if (popout?.kind === 'timeline') {
     return <TimelinePopout payload={popout.payload as TimelinePopoutPayload} />
   }
-  if (popout?.kind === 'ai') {
-    return <AiPopout payload={popout.payload as AiPopoutPayload} />
+  if (popout?.kind === 'casereport') {
+    return <CaseReportPopout payload={popout.payload as CaseReportPopoutPayload} />
   }
   return <App />
 }

@@ -69,21 +69,23 @@ export function ConstellationPopout({ payload }: { payload: ConstellationPopoutP
   async function deleteEvent(id: string): Promise<void> {
     await window.api.csv.wsEventDelete(wsId, id)
     await reload()
+    window.api.popout.relay({ type: 'refresh', wsId, what: 'events' }) // else the main window keeps the deleted node
   }
   async function clearAll(): Promise<void> {
     await window.api.csv.wsEventClear(wsId)
     setConfirmClear(false)
     await reload()
+    window.api.popout.relay({ type: 'refresh', wsId, what: 'events' })
   }
   async function updateEvent(id: string, fields: { label: string; description: string | null; technique: string | null; users: string[] }): Promise<void> {
     await window.api.csv.wsEventUpdate(wsId, id, fields)
     await reload()
-    window.api.popout.relay({ type: 'refresh', wsId, what: 'findings' }) // keep the main window's panels in sync
+    window.api.popout.relay({ type: 'refresh', wsId, what: 'events' }) // keep the main window's panels in sync
   }
   async function removeEvidence(evidenceId: number): Promise<void> {
     await window.api.csv.wsEvidenceDelete(wsId, evidenceId)
     await reload()
-    window.api.popout.relay({ type: 'refresh', wsId, what: 'findings' })
+    window.api.popout.relay({ type: 'refresh', wsId, what: 'events' })
   }
 
   return (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { coverageNudge, coverageUniverse, isTriageRun, newCoverage, untouchedSources } from './coverage'
+import { coverageNudge, coverageUniverse, isTriageRun, newCoverage, untouchedSources, glimpsedSources } from './coverage'
 import type { CoverageTracker, WsCtx, WsSource } from './types'
 
 const src = (sourceId: number, name: string, rowCount: number, extra: Partial<WsSource> = {}): WsSource => ({
@@ -13,7 +13,12 @@ const src = (sourceId: number, name: string, rowCount: number, extra: Partial<Ws
 
 const ws = (sources: WsSource[]): WsCtx => ({ hasWorkspace: true, wsId: 'w', sources })
 
-const cov = (examined: number[], recordedEvents = 0): CoverageTracker => ({ examined: new Set(examined), recordedEvents })
+const cov = (examined: number[], recordedEvents = 0, seenInSearch: number[] = []): CoverageTracker => ({
+  startedAt: Date.now(),
+  examined: new Set(examined),
+  seenInSearch: new Set(seenInSearch),
+  recordedEvents
+})
 
 describe('coverageUniverse', () => {
   it('excludes derived sources (the materialized Timeline)', () => {
@@ -42,13 +47,20 @@ describe('isTriageRun', () => {
 })
 
 describe('coverageNudge', () => {
-  const all = [src(1, 'MFT', 100), src(2, 'Amcache', 9000), src(3, 'Hindsight — Timeline', 1613, { group: 'DESKTOP-X' })]
+  const all = [src(1, 'MFT', 100), src(2, 'Amcache', 9000), src(3, 'Hindsight — Timeline', 1613, { group: 'HOST-A' })]
 
-  it('names the untouched sources (with row counts + host) once triage is underway', () => {
+  // Group-qualified, matching how a source is actually addressed — hosts share filenames, so a bare
+  // name in the nudge is not something the agent can act on directly.
+  it('names the untouched sources as group/name with row counts, once triage is underway', () => {
     const out = coverageNudge(ws(all), cov([1, 2, 9]), false)
-    expect(out).toContain('Hindsight — Timeline (1,613 rows, DESKTOP-X)')
+    expect(out).toContain('HOST-A/Hindsight — Timeline (1,613 rows)')
     expect(out).toContain('review_coverage')
     expect(out).not.toContain('MFT (') // examined → not listed
+  })
+
+  it('leaves an ungrouped source unqualified rather than inventing a prefix', () => {
+    const loose = [src(1, 'MFT', 100), src(2, 'loose.csv', 5)]
+    expect(coverageNudge(ws(loose), cov([1], 1), false)).toContain('loose.csv (5 rows)')
   })
 
   it('returns null when every (non-derived) source has been examined', () => {
@@ -71,5 +83,28 @@ describe('coverageNudge', () => {
 
   it('returns null when there is no workspace', () => {
     expect(coverageNudge({ hasWorkspace: false, sources: [] }, cov([1, 2, 3], 2), false)).toBeNull()
+  })
+})
+
+describe('glimpsedSources', () => {
+  const all = [src(1, 'MFT', 100), src(2, 'Amcache', 50), src(3, 'Prefetch', 10)]
+
+  // A cross-source search that returned rows means the agent HAS seen this source's data. Calling it
+  // "never touched" sent it back to re-read sources it had already built findings from.
+  it('separates search-only sources from never-touched ones', () => {
+    const c = cov([1], 0, [2])
+    expect(glimpsedSources(all, c).map((s) => s.name)).toEqual(['Amcache'])
+    expect(untouchedSources(all, c).map((s) => s.name)).toEqual(['Prefetch'])
+  })
+
+  it('does not double-count a source that was properly examined', () => {
+    const c = cov([2], 0, [2])
+    expect(glimpsedSources(all, c)).toEqual([])
+    expect(untouchedSources(all, c).map((s) => s.name)).toEqual(['MFT', 'Prefetch'])
+  })
+
+  it('keeps search-only sources out of the pre-conclusion nudge', () => {
+    const c = cov([1, 3], 1, [2])
+    expect(coverageNudge(ws(all), c, false)).toBeNull()
   })
 })

@@ -3,13 +3,12 @@ import { Clock, Download, ExternalLink, Maximize2, Minimize2, TableProperties, X
 import type { CsvEvent } from '../../state/csvTypes'
 import { buildTimelineRows, timelineToCsv, timelineToTable } from '../../state/timeline'
 import { Timeline } from './Timeline'
+import { usePanelWidth } from '../../state/panelWidth'
 
 // Side-panel host for the Timeline — the curated, deterministic Plaso/l2t_csv-style super-timeline
 // built from recorded events. Thin shell: loads the workspace's events, resolves each evidence's Host
 // from the source groups, composes the rows, and mounts <Timeline>. Export writes l2t_csv-style CSV.
 
-const MIN_W = 420
-const MAX_W = 1100
 
 export function TimelinePanel({
   open,
@@ -27,7 +26,7 @@ export function TimelinePanel({
   wsId: string | null
   /** Active workspace name — the pop-out window's subtitle. */
   workspaceName?: string | null
-  /** Bump to reload events (e.g. after the assistant records one). */
+  /** Bump to reload events (e.g. after the agent records one). */
   refreshKey: number
   /** Source id → group label (the Host column). */
   sources: Array<{ sourceId: number; group?: string | null }>
@@ -36,7 +35,9 @@ export function TimelinePanel({
   onBuildSource: (header: string[], rows: string[][]) => void
 }): JSX.Element | null {
   const [events, setEvents] = useState<CsvEvent[]>([])
-  const [width, setWidth] = useState(640)
+  // Persisted + viewport-relative: this panel used to reopen at a fixed width every time,
+  // which is why it always needed resizing (see state/panelWidth).
+  const { width, setWidth, clamp } = usePanelWidth({ key: 'pink-lemonade:panel-w:timeline', min: 420, max: 1400, defaultFraction: 0.48 })
   const [maximized, setMaximized] = useState(false)
 
   const reload = useCallback(async (): Promise<void> => {
@@ -61,7 +62,7 @@ export function TimelinePanel({
     e.preventDefault()
     const startX = e.clientX
     const startW = width
-    const onMove = (ev: MouseEvent): void => setWidth(Math.min(MAX_W, Math.max(MIN_W, startW + (startX - ev.clientX))))
+    const onMove = (ev: MouseEvent): void => setWidth(clamp(startW + (startX - ev.clientX)))
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)

@@ -49,24 +49,24 @@ describe('resolveSource', () => {
     hasWorkspace: true,
     wsId: 'ws1',
     activeSourceId: 1,
-    sources: [src(1, 'hayabusa_events_offline.csv', 'DESKTOP-X'), src(2, 'hayabusa_events_offline.csv', 'files5'), src(3, 'MFT.csv', 'DESKTOP-X')]
+    sources: [src(1, 'hayabusa_events_offline.csv', 'HOST-A'), src(2, 'hayabusa_events_offline.csv', 'HOST-B'), src(3, 'MFT.csv', 'HOST-A')]
   }
 
   it('resolves a group-qualified path "Group/name"', () => {
-    expect(resolveSource(collide, 'files5/hayabusa_events_offline.csv').sourceId).toBe(2)
-    expect(resolveSource(collide, 'DESKTOP-X/hayabusa_events_offline.csv').sourceId).toBe(1)
+    expect(resolveSource(collide, 'HOST-B/hayabusa_events_offline.csv').sourceId).toBe(2)
+    expect(resolveSource(collide, 'HOST-A/hayabusa_events_offline.csv').sourceId).toBe(1)
   })
 
   it('errors (not silently picks the first) when a bare name collides across groups', () => {
-    expect(() => resolveSource(collide, 'hayabusa_events_offline.csv')).toThrow(/ambiguous.*DESKTOP-X\/hayabusa_events_offline\.csv.*files5\/hayabusa_events_offline\.csv/s)
+    expect(() => resolveSource(collide, 'hayabusa_events_offline.csv')).toThrow(/ambiguous.*HOST-A\/hayabusa_events_offline\.csv.*HOST-B\/hayabusa_events_offline\.csv/s)
   })
 
   it('still resolves a numeric id even when names collide', () => {
-    expect(resolveSource(collide, 2).group).toBe('files5')
+    expect(resolveSource(collide, 2).group).toBe('HOST-B')
   })
 
   it('formats a path as Group/name (or just name when ungrouped)', () => {
-    expect(pathOf(src(1, 'MFT.csv', 'DESKTOP-X'))).toBe('DESKTOP-X/MFT.csv')
+    expect(pathOf(src(1, 'MFT.csv', 'HOST-A'))).toBe('HOST-A/MFT.csv')
     expect(pathOf(src(1, 'MFT.csv'))).toBe('MFT.csv')
   })
 })

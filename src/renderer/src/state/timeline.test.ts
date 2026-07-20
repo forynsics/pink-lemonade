@@ -17,7 +17,7 @@ const ev = (id: string, label: string, evidence: CsvEventEvidence[], technique: 
   description: null,
   technique,
   createdAt: 0,
-  actor: 'ai',
+  actor: 'ai', hosts: [], uncertainty: null,
   users,
   evidence
 })
@@ -35,13 +35,13 @@ const evid = (sourceId: number, sourceName: string, matched: string, spans: Retu
 
 const T1 = Date.parse('2024-06-13T10:00:00Z') / 1000
 const T2 = Date.parse('2024-06-13T12:00:00Z') / 1000
-const groupOf = (id: number): string | null => (id === 1 ? 'DESKTOP-X' : id === 2 ? 'DC1' : null)
+const groupOf = (id: number): string | null => (id === 1 ? 'HOST-A' : id === 2 ? 'DC1' : null)
 
 describe('buildTimelineRows', () => {
   it('emits one row per (evidence, timestamp-kind), keeping Created vs Modified distinct', () => {
     const rows = buildTimelineRows([ev('e1', 'Drop', [evid(1, 'MFT', 'evil.exe', [span('Created', T1), span('Modified', T2)])])], groupOf)
     expect(rows.map((r) => r.type)).toEqual(['Created', 'Modified'])
-    expect(rows[0]).toMatchObject({ time: '2024-06-13T10:00:00+00:00', source: 'MFT', host: 'DESKTOP-X', user: '', sourceId: 1, matched: 'evil.exe', rows: 2 })
+    expect(rows[0]).toMatchObject({ time: '2024-06-13T10:00:00+00:00', source: 'MFT', host: 'HOST-A', user: '', sourceId: 1, matched: 'evil.exe', rows: 2 })
     expect(rows[0].description).toBe('Drop')
   })
 
@@ -55,7 +55,7 @@ describe('buildTimelineRows', () => {
       groupOf
     )
     expect(rows.map((r) => r.eventId)).toEqual(['early', 'late', 'none'])
-    expect(rows[2]).toMatchObject({ epoch: null, time: '', type: '(undated)', host: 'DESKTOP-X' })
+    expect(rows[2]).toMatchObject({ epoch: null, time: '', type: '(undated)', host: 'HOST-A' })
   })
 
   it('marks a span as a range (endEpoch) and an instant (null end)', () => {
@@ -81,16 +81,16 @@ describe('buildTimelineRows', () => {
   it("fills the User column with the event's curated user attribution (dated + undated)", () => {
     const rows = buildTimelineRows(
       [
-        ev('logon', 'Logon', [evid(1, 'Sec', 'x', [span('Time', T1)])], null, ['DESKTOP-X\\user1', 'SYSTEM']),
-        ev('u', 'Undated', [evid(1, 'Reg', 'z', [])], null, ['DESKTOP-X\\user1'])
+        ev('logon', 'Logon', [evid(1, 'Sec', 'x', [span('Time', T1)])], null, ['HOST-A\\user1', 'SYSTEM']),
+        ev('u', 'Undated', [evid(1, 'Reg', 'z', [])], null, ['HOST-A\\user1'])
       ],
       groupOf
     )
-    expect(rows[0].user).toBe('DESKTOP-X\\user1, SYSTEM')
-    expect(rows[1].user).toBe('DESKTOP-X\\user1')
+    expect(rows[0].user).toBe('HOST-A\\user1, SYSTEM')
+    expect(rows[1].user).toBe('HOST-A\\user1')
     // Flows through to the materialized table + CSV (User is the 5th column).
-    expect(timelineToTable(rows).rows[0][4]).toBe('DESKTOP-X\\user1, SYSTEM')
-    expect(timelineToCsv(rows).split('\r\n')[1]).toContain('DESKTOP-X\\user1, SYSTEM')
+    expect(timelineToTable(rows).rows[0][4]).toBe('HOST-A\\user1, SYSTEM')
+    expect(timelineToCsv(rows).split('\r\n')[1]).toContain('HOST-A\\user1, SYSTEM')
   })
 })
 
@@ -103,7 +103,7 @@ describe('timelineToCsv', () => {
     const csv = timelineToCsv(rows)
     const lines = csv.split('\r\n')
     expect(lines[0]).toBe('Time,Type,Source,Host,User,Description,Matched,Rows')
-    expect(lines[1]).toContain('2024-06-13T10:00:00+00:00,Created,MFT,DESKTOP-X,,"A, then B",,2')
+    expect(lines[1]).toContain('2024-06-13T10:00:00+00:00,Created,MFT,HOST-A,,"A, then B",,2')
     expect(lines[2]).toContain(`${TIME_SENTINEL},(undated)`)
   })
 })
@@ -116,7 +116,7 @@ describe('timelineToTable', () => {
     )
     const t = timelineToTable(rows)
     expect(t.header).toEqual(TIMELINE_HEADER)
-    expect(t.rows[0]).toEqual(['2024-06-13T10:00:00+00:00', 'Created', 'MFT', 'DESKTOP-X', '', 'Drop', 'x', '2'])
+    expect(t.rows[0]).toEqual(['2024-06-13T10:00:00+00:00', 'Created', 'MFT', 'HOST-A', '', 'Drop', 'x', '2'])
     expect(t.rows[1][0]).toBe(TIME_SENTINEL)
   })
 

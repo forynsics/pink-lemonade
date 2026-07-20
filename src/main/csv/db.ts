@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { join, basename } from 'path'
+import { join, basename, resolve } from 'path'
 import { tmpdir } from 'os'
 import {
   statSync,
@@ -10,12 +10,17 @@ import {
   readFileSync,
   writeFileSync,
   openSync,
+  readSync,
   writeSync,
-  closeSync
+  closeSync,
+  realpathSync
 } from 'fs'
+import { binaryContentReason, isInsideDir, looksBinary, planSourceNaming, resolveInsideRoot, walkEvidence, type WalkResult } from './evidence'
+import { mergeEntities, type DerivedEntity, type EntityOut } from './entityDerive'
+import { entityId, isEntityActor, isEntityKind, isEntityStatus, type EntityActor, type EntityKind, type EntityStatus } from '../../shared/entities'
 import { parseCsvStream } from './parser'
-import { sanitizeHeaders, type ColumnMap } from './sanitize'
-import { detectColumnTime, type TimeKind } from './coltypes'
+import { headerRowIndex, sanitizeHeaders, type ColumnMap } from './sanitize'
+import { detectColumnNumeric, detectColumnTime, isEventTime, isPlausibleEpoch, type TimeKind } from './coltypes'
 import {
   buildCreateTable,
   buildInsertSql,
@@ -31,17 +36,19 @@ import {
   buildTagCountsSql,
   buildSweepScanSql,
   FILT_TABLE,
-  buildDistinctSql,
   buildDistinctChunkSql,
-  buildDistinctCountSql,
   DISTINCT_CAP,
   buildLongestSql,
   buildColumnValuesSql,
   buildStatsSql,
+  buildTimeRangeSql,
+  buildAggregateSql,
+  buildAggregateCountSql,
   maxRowsPerInsert,
   type Filter,
   type QueryOpts,
-  type Sort
+  type Sort,
+  type TimeBucket
 } from './sql'
 import { compileIntel, matchText, type IntelEntry } from './sweep'
 
@@ -106,7 +113,7 @@ export interface SourceInfo {
   rowCount: number
   /** Absolute path the file was imported from — lets the UI detect re-imports of the same file. */
   originalPath: string
-  /** Analyst-assigned grouping label (the host/system/origin the evidence belongs to, e.g. "DESKTOP6",
+  /** Analyst-assigned grouping label (the host/system/origin the evidence belongs to, e.g. "HOST-A",
    *  "PaloAlto-Perimeter"); free text, no baked-in semantics. null = ungrouped. The Timeline's Host. */
   group: string | null
 }
@@ -233,12 +240,26 @@ async function ingestInto(
   )
 
   if (res.canceled) throw new CsvIngestCanceled()
-  if (columns.length === 0) throw new Error('No header row found in file')
+  if (columns.length === 0) {
+    // "No header row" reads as "this file is malformed, go look at it". Usually it just has nothing
+    // in it — a KAPE module that found no data still writes its (empty) output file, and an empty
+    // UTF-16 file is a lone 2-byte BOM. Say which, so nobody re-opens an empty artifact to check.
+    // An artifact that exists but is EMPTY is itself a finding, so this is not a silent skip.
+    const bytes = statSizeSafe(filePath)
+    throw new Error(
+      bytes <= 4
+        ? `The file is empty (${bytes} bytes) — nothing to import. An artifact that exists but holds no rows can itself be a finding worth noting.`
+        : 'No header row found in file — the first line is blank or unparseable, so no columns could be read.'
+    )
+  }
 
   // Tag detected time columns from the sampled rows.
   columns = columns.map((c, i) => {
     const kind = detectColumnTime(samples[i] ?? [], c.original)
-    return kind ? { ...c, time: kind } : c
+    // Numeric is about SORT ORDER, and a time column already sorts by its own kind, so only
+    // untyped columns need the check — that is where recency ranks and record numbers live.
+    const numeric = kind ? false : detectColumnNumeric(samples[i] ?? [])
+    return kind ? { ...c, time: kind } : numeric ? { ...c, numeric: true } : c
   })
   return { columns, rowCount }
 }
@@ -304,8 +325,167 @@ export function getWorkspaceDir(): string {
   mkdirSync(dir, { recursive: true })
   return dir
 }
+// ---- Evidence root: the ONLY tree the AI agent may read from ----
+// The agent never handles absolute paths. It passes paths RELATIVE to this root, and every one is
+// resolved and containment-checked before it touches the filesystem, so the agent cannot name — let
+// alone read — a file outside it. Set by the ANALYST; the agent has no tool to change it (if it could,
+// the containment would be theatre). Unset = imports refuse (fail closed, never a silent "anywhere").
+
+/** The configured evidence root, or null when the analyst hasn't set one. */
+export function getEvidenceRoot(): string | null {
+  const s = readSettings()
+  return typeof s.evidenceRoot === 'string' && s.evidenceRoot ? s.evidenceRoot : null
+}
+
+/**
+ * The evidence root and the workspace folder must not overlap, in EITHER direction.
+ *
+ * The evidence root is meant to be strictly read-only. But workspaces are created inside the
+ * workspace folder by `create_case` — a tool the AI AGENT can call — and creating one writes a
+ * `.workspace` file plus its `-wal`/`-shm` siblings. So if the workspace folder ever sat inside the
+ * evidence root, an ordinary agent action would be writing into the evidence tree. The reverse
+ * nesting is just as bad: evidence sitting inside the workspace folder is exposed to workspace
+ * deletion (`deleteWorkspace` unlinks by path). Rejecting the overlap at configuration time is the
+ * only place this can be enforced once and for all.
+ */
+function assertNoOverlap(evidenceRoot: string | null, workspaceDir: string | null): void {
+  if (!evidenceRoot || !workspaceDir) return
+  if (isInsideDir(workspaceDir, evidenceRoot)) {
+    throw new Error(
+      'The workspace folder cannot be inside the evidence folder — cases are written to disk there, which would modify your evidence. Choose a workspace folder outside it.'
+    )
+  }
+  if (isInsideDir(evidenceRoot, workspaceDir)) {
+    throw new Error(
+      'The evidence folder cannot be inside the workspace folder — deleting a workspace would reach your evidence. Choose an evidence folder outside it.'
+    )
+  }
+}
+
+/** The workspace dir as CONFIGURED (no mkdir side effect) — for validation before we commit to it. */
+function configuredWorkspaceDir(): string {
+  const s = readSettings()
+  return typeof s.workspaceDir === 'string' && s.workspaceDir ? s.workspaceDir : join(userDataDir(), 'workspaces')
+}
+
+export function setEvidenceRoot(dir: string | null): string | null {
+  const s = readSettings()
+  if (dir) {
+    assertNoOverlap(dir, configuredWorkspaceDir())
+    s.evidenceRoot = dir
+  } else delete s.evidenceRoot
+  try {
+    writeFileSync(settingsPath(), JSON.stringify(s, null, 2))
+  } catch {
+    /* ignore */
+  }
+  return getEvidenceRoot()
+}
+
+/**
+ * Resolve an agent-supplied RELATIVE path against the evidence root and prove it stays inside.
+ *
+ * A naive `startsWith` check is not enough: it misses `..` traversal, symlinks/junctions pointing
+ * outside, and (on Windows) case differences. So we resolve BOTH sides through realpath — which
+ * collapses `..` and follows links to their true target — and then compare on a separator boundary,
+ * case-insensitively on win32. Anything that escapes, or that we cannot realpath, is rejected.
+ * Absolute paths are refused outright: the agent has no business naming one.
+ */
+export function resolveInsideEvidenceRoot(relPath: string): string {
+  return resolveInsideRoot(getEvidenceRootOrThrow(), relPath)
+}
+
+/**
+ * List evidence under the root (recursively), as paths relative to it.
+ *
+ * `subdir` narrows to one branch and is containment-checked like any other agent path, so listing
+ * cannot be used to enumerate the filesystem outside the root.
+ */
+/**
+ * Which path component names the host, computed over the WHOLE evidence tree.
+ *
+ * Import must group files exactly as list_evidence reported them, but it only sees the handful of
+ * paths being imported — and a single-host batch does not branch, so inferring from that subset would
+ * pick an artifact-category directory instead. Always derive the level from the full tree.
+ */
+export function evidenceGroupDepth(): number {
+  const realRoot = realpathSync(getEvidenceRootOrThrow())
+  return walkEvidence(realRoot, realRoot).groupDepth
+}
+
+export function listEvidence(subdir?: string): WalkResult {
+  const realRoot = realpathSync(getEvidenceRootOrThrow())
+  const start = subdir && String(subdir).trim() ? resolveInsideEvidenceRoot(subdir) : realRoot
+  return walkEvidence(realRoot, start)
+}
+
+function getEvidenceRootOrThrow(): string {
+  const root = getEvidenceRoot()
+  if (!root) throw new Error('No evidence root is configured. The analyst must set one before evidence can be imported.')
+  if (!existsSync(root)) throw new Error(`The configured evidence root does not exist: ${root}`)
+  return root
+}
+
+/** A workspace on disk, for the agent's list_workspaces / use_workspace. */
+export interface WorkspaceEntry {
+  wsId: string
+  name: string
+  dbPath: string
+  createdAt: number | null
+  sourceCount: number
+}
+
+/**
+ * Catalog the workspaces in the workspace dir by reading each one's ws_meta.
+ *
+ * Opened read-only through a SEPARATE short-lived connection, never the live `workspaces` map — this
+ * must not disturb (or be disturbed by) a workspace the analyst currently has open. A file that fails
+ * to open is skipped, not fatal: one corrupt db shouldn't hide every other case.
+ */
+export function listWorkspaces(): WorkspaceEntry[] {
+  const dir = getWorkspaceDir()
+  let files: string[]
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.workspace'))
+  } catch {
+    return []
+  }
+  const out: WorkspaceEntry[] = []
+  for (const f of files) {
+    const dbPath = join(dir, f)
+    let db: Database.Database | null = null
+    try {
+      db = new Database(dbPath, { readonly: true, fileMustExist: true })
+      const meta = new Map<string, string>()
+      for (const r of db.prepare('SELECT key, value FROM ws_meta').all() as Array<{ key: string; value: string }>) {
+        meta.set(r.key, r.value)
+      }
+      const n = db.prepare('SELECT COUNT(*) AS n FROM sources').get() as { n: number }
+      const created = Number(meta.get('created_at'))
+      out.push({
+        wsId: f.slice(0, -'.workspace'.length),
+        name: meta.get('name') || f,
+        dbPath,
+        createdAt: Number.isFinite(created) ? created : null,
+        sourceCount: n?.n ?? 0
+      })
+    } catch {
+      /* not a readable workspace — skip */
+    } finally {
+      try {
+        db?.close()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+  return out
+}
+
 export function setWorkspaceDir(dir: string): string {
   const s = readSettings()
+  assertNoOverlap(getEvidenceRoot(), dir)
   s.workspaceDir = dir
   try {
     writeFileSync(settingsPath(), JSON.stringify(s, null, 2))
@@ -335,8 +515,8 @@ export function setEnrichConfig(patch: Record<string, unknown>): Record<string, 
   return getEnrichConfig()
 }
 
-// ---- AI assistant config (lives under the `ai` key in the same settings.json) ----
-// Non-secret only: { provider: 'claude-code', model }. The assistant is Claude-only, run through the
+// ---- AI config (lives under the `ai` key in the same settings.json) ----
+// Non-secret only (e.g. the localhost MCP token/port). The agent is the analyst's OWN, run through the
 // user's own installed Claude Code (their Claude subscription) — there is NO API key stored here, in
 // the worker, or anywhere; auth lives in the user's Claude Code login.
 export function getAiConfig(): Record<string, unknown> {
@@ -356,6 +536,13 @@ export function setAiConfig(patch: Record<string, unknown>): Record<string, unkn
 
 function workspaceDbPath(wsId: string): string {
   return join(getWorkspaceDir(), `${safe(wsId)}.workspace`)
+}
+
+/** The on-disk path of an OPEN workspace — the agent-SQL runner opens this read-only on its own
+ *  thread. Returns null when the workspace isn't open, so a caller can't be handed a path to a
+ *  workspace this process isn't actually managing. */
+export function openWorkspacePath(wsId: string): string | null {
+  return workspaces.get(wsId)?.dbPath ?? null
 }
 
 /** Composite key a workspace source is registered/queried under (used as `tabId` by the query IPC). */
@@ -401,13 +588,11 @@ export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
     'CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT, original_path TEXT, row_count INTEGER, num_cols INTEGER, added_at INTEGER, group_label TEXT)'
   )
   db.exec(
-    'CREATE TABLE source_columns (source_id INTEGER, idx INTEGER, name TEXT, original TEXT, time TEXT, PRIMARY KEY(source_id, idx))'
+    'CREATE TABLE source_columns (source_id INTEGER, idx INTEGER, name TEXT, original TEXT, time TEXT, numeric INTEGER, PRIMARY KEY(source_id, idx))'
   )
   db.exec(TAGS_DDL)
   db.exec(INTEL_HITS_DDL)
   db.exec(AI_MARKS_DDL)
-  db.exec(FINDINGS_DDL)
-  db.exec(FINDING_HITS_DDL)
   db.exec(EVENTS_DDL)
   db.exec(EVENT_EVIDENCE_DDL)
   db.exec(EVENT_ENTITIES_DDL)
@@ -418,17 +603,84 @@ export function createWorkspace(wsId: string, name: string): WorkspaceInfo {
   return { wsId, dbPath, name, sources: [], intelMode: 'global' }
 }
 
+/**
+ * Make a source label unique WITHIN a workspace, so every source is addressable by name.
+ *
+ * Source names were never unique-constrained, and two hosts in one case routinely yield the same
+ * filename (KAPE gives every machine an `Amcache.csv`). A duplicate isn't just untidy: `resolveSource`
+ * rejects an ambiguous bare name outright, so a colliding import would leave that source reachable
+ * only by numeric id. We qualify with the group first — that's the information the analyst actually
+ * wants to see ("HOST-A — Amcache.csv") — and only fall back to a counter when there's no group or
+ * the qualified name collides too, which guarantees this terminates.
+ */
+function planNaming(db: Database.Database, desired: string, group: string | null): string {
+  ensureSourceGroupColumn(db)
+  const rows = db.prepare('SELECT id, name, group_label FROM sources').all() as Array<{ id: number; name: string; group_label: string | null }>
+  return planSourceNaming(desired, group, rows.map((r) => ({ id: r.id, name: r.name, group: r.group_label }))).name
+}
+
+/**
+ * Reserve the next `data_<id>` table, and make sure that name is actually free.
+ *
+ * The id is advanced BEFORE the ingest runs, so a failed import can never hand the same id to the
+ * next one. It used to: the failure path dropped the partial table but left `nextSourceId` alone, so
+ * the following import tried to CREATE the same table and died with "table data_N already exists" —
+ * one bad file poisoned every import after it. Worse, when the failure was severe enough to take the
+ * connection down, the cleanup DROP silently failed too and the stale table really was still there.
+ * So we also drop defensively here, which additionally clears anything a previous crash left behind.
+ */
+function claimSourceId(w: { db: Database.Database; nextSourceId: number }): number {
+  const sourceId = w.nextSourceId
+  w.nextSourceId = sourceId + 1
+  dropTableQuietly(w, sourceId)
+  return sourceId
+}
+
+/** Refuse a file whose bytes are binary, however its extension is spelled. Reads only the head. */
+function assertNotBinary(filePath: string, displayName: string): void {
+  let fd: number | null = null
+  try {
+    fd = openSync(filePath, 'r')
+    const head = Buffer.alloc(8192)
+    const read = readSync(fd, head, 0, head.length, 0)
+    if (looksBinary(head.subarray(0, read))) throw new Error(binaryContentReason(displayName))
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/** Best-effort DROP of a source's data table — used for cleanup paths that must not mask the real error. */
+function dropTableQuietly(w: { db: Database.Database }, sourceId: number): void {
+  try {
+    w.db.exec(`DROP TABLE IF EXISTS data_${sourceId}`)
+  } catch {
+    /* the connection may already be gone; the reserved id means it can't collide anyway */
+  }
+}
+
 /** Ingest a CSV as a new source (data_<id>) in an open workspace; updates the catalog. */
 export async function addSource(args: {
   wsId: string
   filePath: string
   sourceName: string
+  /** Host/system the artifact came from. Set at ingest by the agent's evidence import (derived from
+   *  the evidence-root subdirectory); the UI leaves it null and assigns groups afterwards. */
+  group?: string | null
   onProgress?: (p: { bytes: number; rows: number; total: number }) => void
   signal?: AbortSignal
 }): Promise<SourceInfo> {
   const w = workspaces.get(args.wsId)
   if (!w) throw new Error(`Workspace not open: ${args.wsId}`)
-  const sourceId = w.nextSourceId
+  // The extension is a claim; check the content before creating anything. A renamed binary would
+  // otherwise land as a source with garbage columns and no rows, which reads as real evidence.
+  assertNotBinary(args.filePath, args.sourceName)
+  const sourceId = claimSourceId(w)
   w.db.pragma('journal_mode = OFF')
   w.db.pragma('synchronous = OFF')
   let columns: ColumnMap[]
@@ -436,25 +688,24 @@ export async function addSource(args: {
   try {
     ;({ columns, rowCount } = await ingestInto(w.db, `data_${sourceId}`, args.filePath, args.onProgress, args.signal))
   } catch (e) {
-    try {
-      w.db.exec(`DROP TABLE IF EXISTS data_${sourceId}`)
-    } catch {
-      /* ignore */
-    }
+    dropTableQuietly(w, sourceId)
     w.db.pragma('journal_mode = WAL')
     w.db.pragma('synchronous = NORMAL')
     throw e
   }
   w.db.pragma('journal_mode = WAL')
   w.db.pragma('synchronous = NORMAL')
-  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time) VALUES (?, ?, ?, ?, ?)')
-  w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null)))()
+  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time, numeric) VALUES (?, ?, ?, ?, ?, ?)')
+  w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null, c.numeric ? 1 : 0)))()
+  const group = typeof args.group === 'string' && args.group.trim() ? args.group.trim().slice(0, 120) : null
+  // Uniquify against what's already in this workspace, so the source stays addressable by name.
+  const name = planNaming(w.db, args.sourceName, group)
+  ensureSourceGroupColumn(w.db)
   w.db
-    .prepare('INSERT INTO sources (id, name, original_path, row_count, num_cols, added_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(sourceId, args.sourceName, args.filePath, rowCount, columns.length, Date.now())
-  w.nextSourceId = sourceId + 1
-  registerSource(args.wsId, sourceId, args.sourceName, columns, rowCount, w.db, w.dbPath)
-  return { sourceId, name: args.sourceName, columns, rowCount, originalPath: args.filePath, group: null }
+    .prepare('INSERT INTO sources (id, name, original_path, row_count, num_cols, added_at, group_label) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(sourceId, name, args.filePath, rowCount, columns.length, Date.now(), group)
+  registerSource(args.wsId, sourceId, name, columns, rowCount, w.db, w.dbPath)
+  return { sourceId, name, columns, rowCount, originalPath: args.filePath, group }
 }
 
 // ---- Excel (.xlsx/.xlsm) ingest ----
@@ -505,9 +756,10 @@ async function readXlsxSheets(filePath: string): Promise<XlsxSheet[]> {
     // Pad the header to the widest row so a column with a blank header isn't dropped.
     let width = 0
     for (const r of rows) width = Math.max(width, r.length)
-    const header = rows[0].slice()
+    const headerRow = headerRowIndex(rows)
+    const header = rows[headerRow].slice()
     while (header.length < width) header.push('')
-    out.push({ name: ws.name, header, rows: rows.slice(1) })
+    out.push({ name: ws.name, header, rows: rows.slice(headerRow + 1) })
   })
   return out
 }
@@ -564,7 +816,10 @@ function ingestRowsInto(
   }
   columns = columns.map((c, i) => {
     const kind = detectColumnTime(samples[i] ?? [], c.original)
-    return kind ? { ...c, time: kind } : c
+    // Numeric is about SORT ORDER, and a time column already sorts by its own kind, so only
+    // untyped columns need the check — that is where recency ranks and record numbers live.
+    const numeric = kind ? false : detectColumnNumeric(samples[i] ?? [])
+    return kind ? { ...c, time: kind } : numeric ? { ...c, numeric: true } : c
   })
   return { columns, rowCount }
 }
@@ -575,6 +830,8 @@ export async function addXlsxSources(args: {
   wsId: string
   filePath: string
   sourceName: string
+  /** Host/system for every sheet in the workbook (set by the agent's evidence import). */
+  group?: string | null
   onProgress?: (p: { bytes: number; rows: number; total: number }) => void
   signal?: AbortSignal
 }): Promise<SourceInfo[]> {
@@ -586,7 +843,7 @@ export async function addXlsxSources(args: {
   const out: SourceInfo[] = []
   for (const sheet of sheets) {
     if (args.signal?.aborted) throw new CsvIngestCanceled()
-    const sourceId = w.nextSourceId
+    const sourceId = claimSourceId(w)
     w.db.pragma('journal_mode = OFF')
     w.db.pragma('synchronous = OFF')
     let columns: ColumnMap[]
@@ -594,26 +851,24 @@ export async function addXlsxSources(args: {
     try {
       ;({ columns, rowCount } = ingestRowsInto(w.db, `data_${sourceId}`, sheet.header, sheet.rows, args.onProgress, args.signal))
     } catch (e) {
-      try {
-        w.db.exec(`DROP TABLE IF EXISTS data_${sourceId}`)
-      } catch {
-        /* ignore */
-      }
+      dropTableQuietly(w, sourceId)
       w.db.pragma('journal_mode = WAL')
       w.db.pragma('synchronous = NORMAL')
       throw e
     }
     w.db.pragma('journal_mode = WAL')
     w.db.pragma('synchronous = NORMAL')
-    const srcName = multi ? `${args.sourceName} — ${sheet.name}` : args.sourceName
-    const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time) VALUES (?, ?, ?, ?, ?)')
-    w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null)))()
+    const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time, numeric) VALUES (?, ?, ?, ?, ?, ?)')
+    w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null, c.numeric ? 1 : 0)))()
+    const group = typeof args.group === 'string' && args.group.trim() ? args.group.trim().slice(0, 120) : null
+    // Same uniqueness rule as the CSV path: two hosts' workbooks share sheet names constantly.
+    const srcName = planNaming(w.db, multi ? `${args.sourceName} — ${sheet.name}` : args.sourceName, group)
+    ensureSourceGroupColumn(w.db)
     w.db
-      .prepare('INSERT INTO sources (id, name, original_path, row_count, num_cols, added_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(sourceId, srcName, args.filePath, rowCount, columns.length, Date.now())
-    w.nextSourceId = sourceId + 1
+      .prepare('INSERT INTO sources (id, name, original_path, row_count, num_cols, added_at, group_label) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(sourceId, srcName, args.filePath, rowCount, columns.length, Date.now(), group)
     registerSource(args.wsId, sourceId, srcName, columns, rowCount, w.db, w.dbPath)
-    out.push({ sourceId, name: srcName, columns, rowCount, originalPath: args.filePath, group: null })
+    out.push({ sourceId, name: srcName, columns, rowCount, originalPath: args.filePath, group })
   }
   return out
 }
@@ -652,8 +907,8 @@ export function buildTimelineSource(wsId: string, header: string[], rows: string
   }
   w.db.pragma('journal_mode = WAL')
   w.db.pragma('synchronous = NORMAL')
-  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time) VALUES (?, ?, ?, ?, ?)')
-  w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null)))()
+  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time, numeric) VALUES (?, ?, ?, ?, ?, ?)')
+  w.db.transaction(() => columns.forEach((c, i) => setCol.run(sourceId, i, c.name, c.original, c.time ?? null, c.numeric ? 1 : 0)))()
   w.db
     .prepare('INSERT INTO sources (id, name, original_path, row_count, num_cols, added_at, group_label) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(sourceId, 'Timeline', TIMELINE_MARKER, rowCount, columns.length, Date.now(), null)
@@ -681,29 +936,44 @@ export function openWorkspace(wsId: string, dbPath: string): WorkspaceInfo {
   ensureTagActorColumn(db) // …and those created before AI attribution won't have the actor column
   db.exec(INTEL_HITS_DDL) // …nor intel-sweep sightings
   db.exec(AI_MARKS_DDL) // …nor AI-accountability marks
-  db.exec(FINDINGS_DDL) // …nor findings
-  db.exec(FINDING_HITS_DDL)
   db.exec(EVENTS_DDL) // …nor events
   db.exec(EVENT_EVIDENCE_DDL)
   db.exec(EVENT_ENTITIES_DDL) // …nor the event-entity (user attribution) table
   db.exec(IOCS_DDL) // …nor the IOC catalog
   db.exec(AI_COVERAGE_DDL) // …nor the AI's triage-coverage record
+  db.exec(AI_SQL_LOG_DDL) // …nor its SQL audit trail
   applyQueryPragmas(db)
+  // `numeric` arrived after sorting shipped; a workspace made before it has no such column, so the
+  // SELECT below (which reads it, OUTSIDE the try/catch above) would throw and make the whole
+  // workspace unopenable. Add it first — its sibling ensure* guards run above for the same reason.
+  ensureSourceColumnNumeric(db)
   const m = Object.fromEntries(metaRows.map((r) => [r.key, r.value]))
   const name = m.name ?? basename(dbPath)
-  const colStmt = db.prepare('SELECT name, original, time FROM source_columns WHERE source_id = ? ORDER BY idx')
+  const colStmt = db.prepare('SELECT name, original, time, numeric FROM source_columns WHERE source_id = ? ORDER BY idx')
   const sources: SourceInfo[] = []
   let maxId = -1
   for (const s of srcRows) {
-    const colRows = colStmt.all(s.id) as Array<{ name: string; original: string; time: string | null }>
+    const colRows = colStmt.all(s.id) as Array<{ name: string; original: string; time: string | null; numeric: number | null }>
     const columns: ColumnMap[] = colRows.map((c) =>
-      c.time ? { name: c.name, original: c.original, time: c.time as TimeKind } : { name: c.name, original: c.original }
+      c.time
+        ? { name: c.name, original: c.original, time: c.time as TimeKind }
+        : c.numeric
+          ? { name: c.name, original: c.original, numeric: true }
+          : { name: c.name, original: c.original }
     )
     registerSource(wsId, s.id, s.name, columns, s.row_count, db, dbPath)
     sources.push({ sourceId: s.id, name: s.name, columns, rowCount: s.row_count, originalPath: s.original_path ?? '', group: s.group_label ?? null })
     maxId = Math.max(maxId, s.id)
   }
-  workspaces.set(wsId, { db, dbPath, name, nextSourceId: maxId + 1 })
+  const ws = { db, dbPath, name, nextSourceId: maxId + 1 }
+  workspaces.set(wsId, ws)
+  // Heal records written before the path-qualified source names and the timestamp-plausibility fix,
+  // so an existing case doesn't keep double-counting a file or anchoring an event at 1970/2079.
+  try {
+    backfillEvidence(ws)
+  } catch {
+    /* a repair must never block opening the workspace */
+  }
   const intelMode = m.intelMode === 'workspace' ? 'workspace' : 'global'
   return { wsId, dbPath, name, sources, intelMode }
 }
@@ -787,7 +1057,7 @@ export function addDerivedColumns(
   if (specs.length === 0) throw new Error('No valid fields to extract')
 
   const added: ColumnMap[] = []
-  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time) VALUES (?, ?, ?, ?, ?)')
+  const setCol = w.db.prepare('INSERT INTO source_columns (source_id, idx, name, original, time, numeric) VALUES (?, ?, ?, ?, ?, ?)')
 
   w.db.transaction(() => {
     // source_columns idx is a dense 0..N-1 sequence (columns are never removed individually), so the
@@ -807,7 +1077,7 @@ export function addDerivedColumns(
       ).map((r) => r.v)
       const time = detectColumnTime(samples, spec.displayName) ?? undefined
       // 4. Catalog + collect for the live registration.
-      setCol.run(sourceId, idx, cK, spec.displayName, time ?? null)
+      setCol.run(sourceId, idx, cK, spec.displayName, time ?? null, 0)
       added.push(time ? { name: cK, original: spec.displayName, time } : { name: cK, original: spec.displayName })
       idx++
     }
@@ -831,12 +1101,24 @@ export function removeSource(wsId: string, sourceId: number): void {
   w.db.prepare('DELETE FROM source_columns WHERE source_id = ?').run(sourceId)
   w.db.prepare('DELETE FROM tags WHERE source_id = ?').run(sourceId)
   w.db.prepare('DELETE FROM ai_marks WHERE source_id = ?').run(sourceId)
-  try {
-    w.db.prepare('DELETE FROM finding_hits WHERE source_id = ?').run(sourceId)
-    w.db.prepare('DELETE FROM event_evidence WHERE source_id = ?').run(sourceId)
-  } catch {
-    /* older workspace without the table */
+  // Everything that references this source by id must be cleaned, or the review panels keep citing a
+  // deleted file. Each table is guarded on its own: a workspace that predates a given feature simply
+  // has no such table, and one missing table must not skip the others (the previous single try block
+  // deleted a NONEXISTENT `finding_hits` first — the old constellation substrate, since removed — which
+  // threw and skipped event_evidence entirely, orphaning every event's evidence).
+  const del = (sql: string): void => {
+    try {
+      w.db.prepare(sql).run(sourceId)
+    } catch {
+      /* table absent in an older workspace — fine */
+    }
   }
+  // evidence_times is keyed by evidence_id, so drop its rows via the evidence about to go.
+  del('DELETE FROM evidence_times WHERE evidence_id IN (SELECT id FROM event_evidence WHERE source_id = ?)')
+  del('DELETE FROM event_evidence WHERE source_id = ?')
+  del('DELETE FROM lead_grounding WHERE source_id = ?')
+  del('DELETE FROM entity_grounding WHERE source_id = ?')
+  del('DELETE FROM intel_hits WHERE source_id = ?')
   tables.delete(sourceKey(wsId, sourceId))
 }
 
@@ -848,7 +1130,7 @@ const TAGS_DDL =
   'CREATE TABLE IF NOT EXISTS tags (source_id INTEGER NOT NULL, rid INTEGER NOT NULL, tag TEXT NOT NULL, note TEXT, updated_at INTEGER, actor TEXT, PRIMARY KEY (source_id, rid))'
 
 /** Provenance of a tag: who applied it. `actor` is null for the analyst's own tags and 'ai' for ones
- *  the AI assistant applied — so AI tags can be shown distinctly and rolled up separately. Older
+ *  the AI agent applied — so AI tags can be shown distinctly and rolled up separately. Older
  *  workspaces (created before attribution) lack the column; add it on open. */
 function ensureTagActorColumn(db: Database.Database): void {
   const cols = db.prepare('PRAGMA table_info(tags)').all() as Array<{ name: string }>
@@ -862,27 +1144,25 @@ function ensureSourceGroupColumn(db: Database.Database): void {
   if (!cols.some((c) => c.name === 'group_label')) db.exec('ALTER TABLE sources ADD COLUMN group_label TEXT')
 }
 
+/** `numeric` arrived after sorting shipped, so a workspace made before it lacks the column. Add it on
+ *  open; the flag stays 0 for those sources, which means they keep the old text-sort behaviour rather
+ *  than silently changing order under an analyst who already knows their case. */
+function ensureSourceColumnNumeric(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(source_columns)').all() as Array<{ name: string }>
+  if (!cols.some((c) => c.name === 'numeric')) db.exec('ALTER TABLE source_columns ADD COLUMN numeric INTEGER')
+}
+
 // Intel-sweep results: one row per (source row, matched indicator). A row with ≥1 entry here is a
 // "sighting". Keyed independently of `tags`, so a row can carry an intent tag AND be a sighting.
 const INTEL_HITS_DDL =
   'CREATE TABLE IF NOT EXISTS intel_hits (source_id INTEGER NOT NULL, rid INTEGER NOT NULL, indicator TEXT NOT NULL, kind TEXT NOT NULL, hitset TEXT, PRIMARY KEY (source_id, rid, indicator))'
 
-// AI-accountability marks (✨): one row per row the AI assistant flagged while asserting something
+// AI-accountability marks (✨): one row per row the AI agent flagged while asserting something
 // during triage. Its OWN dimension (independent of intent `tags` and `intel_hits`), so the analyst
-// can filter to exactly what the assistant touched. `note` records what it asserted. Append-only by
-// design — the assistant can add marks (no confirmation) but nothing here edits other data.
+// can filter to exactly what the agent touched. `note` records what it asserted. Append-only by
+// design — the agent can add marks (no confirmation) but nothing here edits other data.
 const AI_MARKS_DDL =
   'CREATE TABLE IF NOT EXISTS ai_marks (source_id INTEGER NOT NULL, rid INTEGER NOT NULL, note TEXT, created_at INTEGER, PRIMARY KEY (source_id, rid))'
-
-// Findings (the constellation substrate): a finding is a validated indicator/artifact the AI (or
-// analyst) asserts is relevant. `finding_hits` records WHERE it actually appears — one row per
-// source it was found in, with a capped sample of matching row ids. A finding is only ever stored
-// when it has ≥1 hit (it must exist in the timeline), which is what makes the constellation
-// hallucination-proof. The per-source hits are the graph's branches (IOC → artifact → rows).
-const FINDINGS_DDL =
-  'CREATE TABLE IF NOT EXISTS findings (id TEXT PRIMARY KEY, value TEXT NOT NULL, kind TEXT, label TEXT, note TEXT, created_at INTEGER)'
-const FINDING_HITS_DDL =
-  'CREATE TABLE IF NOT EXISTS finding_hits (finding_id TEXT NOT NULL, source_id INTEGER NOT NULL, source_name TEXT, count INTEGER, rids TEXT, PRIMARY KEY (finding_id, source_id))'
 
 // Events (the Artifact Constellation's real substrate): an EVENT is an action that transpired on the
 // system (a TTP). `event_evidence` records the specific rows across artifacts that corroborate it —
@@ -890,9 +1170,12 @@ const FINDING_HITS_DDL =
 // only when it has ≥1 validated evidence row. Each evidence carries the `matched` term (so the
 // constellation can pivot to those exact rows). `technique` is an optional ATT&CK attribution.
 const EVENTS_DDL =
-  'CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, label TEXT NOT NULL, description TEXT, technique TEXT, created_at INTEGER, actor TEXT)'
+  'CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, label TEXT NOT NULL, description TEXT, technique TEXT, created_at INTEGER, actor TEXT, uncertainty TEXT)'
+// `why` is the agent's per-row rationale for THIS evidence item — the note an analyst reads to audit a
+// cited row ("this is the wmiexec output filename, session-unique"). Distinct from the event's overall
+// description; nullable.
 const EVENT_EVIDENCE_DDL =
-  'CREATE TABLE IF NOT EXISTS event_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, source_id INTEGER NOT NULL, source_name TEXT, matched TEXT, count INTEGER, rids TEXT, ts_min INTEGER, ts_max INTEGER)'
+  'CREATE TABLE IF NOT EXISTS event_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, source_id INTEGER NOT NULL, source_name TEXT, matched TEXT, count INTEGER, rids TEXT, ts_min INTEGER, ts_max INTEGER, why TEXT)'
 // Per-time-column spans of an evidence item (one row per time column, kind = the source's column
 // header). The Timeline expands these into one row per (evidence, kind); event_evidence.ts_min/max is
 // just the envelope across them. evidence_id → event_evidence.id (cleaned up alongside it).
@@ -904,6 +1187,28 @@ const EVIDENCE_TIMES_DDL =
 // user). event_id → events.id (no FK cascade; cleaned up alongside the event).
 const EVENT_ENTITIES_DDL =
   'CREATE TABLE IF NOT EXISTS event_entities (event_id TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (event_id, kind, value))'
+
+// AI-recorded LEADS / hypotheses — the AI's UNPROVEN inferences, kept SEPARATE from proven events so
+// they never masquerade as fact. Grounding rows are validated like evidence (a lead must cite the rows
+// that prompted it — no ungrounded vibes). Surfaced in the Investigation panel; the analyst pivots to
+// the grounding rows, PROMOTES a lead to a real event once evidence earns it, or dismisses it.
+const LEADS_DDL =
+  'CREATE TABLE IF NOT EXISTS leads (id TEXT PRIMARY KEY, statement TEXT NOT NULL, why_uncertain TEXT, next_step TEXT, created_at INTEGER, status TEXT, resolution TEXT, resolved_at INTEGER, superseded_by TEXT, promoted_event_id TEXT)'
+
+/** Resolution columns were added after the table shipped — back-fill older workspaces on open. A NULL
+ *  status reads as 'open'. Leads RESOLVE rather than vanish: a refuted lead is itself a durable record
+ *  (the AI considered it and ruled it out), and a stale open lead misrepresents confidence. */
+function ensureLeadStatusColumns(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(leads)').all() as Array<{ name: string }>
+  const has = (n: string): boolean => cols.some((c) => c.name === n)
+  if (!has('status')) db.exec('ALTER TABLE leads ADD COLUMN status TEXT')
+  if (!has('resolution')) db.exec('ALTER TABLE leads ADD COLUMN resolution TEXT')
+  if (!has('resolved_at')) db.exec('ALTER TABLE leads ADD COLUMN resolved_at INTEGER')
+  if (!has('superseded_by')) db.exec('ALTER TABLE leads ADD COLUMN superseded_by TEXT')
+  if (!has('promoted_event_id')) db.exec('ALTER TABLE leads ADD COLUMN promoted_event_id TEXT')
+}
+const LEAD_GROUNDING_DDL =
+  'CREATE TABLE IF NOT EXISTS lead_grounding (id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id TEXT NOT NULL, source_id INTEGER NOT NULL, source_name TEXT, matched TEXT, count INTEGER, rids TEXT, spans TEXT, ts_min INTEGER, ts_max INTEGER)'
 
 /** Normalize a curated user-entity set: trim, drop blanks, dedup case-insensitively (keep first-seen
  *  display form), cap each value's length and the overall count. */
@@ -928,6 +1233,8 @@ function ensureEvidenceTimeColumns(db: Database.Database): void {
   const cols = db.prepare('PRAGMA table_info(event_evidence)').all() as Array<{ name: string }>
   if (!cols.some((c) => c.name === 'ts_min')) db.exec('ALTER TABLE event_evidence ADD COLUMN ts_min INTEGER')
   if (!cols.some((c) => c.name === 'ts_max')) db.exec('ALTER TABLE event_evidence ADD COLUMN ts_max INTEGER')
+  // `why` arrived after the table shipped — back-fill older workspaces (reads back null).
+  if (!cols.some((c) => c.name === 'why')) db.exec('ALTER TABLE event_evidence ADD COLUMN why TEXT')
 }
 
 /** `actor` ('ai' | 'analyst') marks who authored an event's interpretation — added after the table
@@ -936,6 +1243,9 @@ function ensureEvidenceTimeColumns(db: Database.Database): void {
 function ensureEventActorColumn(db: Database.Database): void {
   const cols = db.prepare('PRAGMA table_info(events)').all() as Array<{ name: string }>
   if (!cols.some((c) => c.name === 'actor')) db.exec('ALTER TABLE events ADD COLUMN actor TEXT')
+  // What about this event is UNSETTLED — added after events shipped, so older workspaces read null
+  // (nothing unsettled was recorded, which is the honest default).
+  if (!cols.some((c) => c.name === 'uncertainty')) db.exec('ALTER TABLE events ADD COLUMN uncertainty TEXT')
 }
 
 // IOC catalog: indicators the AI (or analyst) encounters during the investigation, typed by a fixed
@@ -943,13 +1253,80 @@ function ensureEventActorColumn(db: Database.Database): void {
 // Intel/enrichment grid; sending an (enrichable) IOC there is a deliberate human action.
 const IOCS_DDL =
   'CREATE TABLE IF NOT EXISTS iocs (id TEXT PRIMARY KEY, value TEXT NOT NULL, type TEXT NOT NULL, context TEXT, created_at INTEGER)'
-// Which sources the AI assistant has examined (triage coverage). Persisted so coverage survives a
+// Which sources the AI agent has examined (triage coverage). Persisted so coverage survives a
 // session/Continue boundary — the agent resumes without re-touching already-examined sources. Source
 // of truth is the live data; this just records "the agent has opened and read this source's data".
 const AI_COVERAGE_DDL = 'CREATE TABLE IF NOT EXISTS ai_coverage (source_id INTEGER PRIMARY KEY, examined_at INTEGER)'
 
+// Every SQL statement the AI agent ran against this case — including the ones that were REFUSED or
+// errored. An agent that can compose arbitrary queries must leave a trail the analyst can audit
+// after the fact: "what did it actually ask the database?" is otherwise unanswerable, and a refusal
+// is the most interesting entry of all because it shows what the agent TRIED to do.
+// Lives in the workspace file, so the record travels with the case and survives a restart.
+const AI_SQL_LOG_DDL =
+  'CREATE TABLE IF NOT EXISTS ai_sql_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ran_at INTEGER, sql TEXT, outcome TEXT, row_count INTEGER, elapsed_ms INTEGER, detail TEXT)'
+
+export interface AgentSqlEntry {
+  /** 'ok' | 'refused' (the guard rejected it) | 'error' (SQLite or the runner failed). */
+  outcome: 'ok' | 'refused' | 'error'
+  sql: string
+  rowCount?: number
+  elapsedMs?: number
+  /** Refusal reason, error message, or the truncation note — whatever explains the outcome. */
+  detail?: string | null
+}
+
+/** Record one agent SQL attempt. Never throws: an audit write must not fail the caller's query, and
+ *  a lost log line is better than a lost result — but see listAgentSql, which is how it's read back. */
+export function logAgentSql(wsId: string, entry: AgentSqlEntry): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  try {
+    w.db.exec(AI_SQL_LOG_DDL) // workspaces created before this shipped won't have the table
+    w.db
+      .prepare('INSERT INTO ai_sql_log (ran_at, sql, outcome, row_count, elapsed_ms, detail) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(Date.now(), entry.sql, entry.outcome, entry.rowCount ?? null, entry.elapsedMs ?? null, entry.detail ?? null)
+  } catch {
+    /* auditing is best-effort; never break the investigation over it */
+  }
+}
+
+/** The agent's SQL history for this case, newest first. */
+export function listAgentSql(wsId: string, limit = 200): Array<AgentSqlEntry & { id: number; ranAt: number }> {
+  const w = workspaces.get(wsId)
+  // Throw rather than return [] — an empty array would read as "the agent ran no SQL", which is the
+  // opposite of what an unopened workspace means, and an audit trail that under-reports silently is
+  // worse than one that errors.
+  if (!w) throw new Error(`Workspace not open: ${wsId}`)
+  try {
+    w.db.exec(AI_SQL_LOG_DDL)
+    const rows = w.db
+      .prepare('SELECT id, ran_at, sql, outcome, row_count, elapsed_ms, detail FROM ai_sql_log ORDER BY id DESC LIMIT ?')
+      .all(Math.max(1, Math.min(limit, 1000))) as Array<{
+      id: number
+      ran_at: number
+      sql: string
+      outcome: string
+      row_count: number | null
+      elapsed_ms: number | null
+      detail: string | null
+    }>
+    return rows.map((r) => ({
+      id: r.id,
+      ranAt: r.ran_at,
+      sql: r.sql,
+      outcome: (r.outcome as AgentSqlEntry['outcome']) ?? 'ok',
+      rowCount: r.row_count ?? undefined,
+      elapsedMs: r.elapsed_ms ?? undefined,
+      detail: r.detail
+    }))
+  } catch {
+    return []
+  }
+}
+
 /** Every tag in a source, as {rid, tag, actor} — the renderer holds these in a Map for markers.
- *  `actor` is null for analyst tags, 'ai' for assistant-applied ones. */
+ *  `actor` is null for analyst tags, 'ai' for agent-applied ones. */
 export function listTags(wsId: string, sourceId: number): Array<{ rid: number; tag: string; actor: string | null }> {
   const w = workspaces.get(wsId)
   if (!w || !Number.isInteger(sourceId)) return []
@@ -961,7 +1338,7 @@ export function listTags(wsId: string, sourceId: number): Array<{ rid: number; t
 }
 
 /** Set (or, when tag is null, clear) the tag on a set of rows. `actor` records provenance (null =
- *  analyst, 'ai' = assistant). */
+ *  analyst, 'ai' = agent). */
 export function setTags(wsId: string, sourceId: number, rids: number[], tag: string | null, actor: string | null = null): void {
   const w = workspaces.get(wsId)
   if (!w || !Number.isInteger(sourceId) || !Array.isArray(rids)) return
@@ -1009,7 +1386,7 @@ export function tagByFilter(
   return { count: info.changes }
 }
 
-// ---- AI-accountability marks (✨): the AI assistant's own append-only mark dimension ----
+// ---- AI-accountability marks (✨): the AI agent's own append-only mark dimension ----
 
 /** All AI marks in a source, as {rid, note} — the renderer holds these in a Map for the ✨ marker. */
 export function listAiMarks(wsId: string, sourceId: number): Array<{ rid: number; note: string | null }> {
@@ -1055,7 +1432,7 @@ export function aiMarkByFilter(
   return { count: info.changes }
 }
 
-/** Clear every AI mark in a source (a "reset the assistant's marks" / new-investigation action). */
+/** Clear every AI mark in a source (a "reset the agent's marks" / new-investigation action). */
 export function clearAiMarks(wsId: string, sourceId: number): void {
   const w = workspaces.get(wsId)
   if (!w || !Number.isInteger(sourceId)) return
@@ -1064,22 +1441,7 @@ export function clearAiMarks(wsId: string, sourceId: number): void {
   if (e) e.filt = undefined
 }
 
-// ---- Findings (the constellation substrate) ----
-
-export interface FindingHit {
-  sourceId: number
-  sourceName: string
-  count: number
-  rids: number[]
-}
-export interface FindingRecord {
-  id: string
-  value: string
-  kind: string | null
-  label: string | null
-  note: string | null
-}
-
+/** Parse a stored rids JSON array defensively — a malformed value must never break a read. */
 function safeRids(s: string): number[] {
   try {
     const a = JSON.parse(s)
@@ -1087,75 +1449,6 @@ function safeRids(s: string): number[] {
   } catch {
     return []
   }
-}
-
-/** Upsert a finding and replace its per-source hits (the validated presence across artifacts). */
-export function recordFinding(wsId: string, finding: FindingRecord, hits: FindingHit[]): void {
-  const w = workspaces.get(wsId)
-  if (!w) return
-  w.db.exec(FINDINGS_DDL)
-  w.db.exec(FINDING_HITS_DDL)
-  const now = Date.now()
-  const upF = w.db.prepare(
-    'INSERT INTO findings (id, value, kind, label, note, created_at) VALUES (?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET value = excluded.value, kind = excluded.kind, label = excluded.label, note = excluded.note'
-  )
-  const delH = w.db.prepare('DELETE FROM finding_hits WHERE finding_id = ?')
-  const insH = w.db.prepare('INSERT OR REPLACE INTO finding_hits (finding_id, source_id, source_name, count, rids) VALUES (?, ?, ?, ?, ?)')
-  w.db.transaction(() => {
-    upF.run(finding.id, finding.value, finding.kind, finding.label, finding.note, now)
-    delH.run(finding.id)
-    for (const h of hits) insH.run(finding.id, h.sourceId, h.sourceName, h.count, JSON.stringify(h.rids))
-  })()
-}
-
-/** All findings in a workspace, each with its per-source hits. */
-export function listFindings(wsId: string): Array<FindingRecord & { createdAt: number; hits: FindingHit[] }> {
-  const w = workspaces.get(wsId)
-  if (!w) return []
-  w.db.exec(FINDINGS_DDL)
-  w.db.exec(FINDING_HITS_DDL)
-  const findings = w.db.prepare('SELECT id, value, kind, label, note, created_at FROM findings ORDER BY created_at').all() as Array<{
-    id: string
-    value: string
-    kind: string | null
-    label: string | null
-    note: string | null
-    created_at: number
-  }>
-  const hitStmt = w.db.prepare('SELECT source_id, source_name, count, rids FROM finding_hits WHERE finding_id = ?')
-  return findings.map((f) => ({
-    id: f.id,
-    value: f.value,
-    kind: f.kind,
-    label: f.label,
-    note: f.note,
-    createdAt: f.created_at,
-    hits: (hitStmt.all(f.id) as Array<{ source_id: number; source_name: string; count: number; rids: string }>).map((h) => ({
-      sourceId: h.source_id,
-      sourceName: h.source_name,
-      count: h.count,
-      rids: safeRids(h.rids)
-    }))
-  }))
-}
-
-export function deleteFinding(wsId: string, id: string): void {
-  const w = workspaces.get(wsId)
-  if (!w) return
-  w.db.transaction(() => {
-    w.db.prepare('DELETE FROM finding_hits WHERE finding_id = ?').run(id)
-    w.db.prepare('DELETE FROM findings WHERE id = ?').run(id)
-  })()
-}
-
-export function clearFindings(wsId: string): void {
-  const w = workspaces.get(wsId)
-  if (!w) return
-  w.db.exec(FINDINGS_DDL)
-  w.db.exec(FINDING_HITS_DDL)
-  w.db.exec('DELETE FROM finding_hits')
-  w.db.exec('DELETE FROM findings')
 }
 
 // ---- Events (Artifact Constellation substrate) ----
@@ -1184,22 +1477,52 @@ export interface EventEvidence {
    *  the evidence has no parseable time. */
   tsMin: number | null
   tsMax: number | null
+  /** The agent's per-row rationale for this evidence item (nullable). Read + write. */
+  why?: string | null
 }
 export interface EventRecord {
   id: string
   label: string
-  description: string | null
-  technique: string | null
+  /** Omit (undefined) to LEAVE the existing value untouched on a re-record; pass null to clear it.
+   *  Adding corroboration to an event is the most routine call in the workflow, and treating an
+   *  omitted field as "set to null" silently destroyed the event's interpretation. */
+  description?: string | null
+  technique?: string | null
+  /**
+   * What about this event is UNSETTLED, in words.
+   *
+   * Evidence proves an event OCCURRED; it does not settle what the occurrence MEANS. A memory-dumping
+   * tool that ran inside an attacker window, but sat on disk a week early beside 7-Zip and Notepad++,
+   * is a confirmed execution with a genuinely 50/50 attribution. Recording it as a plain event made it
+   * render identically to a DCSync — false certainty on a contested reading — and demoting it to a
+   * lead would have been wrong, because the execution is not in doubt.
+   *
+   * Deliberately a SENTENCE, not a score. An LLM emitting `confidence: 0.85` is generating a
+   * plausible number rather than measuring anything, and false precision is the last thing this record
+   * needs. Naming what specifically is unsettled is both more useful and more honest — and it gives
+   * the analyst something to argue WITH when they disagree.
+   *
+   * Same omit/null contract as description: undefined leaves it, null clears it.
+   */
+  uncertainty?: string | null
   /** User account(s) the event involves (curated attribution). Omit (undefined) to leave any existing
    *  set untouched on re-record; pass [] to explicitly clear. */
   users?: string[]
 }
 
 /** Upsert an event and MERGE in its evidence (additive, deduped by source_id+matched). Merge — not
- *  replace — so the assistant can corroborate the same event across more artifacts over several
+ *  replace — so the agent can corroborate the same event across more artifacts over several
  *  record_event calls, and each call's evidence accumulates instead of clobbering the last. Re-supplying
  *  the same (source, matched) is idempotent (count/rids refreshed); new (source, matched) pairs append. */
-export function recordEvent(wsId: string, event: EventRecord, evidence: EventEvidence[], actor: 'ai' | 'analyst' = 'ai'): void {
+export function recordEvent(
+  wsId: string,
+  event: EventRecord,
+  evidence: EventEvidence[],
+  actor: 'ai' | 'analyst' = 'ai',
+  /** Replace this event's evidence entirely instead of merging — lets a re-record with tighter scoping
+   *  drop an earlier sloppy item rather than leaving both attached. */
+  replace = false
+): void {
   const w = workspaces.get(wsId)
   if (!w) return
   w.db.exec(EVENTS_DDL)
@@ -1214,22 +1537,35 @@ export function recordEvent(wsId: string, event: EventRecord, evidence: EventEvi
     const owner = (w.db.prepare('SELECT actor FROM events WHERE id = ?').get(event.id) as { actor: string | null } | undefined)?.actor
     if (owner === 'analyst') return
   }
+  // Preserve interpretation the caller didn't supply. The upsert below writes every column, so an
+  // omitted description/technique would otherwise be written as NULL and wipe a prior ATT&CK mapping.
+  const prev = w.db.prepare('SELECT description, technique, uncertainty FROM events WHERE id = ?').get(event.id) as
+    | { description: string | null; technique: string | null; uncertainty: string | null }
+    | undefined
+  const description = event.description !== undefined ? event.description : (prev?.description ?? null)
+  const technique = event.technique !== undefined ? event.technique : (prev?.technique ?? null)
+  const uncertainty = event.uncertainty !== undefined ? event.uncertainty : (prev?.uncertainty ?? null)
   const now = Date.now()
   const upE = w.db.prepare(
-    'INSERT INTO events (id, label, description, technique, created_at, actor) VALUES (?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET label = excluded.label, description = excluded.description, technique = excluded.technique, actor = excluded.actor'
+    'INSERT INTO events (id, label, description, technique, created_at, actor, uncertainty) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET label = excluded.label, description = excluded.description, technique = excluded.technique, actor = excluded.actor, uncertainty = excluded.uncertainty'
   )
   // Clean an evidence row's per-kind spans before deleting the row itself (no FK cascade configured).
   const delTimes = w.db.prepare(
     'DELETE FROM evidence_times WHERE evidence_id IN (SELECT id FROM event_evidence WHERE event_id = ? AND source_id = ? AND matched IS ?)'
   )
   const delOne = w.db.prepare('DELETE FROM event_evidence WHERE event_id = ? AND source_id = ? AND matched IS ?')
-  const insEv = w.db.prepare('INSERT INTO event_evidence (event_id, source_id, source_name, matched, count, rids, ts_min, ts_max) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+  const insEv = w.db.prepare('INSERT INTO event_evidence (event_id, source_id, source_name, matched, count, rids, ts_min, ts_max, why) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
   const insTime = w.db.prepare('INSERT INTO evidence_times (evidence_id, kind, col_ref, ts_min, ts_max) VALUES (?, ?, ?, ?, ?)')
   const delUsers = w.db.prepare("DELETE FROM event_entities WHERE event_id = ? AND kind = 'user'")
   const insUser = w.db.prepare("INSERT OR IGNORE INTO event_entities (event_id, kind, value) VALUES (?, 'user', ?)")
   w.db.transaction(() => {
-    upE.run(event.id, event.label, event.description, event.technique, now, actor)
+    upE.run(event.id, event.label, description, technique, now, actor, uncertainty)
+    if (replace) {
+      // Drop every prior evidence row (and its per-kind spans) so only this call's evidence remains.
+      w.db.prepare('DELETE FROM evidence_times WHERE evidence_id IN (SELECT id FROM event_evidence WHERE event_id = ?)').run(event.id)
+      w.db.prepare('DELETE FROM event_evidence WHERE event_id = ?').run(event.id)
+    }
     // Replace the curated user set only when supplied. undefined = leave untouched (so a later AI
     // record_event that omits users doesn't wipe a prior call's set); [] = explicitly clear.
     if (event.users !== undefined) {
@@ -1245,10 +1581,20 @@ export function recordEvent(wsId: string, event: EventRecord, evidence: EventEvi
       delTimes.run(event.id, e.sourceId, e.matched)
       delOne.run(event.id, e.sourceId, e.matched)
       // Derive the envelope from the per-kind spans when supplied; fall back to whatever was passed.
+      // Derive the envelope from the per-kind spans, but only from PLAUSIBLE timestamps — a sentinel
+      // (1970) or future-dated (2079) value must not anchor the event. The spans themselves are stored
+      // unchanged, so evidence_times still reports the bogus value for the analyst to see.
+      // Same two filters the tool layer applies (ai/timecols envelopeOf): only columns that MEAN
+      // "when this happened" may date the event — a collection stamp or a LNK target's own MACE is a
+      // real timestamp of the wrong thing — and only plausible values within those. Every span is
+      // still stored unchanged below, so evidence_times reports them all.
       const spans = e.spans ?? []
-      const tsMin = spans.length ? Math.min(...spans.map((s) => s.tsMin)) : e.tsMin
-      const tsMax = spans.length ? Math.max(...spans.map((s) => s.tsMax)) : e.tsMax
-      const evId = insEv.run(event.id, e.sourceId, e.sourceName, e.matched, e.count, JSON.stringify(e.rids), tsMin, tsMax).lastInsertRowid
+      const dating = spans.filter((s) => isEventTime(s.kind))
+      const considered = dating.length > 0 ? dating : spans
+      const real = considered.flatMap((s) => [s.tsMin, s.tsMax]).filter((t) => isPlausibleEpoch(t))
+      const tsMin = real.length ? Math.min(...real) : spans.length ? null : e.tsMin
+      const tsMax = real.length ? Math.max(...real) : spans.length ? null : e.tsMax
+      const evId = insEv.run(event.id, e.sourceId, e.sourceName, e.matched, e.count, JSON.stringify(e.rids), tsMin, tsMax, e.why != null ? String(e.why).slice(0, 1000) : null).lastInsertRowid
       for (const s of spans) insTime.run(evId, s.kind, s.colRef, s.tsMin, s.tsMax)
     }
   })()
@@ -1271,7 +1617,7 @@ export function getEvent(wsId: string, id: string): { id: string; label: string;
 
 /** All events in a workspace, each with its evidence. `actor` flags analyst-authored events; each
  *  evidence carries its row id so the UI can target a single piece for re-grouping. */
-export function listEvents(wsId: string): Array<EventRecord & { createdAt: number; actor: 'ai' | 'analyst'; evidence: EventEvidence[] }> {
+export function listEvents(wsId: string): Array<EventRecord & { createdAt: number; actor: 'ai' | 'analyst'; hosts: string[]; evidence: EventEvidence[] }> {
   const w = workspaces.get(wsId)
   if (!w) return []
   w.db.exec(EVENTS_DDL)
@@ -1280,26 +1626,49 @@ export function listEvents(wsId: string): Array<EventRecord & { createdAt: numbe
   w.db.exec(EVENT_ENTITIES_DDL)
   ensureEvidenceTimeColumns(w.db)
   ensureEventActorColumn(w.db)
-  const events = w.db.prepare('SELECT id, label, description, technique, created_at, actor FROM events ORDER BY created_at').all() as Array<{
+  const events = w.db.prepare('SELECT id, label, description, technique, created_at, actor, uncertainty FROM events ORDER BY created_at').all() as Array<{
     id: string
     label: string
     description: string | null
     technique: string | null
     created_at: number
     actor: string | null
+    uncertainty: string | null
   }>
-  const evStmt = w.db.prepare('SELECT id, source_id, source_name, matched, count, rids, ts_min, ts_max FROM event_evidence WHERE event_id = ? ORDER BY id')
+  const evStmt = w.db.prepare('SELECT id, source_id, source_name, matched, count, rids, ts_min, ts_max, why FROM event_evidence WHERE event_id = ? ORDER BY id')
   const spStmt = w.db.prepare('SELECT kind, col_ref, ts_min, ts_max FROM evidence_times WHERE evidence_id = ? ORDER BY id')
   const usrStmt = w.db.prepare("SELECT value FROM event_entities WHERE event_id = ? AND kind = 'user' ORDER BY value")
+  // Which HOST(S) each event happened on, derived from the group of every source its evidence cites.
+  //
+  // Derived rather than stored, for the same reason an entity's `collected` is: set_source_group can
+  // re-attribute a source at any time, and a stored copy would quietly disagree with the sidebar.
+  //
+  // An ARRAY, not a single value: a lateral-movement event legitimately has evidence on both ends of
+  // the connection, and collapsing that to one host would misattribute half of it. Multi-host is a
+  // signal worth seeing, not a case to normalize away.
+  const groupOfSource = new Map<number, string>()
+  for (const r of w.db.prepare('SELECT id, group_label FROM sources').all() as Array<{ id: number; group_label: string | null }>) {
+    if (r.group_label) groupOfSource.set(r.id, r.group_label)
+  }
+  const hostsOf = (eventId: string): string[] => {
+    const out = new Set<string>()
+    for (const r of w.db.prepare('SELECT DISTINCT source_id FROM event_evidence WHERE event_id = ?').all(eventId) as Array<{ source_id: number }>) {
+      const g = groupOfSource.get(r.source_id)
+      if (g) out.add(g)
+    }
+    return [...out].sort()
+  }
   return events.map((e) => ({
     id: e.id,
     label: e.label,
     description: e.description,
     technique: e.technique,
+    uncertainty: e.uncertainty,
     createdAt: e.created_at,
     actor: e.actor === 'analyst' ? 'analyst' : 'ai',
     users: (usrStmt.all(e.id) as Array<{ value: string }>).map((u) => u.value),
-    evidence: (evStmt.all(e.id) as Array<{ id: number; source_id: number; source_name: string; matched: string; count: number; rids: string; ts_min: number | null; ts_max: number | null }>).map((v) => ({
+    hosts: hostsOf(e.id),
+    evidence: (evStmt.all(e.id) as Array<{ id: number; source_id: number; source_name: string; matched: string; count: number; rids: string; ts_min: number | null; ts_max: number | null; why: string | null }>).map((v) => ({
       id: v.id,
       sourceId: v.source_id,
       sourceName: v.source_name,
@@ -1313,9 +1682,73 @@ export function listEvents(wsId: string): Array<EventRecord & { createdAt: numbe
         tsMax: s.ts_max
       })),
       tsMin: v.ts_min ?? null,
-      tsMax: v.ts_max ?? null
+      tsMax: v.ts_max ?? null,
+      why: v.why ?? null
     }))
   }))
+}
+
+/** One-off repair of records written before two fixes landed. Idempotent and cheap, so it runs on
+ *  workspace open rather than asking the analyst to re-record:
+ *   • source_name held the BARE filename, so a legacy row and a newly path-qualified row for the SAME
+ *     file showed up as two sources (one file counted twice).
+ *   • ts_min/ts_max were derived with a raw min/max, so events keep a 1970 or 2079 sentinel span.
+ *  Both are recomputed from data already stored (evidence_times + the source's current group). */
+function backfillEvidence(w: Workspace): void {
+  w.db.exec(EVENTS_DDL)
+  w.db.exec(EVENT_EVIDENCE_DDL)
+  w.db.exec(EVIDENCE_TIMES_DDL)
+  ensureEvidenceTimeColumns(w.db)
+  const groups = new Map<number, { name: string; group: string | null }>()
+  for (const r of w.db.prepare('SELECT id, name, group_label FROM sources').all() as Array<{ id: number; name: string; group_label: string | null }>) {
+    groups.set(r.id, { name: r.name, group: r.group_label })
+  }
+  // Lead grounding has the same bare-name problem; heal it with the same map.
+  try {
+    w.db.exec(LEADS_DDL)
+    w.db.exec(LEAD_GROUNDING_DDL)
+    const gRows = w.db.prepare('SELECT id, source_id, source_name FROM lead_grounding').all() as Array<{ id: number; source_id: number; source_name: string | null }>
+    if (gRows.length > 0) {
+      const upG = w.db.prepare('UPDATE lead_grounding SET source_name = ? WHERE id = ?')
+      w.db.transaction(() => {
+        for (const g of gRows) {
+          const src = groups.get(g.source_id)
+          if (!src) continue
+          const want = src.group ? `${src.group}/${src.name}` : src.name
+          if (g.source_name !== want) upG.run(want, g.id)
+        }
+      })()
+    }
+  } catch {
+    /* leads may not exist in an older workspace */
+  }
+  const rows = w.db.prepare('SELECT id, source_id, source_name, ts_min, ts_max FROM event_evidence').all() as Array<{
+    id: number
+    source_id: number
+    source_name: string | null
+    ts_min: number | null
+    ts_max: number | null
+  }>
+  if (rows.length === 0) return
+  const spanStmt = w.db.prepare('SELECT ts_min, ts_max FROM evidence_times WHERE evidence_id = ?')
+  const upName = w.db.prepare('UPDATE event_evidence SET source_name = ? WHERE id = ?')
+  const upSpan = w.db.prepare('UPDATE event_evidence SET ts_min = ?, ts_max = ? WHERE id = ?')
+  w.db.transaction(() => {
+    for (const r of rows) {
+      const src = groups.get(r.source_id)
+      if (src) {
+        const want = src.group ? `${src.group}/${src.name}` : src.name
+        if (r.source_name !== want) upName.run(want, r.id)
+      }
+      // Recompute the envelope from the per-kind spans, counting only plausible timestamps.
+      const spans = spanStmt.all(r.id) as Array<{ ts_min: number; ts_max: number }>
+      if (spans.length === 0) continue
+      const real = spans.flatMap((x) => [x.ts_min, x.ts_max]).filter((t) => isPlausibleEpoch(t))
+      const lo = real.length ? Math.min(...real) : null
+      const hi = real.length ? Math.max(...real) : null
+      if (lo !== r.ts_min || hi !== r.ts_max) upSpan.run(lo, hi, r.id)
+    }
+  })()
 }
 
 export function deleteEvent(wsId: string, id: string): void {
@@ -1351,24 +1784,42 @@ export function clearEvents(wsId: string): void {
 export function updateEvent(
   wsId: string,
   id: string,
-  fields: { label: string; description: string | null; technique: string | null; users: string[] }
-): void {
+  fields: { label: string; description: string | null; technique: string | null; users: string[]; uncertainty?: string | null },
+  /** Who is editing. An ANALYST edit takes ownership (protecting it from AI overwrite); an AI edit
+   *  correcting its own wording must NOT claim analyst ownership, and must not touch an event the
+   *  analyst has already taken over. */
+  actor: 'ai' | 'analyst' = 'analyst'
+): boolean {
   const w = workspaces.get(wsId)
-  if (!w) return
+  if (!w) return false
   w.db.exec(EVENTS_DDL)
   w.db.exec(EVENT_ENTITIES_DDL)
   ensureEventActorColumn(w.db)
+  const cur = w.db.prepare('SELECT actor FROM events WHERE id = ?').get(id) as { actor: string | null } | undefined
+  if (!cur) return false
+  if (actor === 'ai' && cur.actor === 'analyst') return false // analyst interpretation wins
   w.db.transaction(() => {
-    w.db.prepare("UPDATE events SET label = ?, description = ?, technique = ?, actor = 'analyst' WHERE id = ?").run(
+    // `uncertainty` is OMITTABLE here, unlike the other fields: an analyst fixing a label should not
+    // have to restate what was unsettled about the event, and silently clearing it would erase the
+    // one thing keeping a contested reading from looking settled.
+    if (fields.uncertainty !== undefined) {
+      w.db.prepare('UPDATE events SET uncertainty = ? WHERE id = ?').run(
+        fields.uncertainty != null ? String(fields.uncertainty).slice(0, 2000) : null,
+        id
+      )
+    }
+    w.db.prepare('UPDATE events SET label = ?, description = ?, technique = ?, actor = ? WHERE id = ?').run(
       String(fields.label ?? '').slice(0, 300),
       fields.description != null ? String(fields.description).slice(0, 2000) : null,
       fields.technique != null ? String(fields.technique).slice(0, 200) : null,
+      actor,
       id
     )
     w.db.prepare("DELETE FROM event_entities WHERE event_id = ? AND kind = 'user'").run(id)
     const insUser = w.db.prepare("INSERT OR IGNORE INTO event_entities (event_id, kind, value) VALUES (?, 'user', ?)")
     for (const u of normalizeUsers(fields.users ?? [])) insUser.run(id, u)
   })()
+  return true
 }
 
 /** Remove a single piece of evidence from an event (re-grouping — the analyst judges it doesn't belong),
@@ -1385,6 +1836,869 @@ export function deleteEvidence(wsId: string, evidenceId: number): void {
     w.db.prepare('DELETE FROM event_evidence WHERE id = ?').run(evidenceId)
     if (ev) w.db.prepare("UPDATE events SET actor = 'analyst' WHERE id = ?").run(ev.event_id)
   })()
+}
+
+// ---- Leads (AI hypotheses — unproven inferences, separate from proven events) ----
+
+export interface LeadGrounding {
+  sourceId: number
+  sourceName: string
+  matched: string
+  count: number
+  rids: number[]
+  /** Per-time-column spans of the grounding rows — carried so a promoted lead becomes a dated event. */
+  spans?: EvidenceSpan[]
+  tsMin: number | null
+  tsMax: number | null
+}
+export interface LeadRecord {
+  id: string
+  statement: string
+  whyUncertain: string | null
+  nextStep: string | null
+}
+
+/** Record (or replace) a lead + its grounding. Unlike events, a lead is REPLACED on re-record by the
+ *  same id — it's a single working hypothesis, not an accreting case artifact. */
+export function recordLead(wsId: string, lead: LeadRecord, grounding: LeadGrounding[]): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.exec(LEADS_DDL)
+  w.db.exec(LEAD_GROUNDING_DDL)
+  ensureLeadStatusColumns(w.db)
+  const insL = w.db.prepare("INSERT OR REPLACE INTO leads (id, statement, why_uncertain, next_step, created_at, status) VALUES (?, ?, ?, ?, ?, 'open')")
+  const delG = w.db.prepare('DELETE FROM lead_grounding WHERE lead_id = ?')
+  const insG = w.db.prepare('INSERT INTO lead_grounding (lead_id, source_id, source_name, matched, count, rids, spans, ts_min, ts_max) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  w.db.transaction(() => {
+    insL.run(lead.id, lead.statement, lead.whyUncertain, lead.nextStep, Date.now())
+    delG.run(lead.id)
+    for (const g of grounding) insG.run(lead.id, g.sourceId, g.sourceName, g.matched, g.count, JSON.stringify(g.rids), g.spans ? JSON.stringify(g.spans) : null, g.tsMin, g.tsMax)
+  })()
+}
+
+export type LeadStatus = 'open' | 'refuted' | 'superseded' | 'promoted'
+export interface LeadOut {
+  id: string
+  statement: string
+  whyUncertain: string | null
+  nextStep: string | null
+  createdAt: number
+  status: LeadStatus
+  /** Why it was closed — the durable record of a negative result. */
+  resolution: string | null
+  resolvedAt: number | null
+  supersededBy: string | null
+  promotedEventId: string | null
+  grounding: Array<{ id: number; sourceId: number; sourceName: string; matched: string; count: number; rids: number[]; tsMin: number | null; tsMax: number | null }>
+}
+
+export function listLeads(wsId: string): LeadOut[] {
+  const w = workspaces.get(wsId)
+  if (!w) return []
+  w.db.exec(LEADS_DDL)
+  w.db.exec(LEAD_GROUNDING_DDL)
+  ensureLeadStatusColumns(w.db)
+  const leads = w.db
+    .prepare("SELECT id, statement, why_uncertain, next_step, created_at, COALESCE(status,'open') AS status, resolution, resolved_at, superseded_by, promoted_event_id FROM leads ORDER BY CASE COALESCE(status,'open') WHEN 'open' THEN 0 ELSE 1 END, created_at DESC")
+    .all() as Array<{
+    id: string
+    statement: string
+    why_uncertain: string | null
+    next_step: string | null
+    created_at: number
+    status: string
+    resolution: string | null
+    resolved_at: number | null
+    superseded_by: string | null
+    promoted_event_id: string | null
+  }>
+  const gStmt = w.db.prepare('SELECT id, source_id, source_name, matched, count, rids, ts_min, ts_max FROM lead_grounding WHERE lead_id = ? ORDER BY id')
+  return leads.map((l) => ({
+    id: l.id,
+    statement: l.statement,
+    whyUncertain: l.why_uncertain,
+    nextStep: l.next_step,
+    createdAt: l.created_at,
+    status: (['open', 'refuted', 'superseded', 'promoted'].includes(l.status) ? l.status : 'open') as LeadStatus,
+    resolution: l.resolution,
+    resolvedAt: l.resolved_at,
+    supersededBy: l.superseded_by,
+    promotedEventId: l.promoted_event_id,
+    grounding: (gStmt.all(l.id) as Array<{ id: number; source_id: number; source_name: string; matched: string; count: number; rids: string; ts_min: number | null; ts_max: number | null }>).map((g) => ({
+      id: g.id,
+      sourceId: g.source_id,
+      sourceName: g.source_name,
+      matched: g.matched,
+      count: g.count,
+      rids: safeRids(g.rids),
+      tsMin: g.ts_min,
+      tsMax: g.ts_max
+    }))
+  }))
+}
+
+/** Edit and/or RESOLVE a lead. A resolved lead is kept, not deleted: "I checked and ruled this out"
+ *  is a durable negative result worth grading, and leaving it open misrepresents confidence. The text
+ *  is editable in place (the id is a slug of the original statement, so re-recording would otherwise
+ *  fork a second lead instead of correcting the first). */
+export function updateLead(
+  wsId: string,
+  id: string,
+  patch: { statement?: string; whyUncertain?: string | null; nextStep?: string | null; status?: LeadStatus; resolution?: string | null; supersededBy?: string | null }
+): boolean {
+  const w = workspaces.get(wsId)
+  if (!w) return false
+  w.db.exec(LEADS_DDL)
+  ensureLeadStatusColumns(w.db)
+  const cur = w.db.prepare('SELECT id FROM leads WHERE id = ?').get(id) as { id: string } | undefined
+  if (!cur) return false
+  const sets: string[] = []
+  const params: Array<string | number | null> = []
+  const put = (col: string, v: string | number | null): void => {
+    sets.push(`${col} = ?`)
+    params.push(v)
+  }
+  if (patch.statement !== undefined) put('statement', patch.statement)
+  if (patch.whyUncertain !== undefined) put('why_uncertain', patch.whyUncertain)
+  if (patch.nextStep !== undefined) put('next_step', patch.nextStep)
+  if (patch.resolution !== undefined) put('resolution', patch.resolution)
+  if (patch.supersededBy !== undefined) put('superseded_by', patch.supersededBy)
+  if (patch.status !== undefined) {
+    put('status', patch.status)
+    put('resolved_at', patch.status === 'open' ? null : Date.now())
+  }
+  if (sets.length === 0) return true
+  params.push(id)
+  w.db.prepare(`UPDATE leads SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+  return true
+}
+
+export function deleteLead(wsId: string, id: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.exec(LEADS_DDL)
+  w.db.exec(LEAD_GROUNDING_DDL)
+  w.db.transaction(() => {
+    w.db.prepare('DELETE FROM lead_grounding WHERE lead_id = ?').run(id)
+    w.db.prepare('DELETE FROM leads WHERE id = ?').run(id)
+  })()
+}
+
+export function clearLeads(wsId: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.exec(LEADS_DDL)
+  w.db.exec(LEAD_GROUNDING_DDL)
+  w.db.exec('DELETE FROM lead_grounding')
+  w.db.exec('DELETE FROM leads')
+}
+
+/** Promote a lead to a real event: its grounding becomes the event's evidence (spans carried, so it's
+ *  dated on the Timeline), then the lead is removed. Returns the new event id, or null if not found. */
+export function promoteLead(wsId: string, id: string): string | null {
+  const w = workspaces.get(wsId)
+  if (!w) return null
+  w.db.exec(LEADS_DDL)
+  w.db.exec(LEAD_GROUNDING_DDL)
+  const lead = w.db.prepare('SELECT id, statement, why_uncertain FROM leads WHERE id = ?').get(id) as { id: string; statement: string; why_uncertain: string | null } | undefined
+  if (!lead) return null
+  const g = w.db.prepare('SELECT source_id, source_name, matched, count, rids, spans, ts_min, ts_max FROM lead_grounding WHERE lead_id = ?').all(id) as Array<{
+    source_id: number
+    source_name: string
+    matched: string
+    count: number
+    rids: string
+    spans: string | null
+    ts_min: number | null
+    ts_max: number | null
+  }>
+  const evidence: EventEvidence[] = g.map((x) => ({
+    sourceId: x.source_id,
+    sourceName: x.source_name,
+    matched: x.matched,
+    count: x.count,
+    rids: safeRids(x.rids),
+    spans: x.spans ? (JSON.parse(x.spans) as EvidenceSpan[]) : undefined,
+    tsMin: x.ts_min,
+    tsMax: x.ts_max
+  }))
+  const eventId = `event:${lead.statement.toLowerCase().replace(/\s+/g, '-').slice(0, 80)}`
+  // Promoted by the analyst's decision — record as an event (actor 'ai' keeps it corroboratable later).
+  recordEvent(wsId, { id: eventId, label: lead.statement, description: lead.why_uncertain, technique: null }, evidence, 'ai')
+  // Keep the lead as a RESOLVED record linked to the event, rather than deleting it — the fact that a
+  // hypothesis was raised and then earned promotion is part of the reviewable trail.
+  ensureLeadStatusColumns(w.db)
+  w.db.prepare("UPDATE leads SET status = 'promoted', promoted_event_id = ?, resolved_at = ? WHERE id = ?").run(eventId, Date.now(), id)
+  return eventId
+}
+
+// ---- Systems & Accounts (entities) ----
+
+// Only the CURATED overlay is stored. The spine — which systems produced sources, which entities the
+// recorded events involve — is derived on every read by entityDerive.mergeEntities, because it is a
+// pure function of `sources` and `event_entities` and a cached copy could only ever drift out of date.
+//
+// `collected` is deliberately NOT a column: whether we hold a host's data is a fact about the sources,
+// and storing it would let curation claim data the case doesn't have.
+const ENTITIES_DDL =
+  'CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, origin TEXT, status TEXT, role TEXT, notes TEXT, actor TEXT, created_at INTEGER, updated_at INTEGER)'
+// Confirmed alternate names for one entity. Written only by an explicit confirmation — aliasSuggestion
+// PROPOSES, and nothing merges on its own (see src/shared/entities.ts for why).
+const ENTITY_ALIASES_DDL =
+  'CREATE TABLE IF NOT EXISTS entity_aliases (entity_id TEXT NOT NULL, alias TEXT NOT NULL, created_at INTEGER, PRIMARY KEY (entity_id, alias))'
+// Rows that back an entity's existence — the same shape as lead_grounding, and the mechanism that
+// promotes an `asserted` entity to `evidenced`.
+const ENTITY_GROUNDING_DDL =
+  'CREATE TABLE IF NOT EXISTS entity_grounding (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT NOT NULL, source_id INTEGER NOT NULL, source_name TEXT, matched TEXT, count INTEGER, rids TEXT, ts_min INTEGER, ts_max INTEGER)'
+
+function ensureEntityTables(db: Database.Database): void {
+  db.exec(ENTITIES_DDL)
+  // `actor` arrived after the table shipped; a workspace made before it reads back null, which the
+  // panel renders as no author badge rather than guessing one.
+  if (!(db.prepare('PRAGMA table_info(entities)').all() as Array<{ name: string }>).some((c) => c.name === 'actor')) {
+    db.exec('ALTER TABLE entities ADD COLUMN actor TEXT')
+  }
+  db.exec(ENTITY_ALIASES_DDL)
+  db.exec(ENTITY_GROUNDING_DDL)
+  db.exec(EVENT_ENTITIES_DDL)
+}
+
+/** Read the derived spine out of sources + event_entities. */
+function deriveEntities(db: Database.Database): DerivedEntity[] {
+  const out: DerivedEntity[] = []
+  // Every source's group is a host whose triage package we actually hold.
+  for (const r of db.prepare('SELECT DISTINCT group_label FROM sources WHERE group_label IS NOT NULL AND TRIM(group_label) <> \'\'').all() as Array<{
+    group_label: string
+  }>) {
+    out.push({ kind: 'system', value: r.group_label, collected: true, eventCount: 0 })
+  }
+  // Entities the recorded events involve. `kind='user'` is the historical name for an account; any
+  // other kind is treated as a system, which is what the event-level attribution model stores.
+  for (const r of db
+    .prepare('SELECT kind, value, COUNT(DISTINCT event_id) AS n FROM event_entities GROUP BY kind, value')
+    .all() as Array<{ kind: string; value: string; n: number }>) {
+    out.push({
+      kind: r.kind === 'user' || r.kind === 'account' ? 'account' : 'system',
+      value: r.value,
+      collected: false,
+      eventCount: r.n
+    })
+  }
+  return out
+}
+
+export function listEntities(wsId: string): EntityOut[] {
+  const w = workspaces.get(wsId)
+  if (!w) return []
+  ensureEntityTables(w.db)
+  const stored = w.db
+    .prepare('SELECT id, kind, name, origin, status, role, notes, actor, created_at, updated_at FROM entities')
+    .all() as Array<{
+    id: string
+    kind: string
+    name: string
+    origin: string | null
+    status: string | null
+    role: string | null
+    notes: string | null
+    actor: string | null
+    created_at: number
+    updated_at: number
+  }>
+  const aliasStmt = w.db.prepare('SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY alias')
+  const groundStmt = w.db.prepare('SELECT COUNT(*) AS n FROM entity_grounding WHERE entity_id = ?')
+  return mergeEntities(
+    deriveEntities(w.db),
+    stored.map((s) => ({
+      id: s.id,
+      kind: isEntityKind(s.kind) ? s.kind : 'system',
+      name: s.name,
+      origin: s.origin === 'evidenced' ? 'evidenced' : 'asserted',
+      status: isEntityStatus(s.status) ? s.status : 'unknown',
+      role: s.role,
+      notes: s.notes,
+      actor: isEntityActor(s.actor) ? s.actor : null,
+      createdAt: s.created_at,
+      updatedAt: s.updated_at,
+      aliases: (aliasStmt.all(s.id) as Array<{ alias: string }>).map((a) => a.alias),
+      groundingCount: (groundStmt.get(s.id) as { n: number }).n
+    }))
+  )
+}
+
+export interface EntityPatch {
+  kind: EntityKind
+  name: string
+  status?: EntityStatus
+  role?: string | null
+  notes?: string | null
+}
+
+/**
+ * Create or update a curated entity record. Returns its id.
+ *
+ * A record whose name the case already evidences is stored as `evidenced`; anything else lands as
+ * `asserted` and reads visibly differently, the way an unproven lead does. Nothing is refused — an
+ * analyst scoping a case may legitimately name a host before any artifact mentions it.
+ */
+export function upsertEntity(wsId: string, patch: EntityPatch, grounding: LeadGrounding[] = [], actor: EntityActor = 'analyst'): string | null {
+  const w = workspaces.get(wsId)
+  if (!w) return null
+  const name = String(patch.name ?? '').trim().slice(0, 200)
+  if (!name || !isEntityKind(patch.kind)) return null
+  ensureEntityTables(w.db)
+  const id = entityId(patch.kind, name)
+  const now = Date.now()
+  const evidencedAlready =
+    grounding.length > 0 || deriveEntities(w.db).some((d) => d.kind === patch.kind && entityId(d.kind, d.value) === id)
+  const insG = w.db.prepare(
+    'INSERT INTO entity_grounding (entity_id, source_id, source_name, matched, count, rids, ts_min, ts_max) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  )
+  w.db.transaction(() => {
+    w.db
+      .prepare(
+        'INSERT INTO entities (id, kind, name, origin, status, role, notes, actor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+          // The analyst's DISPLAY NAME wins over an agent's. Both spellings are the same entity (the
+          // id is case-folded), so this only decides what is shown — and an analyst who fixed the
+          // casing should not have it silently undone the next time the agent mentions the host.
+          "ON CONFLICT(id) DO UPDATE SET name = CASE WHEN entities.actor = 'analyst' AND excluded.actor = 'ai' THEN entities.name ELSE excluded.name END, origin = excluded.origin, " +
+          // COALESCE so a partial update (status only) never blanks a field it didn't mention.
+          'status = COALESCE(excluded.status, entities.status), role = COALESCE(excluded.role, entities.role), ' +
+          // The AUTHOR is whoever created the record; a later edit by the other party doesn't
+          // rewrite it, so "the AI added this" stays true after an analyst adjusts the status.
+          'notes = COALESCE(excluded.notes, entities.notes), actor = COALESCE(entities.actor, excluded.actor), updated_at = excluded.updated_at'
+      )
+      .run(
+        id,
+        patch.kind,
+        name,
+        evidencedAlready ? 'evidenced' : 'asserted',
+        patch.status && isEntityStatus(patch.status) ? patch.status : null,
+        patch.role != null ? String(patch.role).slice(0, 200) : null,
+        patch.notes != null ? String(patch.notes).slice(0, 4000) : null,
+        actor,
+        now,
+        now
+      )
+    // Grounding ACCRETES — each hunt that finds the entity adds to the case for it, and re-recording
+    // should never discard what an earlier pass established.
+    for (const g of grounding) insG.run(id, g.sourceId, g.sourceName, g.matched, g.count, JSON.stringify(g.rids), g.tsMin, g.tsMax)
+  })()
+  return id
+}
+
+// Pairs someone has explicitly judged NOT the same entity. Without this the app keeps proposing a
+// link it has already been told is wrong — and the correct answer genuinely differs per pair: two
+// domain-qualified forms of one account ARE one principal, while a local and a domain account sharing
+// a name are different principals with different SIDs. Both judgements are worth keeping.
+const ENTITY_ALIAS_REJECTED_DDL =
+  'CREATE TABLE IF NOT EXISTS entity_alias_rejected (entity_id TEXT NOT NULL, other TEXT NOT NULL, reason TEXT, created_at INTEGER, PRIMARY KEY (entity_id, other))'
+
+/**
+ * Record a judgement that two names ARE (or are NOT) the same entity.
+ *
+ * Merging is destructive-ish and evidence-led, so it is never inferred: `aliasSuggestion` proposes,
+ * this records the answer. On a merge the other record's aliases and grounding are folded into the
+ * primary and its own row is dropped — the entity survives under one identity, keeping both names.
+ */
+export function linkEntities(
+  wsId: string,
+  kind: EntityKind,
+  primaryName: string,
+  otherName: string,
+  same: boolean,
+  reason: string | null,
+  actor: EntityActor = 'analyst'
+): { linked: boolean; id: string; merged: boolean; aliases: string[] } | null {
+  const w = workspaces.get(wsId)
+  if (!w || !isEntityKind(kind)) return null
+  const a = String(primaryName ?? '').trim().slice(0, 200)
+  const b = String(otherName ?? '').trim().slice(0, 200)
+  if (!a || !b) return null
+  ensureEntityTables(w.db)
+  w.db.exec(ENTITY_ALIAS_REJECTED_DDL)
+  const id = entityId(kind, a)
+  const otherId = entityId(kind, b)
+  if (id === otherId) return { linked: false, id, merged: false, aliases: [] }
+
+  // The primary must exist as a record to hang the judgement on; it may so far be derived-only.
+  upsertEntity(wsId, { kind, name: a }, [], actor)
+
+  w.db.transaction(() => {
+    if (!same) {
+      // `other` holds the NAME, not an id — the same shape entity_aliases uses, so a caller can
+      // normalize both the same way. Storing an id here silently double-prefixed it downstream and
+      // the rejection never matched, so the app kept re-proposing a link it had been told was wrong.
+      w.db
+        .prepare('INSERT OR REPLACE INTO entity_alias_rejected (entity_id, other, reason, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, b, reason, Date.now())
+      return
+    }
+    w.db.prepare('INSERT OR IGNORE INTO entity_aliases (entity_id, alias, created_at) VALUES (?, ?, ?)').run(id, b, Date.now())
+    // Fold the other record in, if it had one of its own, then retire it.
+    for (const r of w.db.prepare('SELECT alias FROM entity_aliases WHERE entity_id = ?').all(otherId) as Array<{ alias: string }>) {
+      w.db.prepare('INSERT OR IGNORE INTO entity_aliases (entity_id, alias, created_at) VALUES (?, ?, ?)').run(id, r.alias, Date.now())
+    }
+    w.db.prepare('UPDATE entity_grounding SET entity_id = ? WHERE entity_id = ?').run(id, otherId)
+    w.db.prepare('DELETE FROM entity_aliases WHERE entity_id = ?').run(otherId)
+    w.db.prepare('DELETE FROM entities WHERE id = ?').run(otherId)
+  })()
+
+  const aliases = (w.db.prepare('SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY alias').all(id) as Array<{ alias: string }>).map(
+    (r) => r.alias
+  )
+  return { linked: true, id, merged: same, aliases }
+}
+
+/** Pairs already judged — so a suggestion is never re-proposed after it has been answered. */
+export function listEntityLinkJudgements(wsId: string): Array<{ entityId: string; other: string; same: boolean }> {
+  const w = workspaces.get(wsId)
+  if (!w) return []
+  ensureEntityTables(w.db)
+  w.db.exec(ENTITY_ALIAS_REJECTED_DDL)
+  const out: Array<{ entityId: string; other: string; same: boolean }> = []
+  for (const r of w.db.prepare('SELECT entity_id, other FROM entity_alias_rejected').all() as Array<{ entity_id: string; other: string }>) {
+    out.push({ entityId: r.entity_id, other: r.other, same: false })
+  }
+  for (const r of w.db.prepare('SELECT entity_id, alias FROM entity_aliases').all() as Array<{ entity_id: string; alias: string }>) {
+    out.push({ entityId: r.entity_id, other: r.alias, same: true })
+  }
+  return out
+}
+
+/** Confirm two names are the same entity. Recorded, never inferred — see aliasSuggestion. */
+export function addEntityAlias(wsId: string, id: string, alias: string): boolean {
+  const w = workspaces.get(wsId)
+  if (!w) return false
+  const a = String(alias ?? '').trim().slice(0, 200)
+  if (!a) return false
+  ensureEntityTables(w.db)
+  if (!w.db.prepare('SELECT id FROM entities WHERE id = ?').get(id)) return false
+  w.db.prepare('INSERT OR IGNORE INTO entity_aliases (entity_id, alias, created_at) VALUES (?, ?, ?)').run(id, a, Date.now())
+  return true
+}
+
+export function removeEntityAlias(wsId: string, id: string, alias: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  ensureEntityTables(w.db)
+  w.db.prepare('DELETE FROM entity_aliases WHERE entity_id = ? AND alias = ?').run(id, alias)
+}
+
+/**
+ * Delete the CURATED record. The entity itself may survive in the derived spine — if the case's own
+ * data names it, deleting a note cannot un-name it — so this reverts curation rather than erasing an
+ * observation, which is the honest behaviour.
+ */
+export function deleteEntity(wsId: string, id: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  ensureEntityTables(w.db)
+  w.db.transaction(() => {
+    w.db.prepare('DELETE FROM entity_aliases WHERE entity_id = ?').run(id)
+    w.db.prepare('DELETE FROM entity_grounding WHERE entity_id = ?').run(id)
+    w.db.prepare('DELETE FROM entities WHERE id = ?').run(id)
+  })()
+}
+
+// ---- Negative findings ----
+
+// A NEGATIVE is a proven absence: "no ransomware extensions anywhere under Shares after the script
+// ran". Until now there was nowhere to put one — record_event validates evidence against real rows
+// and refuses when nothing matches, so a proven absence was unrecordable BY CONSTRUCTION. Three
+// separate agent runs raised this independently, and the conclusion it cost was not a minor one:
+// "this host was not encrypted" is the difference between a data-theft incident and a ransomware
+// detonation, and it survived only as a sentence in a report.
+//
+// What makes a negative trustworthy is that its grounding is COVERAGE, not rows: WHERE you looked,
+// FOR WHAT, and OVER WHAT WINDOW. An absence without its scope is unfalsifiable. So the query is
+// stored, not just the sentence, which buys two properties nothing else in the app has:
+//
+//   • RE-VERIFIABLE — the same search can be re-run on demand and either reconfirm the claim or
+//     OVERTURN it, and an overturned negative is a major finding rather than an embarrassment.
+//   • STALE-ABLE — evidence imported after the claim was established was, by definition, not
+//     searched. `max_source_id` records the newest source at the time, so "3 sources arrived since
+//     you established this" is derivable rather than something the analyst has to remember.
+//
+// `kind` separates a claim about the INTRUSION ('absence' — verifiable) from a claim about the
+// EVIDENCE ('gap' — a parser that failed, an artifact class nobody could parse). A gap has no query
+// to re-run, so it is stored as a statement and never reported as verifiable.
+const NEGATIVES_DDL =
+  'CREATE TABLE IF NOT EXISTS negatives (id TEXT PRIMARY KEY, kind TEXT NOT NULL, statement TEXT NOT NULL, why_it_matters TEXT, ' +
+  'scope_sources TEXT, scope_hosts TEXT, value TEXT, search TEXT, filters TEXT, time_from INTEGER, time_to INTEGER, time_column TEXT, ' +
+  'max_source_id INTEGER, established_at INTEGER, actor TEXT, last_verified_at INTEGER, last_result INTEGER, values_json TEXT)'
+
+export type NegativeKind = 'absence' | 'gap'
+
+export interface NegativeScope {
+  /** Source ids actually searched. Empty for a `gap`, which has no query. */
+  sourceIds: number[]
+  /** Host groups the search was scoped to, when it was scoped that way. */
+  hosts?: string[]
+  value?: string | null
+  search?: string | null
+  filters?: unknown
+  timeFrom?: number | null
+  timeTo?: number | null
+  timeColumn?: string | null
+  /** EVERY term that was searched and found absent. An absence claiming several things ("no .locked,
+   *  .encrypted or .lockbit") must have verified each one — storing only the first is how a claim ends
+   *  up broader than what was checked. `value` keeps the first for older records/back-compat. */
+  values?: string[]
+}
+
+export interface NegativeRecord {
+  id: string
+  kind: NegativeKind
+  statement: string
+  whyItMatters?: string | null
+}
+
+export interface NegativeOut extends NegativeRecord {
+  scope: NegativeScope
+  establishedAt: number
+  actor: 'ai' | 'analyst'
+  lastVerifiedAt: number | null
+  lastResult: number | null
+  /** Sources imported since this was established — they were never searched. */
+  newSourcesSince: number
+  /** True when new evidence has arrived, so the claim is unverified against the current case. */
+  stale: boolean
+  /** A gap has no query, so it can never be machine-re-verified. Say so rather than implying it can. */
+  verifiable: boolean
+}
+
+/** The longest a negative's statement may be. Exported so the tool layer can refuse (with a clear
+ *  message) rather than silently truncate a claim the analyst is going to adjudicate. */
+export const NEGATIVE_STATEMENT_MAX = 500
+
+/** `values_json` (every searched term) arrived after the table shipped — back-fill older workspaces. */
+function ensureNegativeValuesColumn(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(negatives)').all() as Array<{ name: string }>
+  if (!cols.some((c) => c.name === 'values_json')) db.exec('ALTER TABLE negatives ADD COLUMN values_json TEXT')
+}
+
+function currentMaxSourceId(db: Database.Database): number {
+  const r = db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM sources').get() as { m: number }
+  return r.m
+}
+
+/** Record a proven absence. The CALLER must already have run the search and confirmed 0 rows —
+ *  db.ts holds no query engine; the tool layer validates, exactly as it does for event evidence. */
+export function recordNegative(wsId: string, rec: NegativeRecord, scope: NegativeScope, actor: 'ai' | 'analyst' = 'ai'): string | null {
+  const w = workspaces.get(wsId)
+  if (!w) return null
+  // NOT clipped: the caller (tool layer) refuses an over-long statement outright, because this text
+  // is the claim shown in the Case Report for approval — a sentence cut mid-word is worse than a
+  // retry. This stays a hard guard for any direct caller.
+  const statement = String(rec.statement ?? '').trim()
+  if (!statement || statement.length > NEGATIVE_STATEMENT_MAX) return null
+  w.db.exec(NEGATIVES_DDL)
+  ensureNegativeValuesColumn(w.db)
+  const now = Date.now()
+  w.db
+    .prepare(
+      'INSERT INTO negatives (id, kind, statement, why_it_matters, scope_sources, scope_hosts, value, search, filters, time_from, time_to, time_column, max_source_id, established_at, actor, last_verified_at, last_result, values_json) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) ' +
+        'ON CONFLICT(id) DO UPDATE SET statement = excluded.statement, why_it_matters = excluded.why_it_matters, ' +
+        'scope_sources = excluded.scope_sources, scope_hosts = excluded.scope_hosts, value = excluded.value, search = excluded.search, ' +
+        'filters = excluded.filters, time_from = excluded.time_from, time_to = excluded.time_to, time_column = excluded.time_column, ' +
+        'max_source_id = excluded.max_source_id, established_at = excluded.established_at, last_verified_at = excluded.established_at, last_result = 0, values_json = excluded.values_json'
+    )
+    .run(
+      rec.id,
+      rec.kind === 'gap' ? 'gap' : 'absence',
+      statement,
+      rec.whyItMatters != null ? String(rec.whyItMatters).slice(0, 2000) : null,
+      JSON.stringify(scope.sourceIds ?? []),
+      scope.hosts && scope.hosts.length ? JSON.stringify(scope.hosts) : null,
+      scope.value ?? null,
+      scope.search ?? null,
+      scope.filters ? JSON.stringify(scope.filters) : null,
+      scope.timeFrom ?? null,
+      scope.timeTo ?? null,
+      scope.timeColumn ?? null,
+      currentMaxSourceId(w.db),
+      now,
+      actor,
+      now,
+      scope.values && scope.values.length ? JSON.stringify(scope.values) : null
+    )
+  return rec.id
+}
+
+function parseNegJson<T>(s: string | null, fallback: T): T {
+  if (!s) return fallback
+  try {
+    return JSON.parse(s) as T
+  } catch {
+    return fallback
+  }
+}
+
+export function listNegatives(wsId: string): NegativeOut[] {
+  const w = workspaces.get(wsId)
+  if (!w) return []
+  w.db.exec(NEGATIVES_DDL)
+  ensureNegativeValuesColumn(w.db)
+  const maxNow = currentMaxSourceId(w.db)
+  const rows = w.db.prepare('SELECT * FROM negatives ORDER BY established_at').all() as Array<Record<string, unknown>>
+  const newerStmt = w.db.prepare('SELECT COUNT(*) AS n FROM sources WHERE id > ?')
+  return rows.map((r) => {
+    const kind: NegativeKind = r.kind === 'gap' ? 'gap' : 'absence'
+    const watermark = Number(r.max_source_id ?? 0)
+    // Sources whose id exceeds the watermark did not exist when the claim was established, so the
+    // search never covered them. Comparing ids rather than diffing sets keeps this cheap and stays
+    // correct when a source is removed (ids are monotonic).
+    const newSince = (newerStmt.get(watermark) as { n: number }).n
+    const verifiable = kind === 'absence' && (r.value != null || r.search != null || r.filters != null)
+    return {
+      id: String(r.id),
+      kind,
+      statement: String(r.statement),
+      whyItMatters: (r.why_it_matters as string | null) ?? null,
+      scope: {
+        sourceIds: parseNegJson<number[]>(r.scope_sources as string | null, []),
+        hosts: parseNegJson<string[]>(r.scope_hosts as string | null, []),
+        value: (r.value as string | null) ?? null,
+        // Older records stored only `value`; treat it as a one-term list so every consumer can just
+        // iterate `values` without caring which era the record came from.
+        values: parseNegJson<string[]>(r.values_json as string | null, r.value ? [String(r.value)] : []),
+        search: (r.search as string | null) ?? null,
+        filters: parseNegJson<unknown>(r.filters as string | null, null),
+        timeFrom: (r.time_from as number | null) ?? null,
+        timeTo: (r.time_to as number | null) ?? null,
+        timeColumn: (r.time_column as string | null) ?? null
+      },
+      establishedAt: Number(r.established_at ?? 0),
+      actor: r.actor === 'analyst' ? 'analyst' : 'ai',
+      lastVerifiedAt: (r.last_verified_at as number | null) ?? null,
+      lastResult: (r.last_result as number | null) ?? null,
+      newSourcesSince: newSince,
+      stale: verifiable && newSince > 0 && maxNow > watermark,
+      verifiable
+    }
+  })
+}
+
+/** Record the outcome of a re-run. `rows` > 0 means the absence no longer holds — the record is KEPT
+ *  and marked, because "this used to be true and no longer is" is itself a finding. */
+export function setNegativeVerification(wsId: string, id: string, rows: number): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.exec(NEGATIVES_DDL)
+  // The watermark advances only when the claim still HOLDS. An overturned negative must stay flagged
+  // rather than being quietly re-baselined against the very evidence that broke it.
+  if (rows === 0) {
+    w.db
+      .prepare('UPDATE negatives SET last_verified_at = ?, last_result = 0, max_source_id = ? WHERE id = ?')
+      .run(Date.now(), currentMaxSourceId(w.db), id)
+  } else {
+    w.db.prepare('UPDATE negatives SET last_verified_at = ?, last_result = ? WHERE id = ?').run(Date.now(), rows, id)
+  }
+}
+
+export function deleteNegative(wsId: string, id: string): void {
+  const w = workspaces.get(wsId)
+  if (!w) return
+  w.db.exec(NEGATIVES_DDL)
+  w.db.prepare('DELETE FROM negatives WHERE id = ?').run(id)
+}
+
+// ---- Case Report: adjudication ----
+
+// The summation layer. Every claim the case contains — events, leads, proven absences, evidence gaps
+// and entity verdicts — read as ONE list the analyst can agree or disagree with.
+//
+// Adjudication is ORTHOGONAL METADATA, not a copy. A verdict is keyed by (kind, id) against records
+// that already exist, because making the agent record a claim AND a finding would double the exact
+// "it is in the prose but not in the record" failure this app fights everywhere else. There is one
+// source of truth per claim; this table only says what someone decided about it.
+//
+// Two rules encoded here:
+//   • A REJECTION REQUIRES A REASON. An unexplained rejection is precisely the one that cannot feed
+//     back to the agent later, which is the whole point of storing it.
+//   • REJECTING IS NOT DELETING. A rejected claim plus the analyst's reasoning is the highest-value
+//     artifact in the app; deletion is for junk and duplicates, and remains a separate action.
+const FINDING_REVIEW_DDL =
+  'CREATE TABLE IF NOT EXISTS finding_review (target_kind TEXT NOT NULL, target_id TEXT NOT NULL, verdict TEXT NOT NULL, ' +
+  'reason TEXT, actor TEXT, reviewed_at INTEGER, PRIMARY KEY (target_kind, target_id))'
+
+export type ReviewKind = 'event' | 'lead' | 'negative' | 'entity'
+export type ReviewVerdict = 'pending' | 'approved' | 'rejected'
+
+export interface CaseReportItem {
+  kind: ReviewKind
+  id: string
+  title: string
+  detail: string | null
+  /** Host(s) this claim concerns, for grouping the queue. Empty when it isn't host-specific. */
+  hosts: string[]
+  /** Who asserted it — the agent, or the analyst. */
+  actor: 'ai' | 'analyst'
+  verdict: ReviewVerdict
+  /** Why the analyst rejected it. Always present on a rejection; that is enforced on write. */
+  reason: string | null
+  reviewedAt: number | null
+  /** How much stands behind it — evidence items, grounding rows, sources searched. */
+  support: number
+  /** Kind-specific flags worth seeing in the queue (stale, overturned, uncollected, …). */
+  flags: string[]
+}
+
+/**
+ * Set (or clear) an analyst verdict on one claim.
+ *
+ * `pending` clears the row rather than storing a third state, so "never reviewed" and "reviewed then
+ * un-reviewed" are the same thing — which is what an analyst means when they undo a verdict.
+ */
+export function setFindingReview(
+  wsId: string,
+  kind: ReviewKind,
+  id: string,
+  verdict: ReviewVerdict,
+  reason: string | null,
+  actor: 'ai' | 'analyst' = 'analyst'
+): { ok: true } | { ok: false; error: string } {
+  const w = workspaces.get(wsId)
+  if (!w) return { ok: false, error: 'No workspace is open.' }
+  w.db.exec(FINDING_REVIEW_DDL)
+  const trimmed = reason != null ? String(reason).trim().slice(0, 2000) : ''
+  if (verdict === 'rejected' && !trimmed) {
+    return { ok: false, error: 'Rejecting a finding requires a reason — an unexplained rejection cannot be fed back or reviewed later.' }
+  }
+  if (verdict === 'pending') {
+    w.db.prepare('DELETE FROM finding_review WHERE target_kind = ? AND target_id = ?').run(kind, id)
+    return { ok: true }
+  }
+  w.db
+    .prepare(
+      'INSERT INTO finding_review (target_kind, target_id, verdict, reason, actor, reviewed_at) VALUES (?, ?, ?, ?, ?, ?) ' +
+        'ON CONFLICT(target_kind, target_id) DO UPDATE SET verdict = excluded.verdict, reason = excluded.reason, actor = excluded.actor, reviewed_at = excluded.reviewed_at'
+    )
+    .run(kind, id, verdict, trimmed || null, actor, Date.now())
+  return { ok: true }
+}
+
+/**
+ * The whole case as one adjudicable list.
+ *
+ * Assembled on read from the stores that already hold the claims. Nothing here is stored twice, so a
+ * claim edited anywhere shows its current wording, and a verdict survives that edit.
+ */
+export function listCaseReport(wsId: string): CaseReportItem[] {
+  const w = workspaces.get(wsId)
+  if (!w) return []
+  w.db.exec(FINDING_REVIEW_DDL)
+  const reviews = new Map<string, { verdict: ReviewVerdict; reason: string | null; reviewedAt: number }>()
+  for (const r of w.db.prepare('SELECT target_kind, target_id, verdict, reason, reviewed_at FROM finding_review').all() as Array<{
+    target_kind: string
+    target_id: string
+    verdict: string
+    reason: string | null
+    reviewed_at: number
+  }>) {
+    reviews.set(`${r.target_kind}|${r.target_id}`, {
+      verdict: r.verdict === 'approved' ? 'approved' : r.verdict === 'rejected' ? 'rejected' : 'pending',
+      reason: r.reason,
+      reviewedAt: r.reviewed_at
+    })
+  }
+  const verdictOf = (kind: ReviewKind, id: string): { verdict: ReviewVerdict; reason: string | null; reviewedAt: number | null } => {
+    const hit = reviews.get(`${kind}|${id}`)
+    return hit ? { verdict: hit.verdict, reason: hit.reason, reviewedAt: hit.reviewedAt } : { verdict: 'pending', reason: null, reviewedAt: null }
+  }
+
+  const out: CaseReportItem[] = []
+
+  for (const e of listEvents(wsId)) {
+    out.push({
+      kind: 'event',
+      id: e.id,
+      title: e.label,
+      detail: e.uncertainty ? `${e.description ? e.description + ' — ' : ''}UNSETTLED: ${e.uncertainty}` : (e.description ?? null),
+      hosts: e.hosts,
+      actor: e.actor,
+      support: e.evidence.length,
+      flags: [
+        // A contested reading is where the analyst's judgement is most needed and the agent's is
+        // least reliable, so it sorts to the top of the queue rather than blending in.
+        ...(e.uncertainty ? ['unsettled'] : []),
+        ...(e.technique ? [e.technique] : []),
+        // A single-source event in a multi-artifact case is usually under-corroborated — worth
+        // surfacing in a review queue, where deciding "is this solid" is the entire task.
+        ...(e.evidence.length <= 1 ? ['single-source'] : [])
+      ],
+      ...verdictOf('event', e.id)
+    })
+  }
+
+  for (const l of listLeads(wsId)) {
+    out.push({
+      kind: 'lead',
+      id: l.id,
+      title: l.statement,
+      detail: l.whyUncertain ?? null,
+      hosts: [],
+      actor: 'ai',
+      support: l.grounding.length,
+      flags: ['unproven', ...(l.status !== 'open' ? [l.status] : [])],
+      ...verdictOf('lead', l.id)
+    })
+  }
+
+  for (const n of listNegatives(wsId)) {
+    const scopeBits: string[] = []
+    if (n.kind === 'absence') {
+      const pattern = n.scope.value ?? n.scope.search ?? (n.scope.filters ? 'filter' : null)
+      scopeBits.push(`searched ${n.scope.sourceIds.length} source(s)`)
+      if (pattern) scopeBits.push(`for ${pattern}`)
+      if (n.scope.timeFrom != null || n.scope.timeTo != null) scopeBits.push('in a time window')
+      scopeBits.push('— 0 rows')
+    }
+    const negDetail = [n.whyItMatters, scopeBits.length ? scopeBits.join(' ') : null].filter(Boolean).join(' · ') || null
+    out.push({
+      kind: 'negative',
+      id: n.id,
+      title: n.statement,
+      detail: negDetail,
+      hosts: n.scope.hosts ?? [],
+      actor: n.actor,
+      support: n.scope.sourceIds.length,
+      flags: [
+        n.kind === 'gap' ? 'evidence-gap' : 'absence',
+        // A stale or overturned absence must never read as settled in the summation — that is
+        // exactly how a "this host was clean" conclusion goes wrong.
+        ...(n.stale ? ['stale'] : []),
+        ...((n.lastResult ?? 0) > 0 ? ['overturned'] : [])
+      ],
+      ...verdictOf('negative', n.id)
+    })
+  }
+
+  // Only JUDGED entities are claims. An entity that merely exists in the derived spine is data, not
+  // an assertion, and putting every host in the review queue would bury the ones someone ruled on.
+  for (const en of listEntities(wsId)) {
+    const uncollected = en.kind === 'system' && !en.collected
+    if (en.status === 'unknown' && !uncollected) continue
+    out.push({
+      kind: 'entity',
+      id: en.id,
+      title: `${en.kind === 'system' ? 'System' : 'Account'} ${en.name} — ${en.status}`,
+      detail: en.notes ?? null,
+      hosts: en.kind === 'system' ? [en.name] : [],
+      actor: en.actor ?? 'ai',
+      support: en.eventCount,
+      flags: [en.status, ...(uncollected ? ['not-collected'] : []), ...(en.origin === 'asserted' ? ['asserted'] : [])],
+      ...verdictOf('entity', en.id)
+    })
+  }
+
+  // Unsettled and overturned claims first — the queue should open on what needs a human, not on
+  // whatever happened to be recorded earliest.
+  const rank = (i: CaseReportItem): number =>
+    i.flags.includes('overturned') ? 0 : i.flags.includes('unsettled') ? 1 : i.flags.includes('stale') ? 2 : i.flags.includes('single-source') ? 3 : 4
+  return out.sort((a, b) => rank(a) - rank(b))
 }
 
 // ---- IOC catalog ----
@@ -1459,14 +2773,6 @@ export function listCoverage(wsId: string): number[] {
   return (w.db.prepare('SELECT source_id FROM ai_coverage').all() as Array<{ source_id: number }>).map((r) => r.source_id)
 }
 
-/** Clear the coverage record (a future "re-triage from scratch" reset). */
-export function clearCoverage(wsId: string): void {
-  const w = workspaces.get(wsId)
-  if (!w) return
-  w.db.exec(AI_COVERAGE_DDL)
-  w.db.exec('DELETE FROM ai_coverage')
-}
-
 // ---- AI investigation state: plan + progress notes (persistent, per workspace) ----------------
 // Stored in the existing ws_meta key/value table (keys ai_plan / ai_notes / ai_state_updated). This
 // is the investigation's living plan + where-I-was, so a timeout/restart resumes cleanly. Both the
@@ -1534,109 +2840,6 @@ export function setInvestigationNotes(wsId: string, notes: string): void {
   ensureWsMeta(w)
   wsMetaSet(w, 'ai_notes', String(notes ?? '').slice(0, 5000))
   wsMetaSet(w, 'ai_state_updated', String(Date.now()))
-}
-
-// ---- AI conversations: saved chat transcripts (persistent, per workspace) ----------------------
-// Each workspace keeps a history of assistant conversations so a chat is never lost: "New chat"
-// archives the current one and starts another, and any past one can be resumed. `turns` is the
-// renderer's display-state JSON (opaque here). "General" (no-workspace) chats live in renderer
-// localStorage, not here. Stored per-workspace so they travel with the .workspace file, alongside
-// the investigation plan/events/iocs.
-
-const AI_CONV_DDL =
-  'CREATE TABLE IF NOT EXISTS ai_conversations (id TEXT PRIMARY KEY, title TEXT, created_at INTEGER, updated_at INTEGER, turn_count INTEGER, turns TEXT)'
-
-const CONV_TURNS_MAX_BYTES = 4_000_000 // sanity cap per conversation; refuse to bloat the db
-
-export interface ConversationMeta {
-  id: string
-  title: string
-  createdAt: number
-  updatedAt: number
-  turnCount: number
-}
-export interface Conversation extends ConversationMeta {
-  turns: unknown[]
-}
-
-function ensureConvTable(w: { db: Database.Database }): void {
-  w.db.exec(AI_CONV_DDL)
-}
-
-/** List a workspace's conversations (newest first), without the heavy `turns` payload. */
-export function listConversations(wsId: string): ConversationMeta[] {
-  const w = workspaces.get(wsId)
-  if (!w) return []
-  ensureConvTable(w)
-  const rows = w.db
-    .prepare('SELECT id, title, created_at, updated_at, turn_count FROM ai_conversations ORDER BY updated_at DESC')
-    .all() as Array<{ id: string; title: string | null; created_at: number; updated_at: number; turn_count: number | null }>
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title ?? '',
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-    turnCount: r.turn_count ?? 0
-  }))
-}
-
-/** Read one full conversation (with its turns), or null if missing. */
-export function getConversation(wsId: string, id: string): Conversation | null {
-  const w = workspaces.get(wsId)
-  if (!w) return null
-  ensureConvTable(w)
-  const row = w.db
-    .prepare('SELECT id, title, created_at, updated_at, turn_count, turns FROM ai_conversations WHERE id = ?')
-    .get(id) as
-    | { id: string; title: string | null; created_at: number; updated_at: number; turn_count: number | null; turns: string | null }
-    | undefined
-  if (!row) return null
-  let turns: unknown[] = []
-  try {
-    const parsed = row.turns ? JSON.parse(row.turns) : []
-    if (Array.isArray(parsed)) turns = parsed
-  } catch {
-    turns = []
-  }
-  return { id: row.id, title: row.title ?? '', createdAt: row.created_at, updatedAt: row.updated_at, turnCount: row.turn_count ?? turns.length, turns }
-}
-
-/** Create-or-replace a conversation's title + turns. Preserves the original created_at. Returns the
- *  new updatedAt (or null if the workspace is gone or the payload is too large to store). */
-export function upsertConversation(
-  wsId: string,
-  conv: { id: string; title?: string; turns: unknown[] }
-): { updatedAt: number } | null {
-  const w = workspaces.get(wsId)
-  if (!w || !conv?.id) return null
-  ensureConvTable(w)
-  const turns = Array.isArray(conv.turns) ? conv.turns : []
-  const turnsJson = JSON.stringify(turns)
-  if (turnsJson.length > CONV_TURNS_MAX_BYTES) return null // don't bloat the db with a runaway transcript
-  const now = Date.now()
-  const existing = w.db.prepare('SELECT created_at FROM ai_conversations WHERE id = ?').get(conv.id) as { created_at: number } | undefined
-  const createdAt = existing?.created_at ?? now
-  const title = String(conv.title ?? '').slice(0, 200)
-  w.db
-    .prepare('INSERT OR REPLACE INTO ai_conversations (id, title, created_at, updated_at, turn_count, turns) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(conv.id, title, createdAt, now, turns.length, turnsJson)
-  return { updatedAt: now }
-}
-
-/** Rename a conversation (title only; leaves updated_at so the list order is stable). */
-export function renameConversation(wsId: string, id: string, title: string): void {
-  const w = workspaces.get(wsId)
-  if (!w) return
-  ensureConvTable(w)
-  w.db.prepare('UPDATE ai_conversations SET title = ? WHERE id = ?').run(String(title ?? '').slice(0, 200), id)
-}
-
-/** Delete a conversation for good. */
-export function deleteConversation(wsId: string, id: string): void {
-  const w = workspaces.get(wsId)
-  if (!w) return
-  ensureConvTable(w)
-  w.db.prepare('DELETE FROM ai_conversations WHERE id = ?').run(id)
 }
 
 /**
@@ -2202,17 +3405,6 @@ export async function buildFilterIndex(
   return total
 }
 
-export function getColumnUniqueValues(
-  tabId: string,
-  col: string,
-  filters?: Filter[],
-  limit?: number
-): Array<{ val: string; cnt: number }> {
-  const e = get(tabId)
-  const q = buildDistinctSql(col, filters, limit ?? 1000, e.table)
-  return e.db.prepare(q.sql).all(...q.params) as Array<{ val: string; cnt: number }>
-}
-
 interface DistinctResult {
   rows: Array<{ val: string; cnt: number }>
   total: number
@@ -2264,10 +3456,60 @@ export async function getColumnDistinctChunked(
   return { rows, total: counts.size, truncated: capped || entries.length > rows.length }
 }
 
-export function getColumnDistinctCount(tabId: string, col: string, filters?: Filter[]): number {
+export interface AggregateOpts {
+  col: string
+  by?: string
+  bucket?: TimeBucket
+  filters?: Filter[]
+  search?: string
+  limit: number
+  order: 'count' | 'value'
+}
+
+/** GROUP BY … COUNT over a column (optionally time-bucketed and/or cross-tabbed against `by`), with
+ *  the same filter/search grammar as the row query. One query for a whole distribution/histogram. */
+export function aggregate(
+  tabId: string,
+  opts: AggregateOpts
+): { groups: Array<{ value: string; by?: string; count: number }>; returned: number; totalBuckets: number; truncated: boolean } {
   const e = get(tabId)
-  const q = buildDistinctCountSql(col, filters, e.table)
-  return (e.db.prepare(q.sql).get(...q.params) as { n: number }).n
+  const kindOf = (c: string): TimeKind | null => (e.meta.columns.find((m) => m.name === c)?.time as TimeKind | undefined) ?? null
+  const limit = Math.max(1, opts.limit)
+  const q = buildAggregateSql(
+    e.meta.columns,
+    {
+      col: opts.col,
+      colKind: kindOf(opts.col),
+      by: opts.by,
+      byKind: opts.by ? kindOf(opts.by) : null,
+      bucket: opts.bucket,
+      filters: opts.filters,
+      search: opts.search,
+      limit: limit + 1, // pull one extra row to detect truncation
+      order: opts.order
+    },
+    e.table
+  )
+  const rows = e.db.prepare(q.sql).all(...q.params) as Array<{ gv: string | null; bv?: string | null; n: number }>
+  const truncated = rows.length > limit
+  const groups = rows.slice(0, limit).map((r) => ({
+    value: r.gv == null ? '' : String(r.gv),
+    ...(opts.by ? { by: r.bv == null ? '' : String(r.bv) } : {}),
+    count: r.n
+  }))
+  // Total distinct buckets (ignoring the limit) so a truncated result reads "20 of 67", not just
+  // "truncated" — the caller can tell whether it saw nearly everything or a small slice. Only worth
+  // the extra query when the limit actually bit.
+  let totalBuckets = groups.length
+  if (truncated) {
+    const cq = buildAggregateCountSql(
+      e.meta.columns,
+      { col: opts.col, colKind: kindOf(opts.col), by: opts.by, byKind: opts.by ? kindOf(opts.by) : null, bucket: opts.bucket, filters: opts.filters, search: opts.search },
+      e.table
+    )
+    totalBuckets = (e.db.prepare(cq.sql).get(...cq.params) as { n: number }).n
+  }
+  return { groups, returned: groups.length, totalBuckets, truncated }
 }
 
 export function getColumnLongest(tabId: string, col: string): string {
@@ -2293,6 +3535,29 @@ export function getColumnStats(tabId: string, col: string): CsvColumnStats {
     distinct_: number
   }
   return { count: r.count, nullCount: r.nullCount, distinct: r.distinct_ }
+}
+
+/**
+ * The epoch-second span of values actually present in a time column.
+ *
+ * Exists so an empty time-filtered search can explain itself. "0 rows" is indistinguishable from a
+ * true negative, and the analyst's real mistake is usually filtering on a column that doesn't mean
+ * what they assumed — an AppCompatCache `LastModifiedTimeUTC` is the BINARY's mtime, so a March-2025
+ * window legitimately matches nothing. Reporting the column's real span turns a dead end into an
+ * obvious diagnosis.
+ */
+export function getTimeColumnRange(tabId: string, col: string, tkind: TimeKind): { tsMin: number | null; tsMax: number | null } {
+  const e = get(tabId)
+  const q = buildTimeRangeSql(col, tkind, e.table)
+  const r = e.db.prepare(q.sql).get(...q.params) as { lo: string | number | null; hi: string | number | null }
+  const toEpoch = (v: string | number | null): number | null => {
+    if (v == null || v === '') return null
+    if (tkind === 'epoch_ms') return Math.floor(Number(v) / 1000)
+    if (tkind === 'epoch_s') return Number(v)
+    const ms = Date.parse(String(v))
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
+  }
+  return { tsMin: toEpoch(r?.lo ?? null), tsMax: toEpoch(r?.hi ?? null) }
 }
 
 export function getMeta(tabId: string): CsvTableMeta | null {

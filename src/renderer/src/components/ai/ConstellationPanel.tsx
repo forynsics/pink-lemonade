@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ExternalLink, Maximize2, Minimize2, Network, Trash2, X } from 'lucide-react'
 import type { CsvEvent, CsvIoc } from '../../state/csvTypes'
 import { Constellation } from './Constellation'
+import { usePanelWidth } from '../../state/panelWidth'
 
 // The side-panel host for the constellation. Thin shell: loads the workspace's findings, handles
 // resize/maximize and clear, and mounts the host-agnostic <Constellation>. The "pop out" button
 // mounts the SAME <Constellation> in its own window (ConstellationPopout) — the graph code is shared.
 
-const MIN_W = 360
-const MAX_W = 900
 
 export function ConstellationPanel({
   open,
@@ -19,7 +18,8 @@ export function ConstellationPanel({
   iocRefreshKey,
   sources,
   onPivot,
-  onSendToIntel
+  onSendToIntel,
+  focusEventId
 }: {
   open: boolean
   onClose: () => void
@@ -27,20 +27,24 @@ export function ConstellationPanel({
   wsId: string | null
   /** Active workspace name — the pop-out window's subtitle. */
   workspaceName?: string | null
-  /** Bump to reload events (e.g. after the assistant records one). */
+  /** Bump to reload events (e.g. after the agent records one). */
   refreshKey: number
-  /** Bump to reload the IOC catalog (the "IOCs" view) after the assistant records one. */
+  /** Bump to reload the IOC catalog (the "IOCs" view) after the agent records one. */
   iocRefreshKey: number
   /** Source id → group label, for clustering the constellation's source column by host/system. */
   sources: Array<{ sourceId: number; group?: string | null }>
   onPivot: (sourceId: number, rids: number[]) => void
   /** Send an enrichable IOC's value to the Intel grid. */
   onSendToIntel?: (values: string[]) => void
+  /** Focus an event on open (the Case Report's "open in Constellation"). */
+  focusEventId?: { id: string; token: number } | null
 }): JSX.Element | null {
   const [events, setEvents] = useState<CsvEvent[]>([])
   const [iocs, setIocs] = useState<CsvIoc[]>([])
   const [iocLinks, setIocLinks] = useState<Array<{ iocId: string; eventIds: string[] }>>([])
-  const [width, setWidth] = useState(520)
+  // Persisted + viewport-relative: this panel used to reopen at a fixed width every time,
+  // which is why it always needed resizing (see state/panelWidth).
+  const { width, setWidth, clamp } = usePanelWidth({ key: 'pink-lemonade:panel-w:constellation', min: 360, max: 1100, defaultFraction: 0.4 })
   const [maximized, setMaximized] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
 
@@ -70,7 +74,7 @@ export function ConstellationPanel({
     e.preventDefault()
     const startX = e.clientX
     const startW = width
-    const onMove = (ev: MouseEvent): void => setWidth(Math.min(MAX_W, Math.max(MIN_W, startW + (startX - ev.clientX))))
+    const onMove = (ev: MouseEvent): void => setWidth(clamp(startW + (startX - ev.clientX)))
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -158,6 +162,7 @@ export function ConstellationPanel({
 
       <div className="flex-1 min-h-0">
         <Constellation
+          focusEventId={focusEventId}
           events={events}
           iocs={iocs}
           iocLinks={iocLinks}

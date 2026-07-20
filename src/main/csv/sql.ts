@@ -48,9 +48,9 @@ export type Filter =
   // those specific indicators (the "zero in" facet). `exclude` flips it to "rows that do NOT hit
   // (any of) these" (right-click an indicator). Like the tag op, it resolves by source id.
   | { op: 'sighting'; indicators?: string[]; exclude?: boolean }
-  // AI-accountability marks: rows the AI assistant marked (✨) while asserting something during
+  // AI-accountability marks: rows the AI agent marked (✨) while asserting something during
   // triage. Its own dimension (the `ai_marks` table), so the analyst can filter to exactly what the
-  // assistant flagged. `exclude` flips it to "rows the AI did NOT mark". Resolves by source id.
+  // agent flagged. `exclude` flips it to "rows the AI did NOT mark". Resolves by source id.
   | { op: 'aimark'; exclude?: boolean }
   // A specific set of positional rowids — used to pivot the grid to EXACTLY a constellation event's
   // evidence rows (not a broad keyword). The rids are validated integers, so they bind safely.
@@ -511,22 +511,6 @@ export function buildTagCountsSql(
   return { sql, params }
 }
 
-export function buildDistinctSql(
-  col: string,
-  filters: Filter[] | undefined,
-  limit: number,
-  table = 'data'
-): { sql: string; params: unknown[] } {
-  assertTable(table)
-  assertCol(col)
-  const where = buildWhere(filters, undefined, table)
-  const lim = clamp(limit, 1, DISTINCT_CAP)
-  const sql =
-    `SELECT ${col} AS val, COUNT(*) AS cnt FROM ${table}${where.sql}` +
-    ` GROUP BY ${col} ORDER BY cnt DESC, val ASC LIMIT ?`
-  return { sql, params: [...where.params, lim] }
-}
-
 /**
  * One rowid slice of a column's distinct values + per-slice counts, ANDed with the predicate.
  * Driving distinct in chunks (merging the per-slice counts in JS) keeps the worker responsive +
@@ -549,16 +533,84 @@ export function buildDistinctChunkSql(
   }
 }
 
-/** True number of distinct values in a column (honours filters) — not capped by the list limit. */
-export function buildDistinctCountSql(
-  col: string,
-  filters?: Filter[],
+/** How a time column is bucketed for a histogram (strftime format applied to epoch seconds). */
+export type TimeBucket = 'minute' | 'hour' | 'day' | 'month' | 'year' | 'hourofday' | 'dayofweek'
+const BUCKET_FMT: Record<TimeBucket, string> = {
+  minute: '%Y-%m-%dT%H:%M',
+  hour: '%Y-%m-%dT%H:00',
+  day: '%Y-%m-%d',
+  month: '%Y-%m',
+  year: '%Y',
+  hourofday: '%H', // 00..23 — "how many per hour of the day"
+  dayofweek: '%w' // 0=Sunday..6 — "how many per weekday"
+}
+
+/** The GROUP BY expression for a column: the raw column, or a time-bucket label when `bucket` is set
+ *  and the column is a known time column. */
+function groupExpr(col: string, kind: TimeKind | null | undefined, bucket?: TimeBucket): string {
+  if (bucket && kind) return `strftime('${BUCKET_FMT[bucket]}', ${colTimeExpr(col, kind)}, 'unixepoch')`
+  return col
+}
+
+/**
+ * Aggregate (GROUP BY … COUNT) over a column — a histogram / distribution in one query instead of N.
+ * Optionally: bucket a time column (hour/day/…), cross-tabulate against a second column (`by` → a 2-D
+ * pivot), and restrict with the same filter/search grammar as the row query. Ordered by count desc by
+ * default, or by the bucket value ascending (`order: 'value'`) for a chronological time histogram.
+ */
+export function buildAggregateSql(
+  cols: ColumnMap[],
+  opts: {
+    col: string
+    colKind?: TimeKind | null
+    by?: string
+    byKind?: TimeKind | null
+    bucket?: TimeBucket
+    filters?: Filter[]
+    search?: string
+    limit: number
+    order: 'count' | 'value'
+  },
   table = 'data'
-): { sql: string; params: unknown[] } {
+): { sql: string; params: (string | number)[] } {
   assertTable(table)
-  assertCol(col)
-  const where = buildWhere(filters, undefined, table)
-  return { sql: `SELECT COUNT(DISTINCT ${col}) AS n FROM ${table}${where.sql}`, params: where.params }
+  assertCol(opts.col)
+  if (opts.by) assertCol(opts.by)
+  const gExpr = groupExpr(opts.col, opts.colKind, opts.bucket)
+  const bExpr = opts.by ? groupExpr(opts.by, opts.byKind, opts.bucket) : null
+  const where = buildWhere(opts.filters, opts.search ? { term: opts.search, cols } : undefined, table)
+  const selects = [`${gExpr} AS gv`]
+  const groupBys = ['gv']
+  if (bExpr) {
+    selects.push(`${bExpr} AS bv`)
+    groupBys.push('bv')
+  }
+  selects.push('COUNT(*) AS n')
+  const orderBy = opts.order === 'value' ? 'gv ASC' + (bExpr ? ', bv ASC' : '') : 'n DESC, gv ASC'
+  const sql = `SELECT ${selects.join(', ')} FROM ${table}${where.sql} GROUP BY ${groupBys.join(', ')} ORDER BY ${orderBy} LIMIT ?`
+  return { sql, params: [...where.params, opts.limit] }
+}
+
+/**
+ * How many DISTINCT buckets the same aggregate would produce, ignoring the limit — so a truncated
+ * result can report "20 of 67" instead of just `truncated: true` (which leaves the caller unable to
+ * tell whether it saw nearly everything or a small slice).
+ */
+export function buildAggregateCountSql(
+  cols: ColumnMap[],
+  opts: { col: string; colKind?: TimeKind | null; by?: string; byKind?: TimeKind | null; bucket?: TimeBucket; filters?: Filter[]; search?: string },
+  table = 'data'
+): { sql: string; params: (string | number)[] } {
+  assertTable(table)
+  assertCol(opts.col)
+  if (opts.by) assertCol(opts.by)
+  const gExpr = groupExpr(opts.col, opts.colKind, opts.bucket)
+  const bExpr = opts.by ? groupExpr(opts.by, opts.byKind, opts.bucket) : null
+  const where = buildWhere(opts.filters, opts.search ? { term: opts.search, cols } : undefined, table)
+  const selects = [`${gExpr} AS gv`, ...(bExpr ? [`${bExpr} AS bv`] : [])]
+  const groupBys = ['gv', ...(bExpr ? ['bv'] : [])]
+  const inner = `SELECT ${selects.join(', ')} FROM ${table}${where.sql} GROUP BY ${groupBys.join(', ')}`
+  return { sql: `SELECT COUNT(*) AS n FROM (${inner})`, params: where.params }
 }
 
 /** The longest value in a column (for auto-fit column width), truncated to `cap` chars. */
@@ -592,6 +644,22 @@ export function buildStatsSql(col: string, table = 'data'): { sql: string; param
     ` SUM(CASE WHEN ${col} IS NULL OR ${col} = '' THEN 1 ELSE 0 END) AS nullCount,` +
     ` COUNT(DISTINCT ${col}) AS distinct_` +
     ` FROM ${table}`
+  return { sql, params: [] }
+}
+
+/**
+ * MIN/MAX of a time column, for explaining an empty time-filtered result.
+ *
+ * Epoch columns are stored as TEXT, so a plain MIN/MAX would compare them lexically ("9" > "10") and
+ * report a range that never happened. CAST makes the comparison numeric for those kinds; ISO text
+ * sorts chronologically already. Empty cells are excluded so a sparse column reports the span of the
+ * values it actually has.
+ */
+export function buildTimeRangeSql(col: string, tkind: TimeKind, table = 'data'): { sql: string; params: unknown[] } {
+  assertTable(table)
+  assertCol(col)
+  const v = tkind === 'iso' ? col : `CAST(${col} AS INTEGER)`
+  const sql = `SELECT MIN(${v}) AS lo, MAX(${v}) AS hi FROM ${table} WHERE ${col} IS NOT NULL AND ${col} <> ''`
   return { sql, params: [] }
 }
 

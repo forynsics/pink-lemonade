@@ -1,6 +1,7 @@
 import { parse } from 'csv-parse'
-import { createReadStream } from 'fs'
+import { createReadStream, closeSync, openSync, readSync } from 'fs'
 import { stat } from 'fs/promises'
+import { detectEncoding, utf16beReason, type TextEncodingKind } from './evidence'
 import { detectDelimiter, sanitizeHeaders, type ColumnMap } from './sanitize'
 
 // Streaming CSV/TSV ingest. The low-level RFC-4180 tokenizing (quotes, escapes, embedded
@@ -34,9 +35,34 @@ export interface ParseResult {
   canceled: boolean
 }
 
+/**
+ * How this file's bytes decode. Eric Zimmerman's tools emit UTF-16LE console logs, which make up a
+ * good part of a KAPE package — reading those as UTF-8 yields NUL-riddled garbage, so sniff first and
+ * hand the right encoding to both the delimiter probe and the parse.
+ */
+export function sniffEncoding(path: string): TextEncodingKind {
+  let fd: number | null = null
+  try {
+    fd = openSync(path, 'r')
+    const head = Buffer.alloc(8192)
+    const read = readSync(fd, head, 0, head.length, 0)
+    return detectEncoding(head.subarray(0, read))
+  } catch {
+    return 'utf8' // unreadable here will fail loudly in the real read
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 /** Read just the first line of a file (for delimiter detection), then stop reading. */
-async function readFirstLine(path: string): Promise<string> {
-  const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 64 * 1024 })
+async function readFirstLine(path: string, encoding: BufferEncoding): Promise<string> {
+  const stream = createReadStream(path, { encoding, highWaterMark: 64 * 1024 })
   try {
     let buf = ''
     for await (const chunk of stream as AsyncIterable<string>) {
@@ -62,12 +88,20 @@ export async function parseCsvStream(
 ): Promise<ParseResult> {
   const { size } = await stat(path)
   const hwm = size > 500 * 1024 * 1024 ? 64 * 1024 * 1024 : 4 * 1024 * 1024
-  const delimiter = opts.delimiter ?? detectDelimiter(await readFirstLine(path))
+  const encoding = sniffEncoding(path)
+  if (encoding === 'utf16be') throw new Error(utf16beReason(path.split(/[\\/]/).pop() ?? path))
+  const readAs: BufferEncoding | undefined = encoding === 'utf16le' ? 'utf16le' : undefined
+  const delimiter = opts.delimiter ?? detectDelimiter(await readFirstLine(path, readAs ?? 'utf8'))
   const batchSize = opts.batchSize ?? 5000
+  // csv-parse counts what it consumed; for UTF-16LE that's decoded CHARACTERS, roughly half the
+  // file's bytes — without scaling, the progress bar would stall at ~50% on those files.
+  const byteScale = readAs === 'utf16le' ? 2 : 1
 
   // Bytes/encoding/BOM are owned by csv-parse: it reads the raw byte stream, strips a leading BOM,
   // and decodes UTF-8 into string records. We feed it Buffers (no stream encoding) and read records.
-  const stream = createReadStream(path, { highWaterMark: hwm })
+  // UTF-16LE is the exception — Node decodes it for us and csv-parse takes the resulting strings,
+  // because csv-parse itself only understands UTF-8 bytes.
+  const stream = createReadStream(path, { highWaterMark: hwm, ...(readAs ? { encoding: readAs } : {}) })
   const parser = parse({
     delimiter,
     bom: true, // strip a leading UTF-8 BOM (Excel/Windows CSV exports prepend it)
@@ -88,7 +122,7 @@ export async function parseCsvStream(
     const cont = ev.onRows(batch)
     batch = []
     if (cont === false) canceled = true
-    ev.onProgress?.(parser.info.bytes, rowsRead)
+    ev.onProgress?.(parser.info.bytes * byteScale, rowsRead)
   }
 
   try {
@@ -116,6 +150,6 @@ export async function parseCsvStream(
     parser.destroy()
   }
 
-  ev.onProgress?.(parser.info.bytes, rowsRead)
+  ev.onProgress?.(parser.info.bytes * byteScale, rowsRead)
   return { columns: columns ?? [], delimiter, rowsRead, canceled }
 }

@@ -1,4 +1,4 @@
-import { NotebookPen, FolderPlus, FolderOpen, FolderInput, Clock, Plus, X, HardDrive, Radar, Sparkles } from 'lucide-react'
+import { NotebookPen, FolderPlus, FolderOpen, FolderInput, Clock, Plus, X, HardDrive, Radar, ShieldCheck, Sparkles } from 'lucide-react'
 import { Logo } from './Logo'
 import type { RecentFile } from '../state/recent'
 
@@ -63,6 +63,10 @@ export function Welcome({
   onNewEnrichment,
   workspaceDir,
   onChangeWorkspaceDir,
+  evidenceRoot,
+  onChangeEvidenceRoot,
+  onClearEvidenceRoot,
+  folderError,
   onRemoveRecent,
   onClearRecent
 }: {
@@ -77,6 +81,12 @@ export function Welcome({
   /** Where workspaces are stored + the Open-Workspace dialog default. */
   workspaceDir: string
   onChangeWorkspaceDir: () => void
+  /** The one folder the AI agent may import evidence from; null = unset, so its imports refuse. */
+  evidenceRoot: string | null
+  onChangeEvidenceRoot: () => void
+  onClearEvidenceRoot: () => void
+  /** Why the last folder choice was refused (the two folders may not overlap); null when fine. */
+  folderError: string | null
   onRemoveRecent: (path: string) => void
   onClearRecent: () => void
 }): JSX.Element {
@@ -105,11 +115,11 @@ export function Welcome({
           <Action cls="welcome__new-enrichment" onClick={onNewEnrichment} icon={<Radar className={ico} />} title="Global Intel" sub="Bulk-look-up IPs / domains / hashes" />
         </div>
 
-        {/* The Assistant has no card of its own: it works on an open workspace, so a button here would
+        {/* The AI agent has no card of its own: it works on an open workspace, so a button here would
             land you in an empty panel. Point at where it lives instead. */}
         <div className="mb-10 flex items-center gap-1.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
           <Sparkles className="w-3 h-3 shrink-0 text-citrus-pink" />
-          Open a workspace to investigate it with the Assistant.
+          Open a workspace, then drive it from your AI agent in a terminal.
         </div>
 
         <div className="welcome__ws-dir mb-10 flex items-center gap-2 rounded-lg border border-citrus-border/70 bg-citrus-card/50 px-3 py-2 text-[11px] dark:border-citrus-night-border/70 dark:bg-citrus-night-card/40">
@@ -124,6 +134,46 @@ export function Welcome({
           >
             Change…
           </button>
+        </div>
+
+        {/* The agent's read boundary. Shown next to the workspace folder because the analyst should
+            see both roots before a case starts — and because an unset root is not an error state to
+            discover later, it's simply "the agent can't import yet". */}
+        <div className="welcome__evidence-root -mt-8 mb-2 flex items-center gap-2 rounded-lg border border-citrus-border/70 bg-citrus-card/50 px-3 py-2 text-[11px] dark:border-citrus-night-border/70 dark:bg-citrus-night-card/40">
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-citrus-muted dark:text-citrus-night-muted" />
+          <span className="shrink-0 text-citrus-muted dark:text-citrus-night-muted" title="Your AI agent can import evidence only from inside this folder.">
+            Evidence folder
+          </span>
+          <span
+            className={`min-w-0 flex-1 truncate font-mono ${evidenceRoot ? 'text-citrus-dark dark:text-citrus-night-text' : 'italic text-citrus-muted dark:text-citrus-night-muted'}`}
+            title={evidenceRoot ?? 'Not set — your AI agent cannot import evidence until you choose a folder.'}
+          >
+            {evidenceRoot ?? 'Not set — the AI agent cannot import evidence'}
+          </span>
+          {evidenceRoot && (
+            <button
+              onClick={onClearEvidenceRoot}
+              className="welcome__clear-evidence shrink-0 rounded-md border border-citrus-border px-2 py-0.5 font-semibold text-citrus-muted hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted"
+            >
+              Clear
+            </button>
+          )}
+          <button
+            onClick={onChangeEvidenceRoot}
+            className="welcome__change-evidence shrink-0 rounded-md border border-citrus-border px-2 py-0.5 font-semibold text-citrus-muted hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted"
+          >
+            {evidenceRoot ? 'Change…' : 'Choose…'}
+          </button>
+        </div>
+
+        {/* A refused folder choice must say WHY — the two folders may not overlap, and doing nothing
+            silently after the analyst picked one reads as a broken button. */}
+        <div className="mb-10">
+          {folderError && (
+            <div className="welcome__folder-error rounded-lg border border-citrus-pink/40 bg-citrus-pink/5 px-3 py-2 text-[11px] text-citrus-pink">
+              {folderError}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between mb-2">

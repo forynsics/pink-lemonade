@@ -34,14 +34,24 @@ export function initDbWorker(): void {
       else p.reject(new Error(msg.error ?? 'db worker error'))
     }
   })
-  worker.on('error', (e) => {
-    // A worker-level crash fails every in-flight request rather than hanging them.
+  const teardown = (e: Error): void => {
+    // A worker-level crash/exit fails every in-flight request rather than hanging them — AND clears the
+    // dead handle, so the next call re-inits a fresh worker instead of posting into a corpse and never
+    // resolving (which is exactly what happened while `worker` stayed set to the dead one).
     for (const [, p] of pending) p.reject(e)
     pending.clear()
+    worker = null
+  }
+  worker.on('error', teardown)
+  worker.on('exit', (code) => {
+    if (code !== 0) teardown(new Error(`DB worker exited with code ${code}`))
   })
 }
 
 function w(): Worker {
+  // Re-init if the worker crashed and was torn down, so a post-crash call spawns a fresh worker
+  // instead of throwing. (The in-flight calls that were live at crash time already rejected.)
+  if (!worker) initDbWorker()
   if (!worker) throw new Error('DB worker not started (initDbWorker)')
   return worker
 }

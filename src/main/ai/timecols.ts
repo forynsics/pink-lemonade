@@ -3,7 +3,7 @@
 // to use — they never silently pick a column when the choice is contextual (that's the model's call).
 // Electron-free so they can be unit-tested directly.
 
-import { classifyTime } from '../csv/coltypes'
+import { classifyTime, isEventTime, isPlausibleEpoch, TIME_SENTINEL_FLOOR, timeCeiling } from '../csv/coltypes'
 import { resolveCol } from './colmap'
 import type { WsSource } from './types'
 
@@ -86,22 +86,51 @@ export function spansByColumn(src: WsSource, rows: string[][], timeColRef?: unkn
   return out
 }
 
-/** The overall epoch-second envelope (min of mins, max of maxes) across per-column spans, or
- *  {null,null} when there are none. Kept on event_evidence as a cheap whole-evidence span. */
-export function envelopeOf(spans: ColSpan[]): { tsMin: number | null; tsMax: number | null } {
-  let tsMin: number | null = null
-  let tsMax: number | null = null
-  for (const s of spans) {
-    if (tsMin == null || s.tsMin < tsMin) tsMin = s.tsMin
-    if (tsMax == null || s.tsMax > tsMax) tsMax = s.tsMax
+// Timestamp plausibility lives in csv/coltypes so the DB layer can apply the SAME rule when it
+// derives an event's span; re-exported here for the tool layer.
+export { TIME_SENTINEL_FLOOR, timeCeiling, isPlausibleEpoch, isEventTime }
+
+/** The spans whose timestamps are impossible for recorded evidence (epoch sentinels, future dates).
+ *  These are EXCLUDED from an event's span so one bogus value can't anchor it — but they are never
+ *  discarded: an impossible timestamp is itself forensically interesting (timestomping, a forged PE
+ *  link date), so callers surface it rather than swallow it. */
+export function implausibleSpans(spans: ColSpan[], nowMs?: number): ColSpan[] {
+  return spans.filter((s) => !isPlausibleEpoch(s.tsMin, nowMs) || !isPlausibleEpoch(s.tsMax, nowMs))
+}
+
+/** The overall epoch-second envelope across per-column spans (min of mins, max of maxes), counting only
+ *  PLAUSIBLE timestamps, or {null,null} when none qualify. Stored on event_evidence as the whole-evidence
+ *  span the constellation/Timeline anchors on. */
+export function envelopeOf(spans: ColSpan[], nowMs?: number): { tsMin: number | null; tsMax: number | null } {
+  // Two filters, and the order matters.
+  //
+  // 1. SEMANTICS. Only columns that mean "when this happened" may date the event. Collection stamps
+  //    (SourceAccessed = when KAPE read the file) and reference dates (a LNK target's MACE, a PE
+  //    LinkDate) are real timestamps of the WRONG THING: a logon event was reporting a
+  //    span from the OS binary's install date to the moment of collection, which is where it
+  //    would then plot on the analyst's Timeline.
+  // 2. PLAUSIBILITY. A sentinel (Amcache LinkDate 1970) or future-dated value can't anchor it either.
+  //
+  // Both filters only affect the HEADLINE span. The per-kind `times` (spansByColumn) still report
+  // every column truthfully — a timestomped Target date is itself a finding.
+  const dating = spans.filter((s) => isEventTime(s.kind))
+  // Fall back to all spans when a source offers nothing but reference/collection columns (a jump list
+  // is largely target MACE). Better a span from the wrong clock, clearly visible per-kind, than an
+  // event silently losing its place on the Timeline.
+  const considered = dating.length > 0 ? dating : spans
+  const real: number[] = []
+  for (const s of considered) {
+    if (isPlausibleEpoch(s.tsMin, nowMs)) real.push(s.tsMin)
+    if (isPlausibleEpoch(s.tsMax, nowMs)) real.push(s.tsMax)
   }
-  return { tsMin, tsMax }
+  if (real.length === 0) return { tsMin: null, tsMax: null } // nothing plausible → the event is undated
+  return { tsMin: Math.min(...real), tsMax: Math.max(...real) }
 }
 
 /** The epoch-second min–max span of a set of matched rows' time cells (the envelope across all the
- *  considered time columns), for the constellation time axis. Considers the source's time columns (or
- *  just `timeColRef` when given — the per-evidence override; falls back to all if it doesn't resolve).
- *  Null span = no parseable time in the matched rows (the event renders undated). */
+ *  considered time columns). No production caller — the real path composes envelopeOf(spansByColumn(…))
+ *  inline — but kept as the TEST SEAM for exactly that composition, including the event-vs-metadata
+ *  time-semantics behavior (an MFT row dates by creation, not by its modification stamp). */
 export function spanOf(src: WsSource, rows: string[][], timeColRef?: unknown): { tsMin: number | null; tsMax: number | null } {
   return envelopeOf(spansByColumn(src, rows, timeColRef))
 }

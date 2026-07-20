@@ -663,7 +663,7 @@ export function VirtualGrid({
                   </button>
                 )}
                 {aiMarked && (
-                  <span className="shrink-0 flex" title={aiNote || 'Marked by the AI Assistant'}>
+                  <span className="shrink-0 flex" title={aiNote || 'Marked by your AI agent'}>
                     <Sparkles className="w-3 h-3 text-citrus-pink" />
                   </span>
                 )}

@@ -8,7 +8,7 @@ import type { CoverageTracker, WsCtx, WsSource } from './types'
 
 /** A fresh per-run tracker. */
 export function newCoverage(): CoverageTracker {
-  return { examined: new Set<number>(), recordedEvents: 0 }
+  return { examined: new Set<number>(), seenInSearch: new Set<number>(), recordedEvents: 0, startedAt: Date.now() }
 }
 
 /** Sources that count toward coverage: real imported artifacts. Excludes DERIVED sources (the
@@ -21,7 +21,15 @@ export function coverageUniverse(sources: WsSource[]): WsSource[] {
  *  one most likely to hide activity; a 0-row source is dismissed in a line. */
 export function untouchedSources(sources: WsSource[], cov: CoverageTracker): WsSource[] {
   return coverageUniverse(sources)
-    .filter((s) => !cov.examined.has(s.sourceId))
+    .filter((s) => !cov.examined.has(s.sourceId) && !cov.seenInSearch.has(s.sourceId))
+    .sort((a, b) => b.rowCount - a.rowCount)
+}
+
+/** Sources the agent has only GLIMPSED — a cross-source search returned their rows, but it never
+ *  opened them directly. Worth finishing, but not the same gap as a source nothing has ever read. */
+export function glimpsedSources(sources: WsSource[], cov: CoverageTracker): WsSource[] {
+  return coverageUniverse(sources)
+    .filter((s) => !cov.examined.has(s.sourceId) && cov.seenInSearch.has(s.sourceId))
     .sort((a, b) => b.rowCount - a.rowCount)
 }
 
@@ -44,7 +52,7 @@ export function coverageNudge(ws: WsCtx, cov: CoverageTracker, alreadyNudged: bo
   if (untouched.length === 0) return null
   const list = untouched
     .slice(0, NUDGE_LIST_CAP)
-    .map((s) => `${s.name} (${s.rowCount.toLocaleString()} rows${s.group ? `, ${s.group}` : ''})`)
+    .map((s) => `${s.group ? `${s.group}/` : ''}${s.name} (${s.rowCount.toLocaleString()} rows)`)
     .join('; ')
   const more = untouched.length > NUDGE_LIST_CAP ? ` …and ${untouched.length - NUDGE_LIST_CAP} more` : ''
   return (

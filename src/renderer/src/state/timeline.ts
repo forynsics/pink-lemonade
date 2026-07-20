@@ -20,7 +20,7 @@ export interface TimelineRow {
   source: string
   /** Host/system/origin (the source's group label), or '' when ungrouped. */
   host: string
-  /** User dimension — blank in v1 (no reliable per-source user mapping yet). */
+  /** User dimension — the account(s) an event involves, from its curated `users` attribution. */
   user: string
   /** The matched indicator/term that corroborates this entry — the readable provenance ('' for
    *  filter-based evidence, which has no single term). */

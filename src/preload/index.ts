@@ -43,15 +43,17 @@ const api = {
     ) => ipcRenderer.invoke('ws:addDerivedColumns', { wsId, sourceId, jsonCol, fields }),
     wsBuildTimeline: (wsId: string, header: string[], rows: string[][]) =>
       ipcRenderer.invoke('ws:buildTimeline', { wsId, header, rows }),
+    wsAgentSqlLog: (wsId: string, limit?: number) => ipcRenderer.invoke('ws:agentSqlLog', { wsId, limit }),
     wsGetDir: () => ipcRenderer.invoke('ws:getDir'),
     wsSetDir: (dir: string) => ipcRenderer.invoke('ws:setDir', { dir }),
     wsPickDir: () => ipcRenderer.invoke('ws:pickDir'),
+    // Evidence root — the only tree the AI agent may import from. Analyst-set; no agent-side setter.
+    wsGetEvidenceRoot: () => ipcRenderer.invoke('ws:getEvidenceRoot'),
+    wsSetEvidenceRoot: (dir: string | null) => ipcRenderer.invoke('ws:setEvidenceRoot', { dir }),
+    wsPickEvidenceRoot: () => ipcRenderer.invoke('ws:pickEvidenceRoot'),
     wsTagList: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:tagList', { wsId, sourceId }),
     wsAiMarkList: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:aiMarkList', { wsId, sourceId }),
     wsAiMarkClear: (wsId: string, sourceId: number) => ipcRenderer.invoke('ws:aiMarkClear', { wsId, sourceId }),
-    wsFindingList: (wsId: string) => ipcRenderer.invoke('ws:findingList', { wsId }),
-    wsFindingDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:findingDelete', { wsId, id }),
-    wsFindingClear: (wsId: string) => ipcRenderer.invoke('ws:findingClear', { wsId }),
     wsEventList: (wsId: string) => ipcRenderer.invoke('ws:eventList', { wsId }),
     wsEventDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:eventDelete', { wsId, id }),
     wsEventClear: (wsId: string) => ipcRenderer.invoke('ws:eventClear', { wsId }),
@@ -74,15 +76,25 @@ const api = {
     wsIocEventLinks: (wsId: string) => ipcRenderer.invoke('ws:iocEventLinks', { wsId }),
     wsIocDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:iocDelete', { wsId, id }),
     wsIocClear: (wsId: string) => ipcRenderer.invoke('ws:iocClear', { wsId }),
+    wsLeadList: (wsId: string) => ipcRenderer.invoke('ws:leadList', { wsId }),
+    wsLeadDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:leadDelete', { wsId, id }),
+    wsLeadClear: (wsId: string) => ipcRenderer.invoke('ws:leadClear', { wsId }),
+    wsLeadPromote: (wsId: string, id: string) => ipcRenderer.invoke('ws:leadPromote', { wsId, id }),
+    wsCaseReport: (wsId: string) => ipcRenderer.invoke('ws:caseReport', { wsId }),
+    wsCaseReview: (wsId: string, kind: string, id: string, verdict: string, reason?: string | null) =>
+      ipcRenderer.invoke('ws:caseReview', { wsId, kind, id, verdict, reason }),
+    wsNegativeList: (wsId: string) => ipcRenderer.invoke('ws:negativeList', { wsId }),
+    wsNegativeDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:negativeDelete', { wsId, id }),
+    wsEntityList: (wsId: string) => ipcRenderer.invoke('ws:entityList', { wsId }),
+    wsEntityUpsert: (wsId: string, patch: unknown) => ipcRenderer.invoke('ws:entityUpsert', { wsId, patch }),
+    wsEntityDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:entityDelete', { wsId, id }),
+    wsEntityAliasAdd: (wsId: string, id: string, alias: string) => ipcRenderer.invoke('ws:entityAliasAdd', { wsId, id, alias }),
+    wsEntityLink: (wsId: string, kind: string, primary: string, other: string, same: boolean, reason?: string) =>
+      ipcRenderer.invoke('ws:entityLink', { wsId, kind, primary, other, same, reason }),
+    wsEntityAliasRemove: (wsId: string, id: string, alias: string) => ipcRenderer.invoke('ws:entityAliasRemove', { wsId, id, alias }),
     wsInvestigationGet: (wsId: string) => ipcRenderer.invoke('ws:investigationGet', { wsId }),
     wsInvestigationSetPlan: (wsId: string, plan: unknown[]) => ipcRenderer.invoke('ws:investigationSetPlan', { wsId, plan }),
     wsInvestigationSetNotes: (wsId: string, notes: string) => ipcRenderer.invoke('ws:investigationSetNotes', { wsId, notes }),
-    wsConversationList: (wsId: string) => ipcRenderer.invoke('ws:conversationList', { wsId }),
-    wsConversationGet: (wsId: string, id: string) => ipcRenderer.invoke('ws:conversationGet', { wsId, id }),
-    wsConversationUpsert: (wsId: string, conv: { id: string; title?: string; turns: unknown[] }) =>
-      ipcRenderer.invoke('ws:conversationUpsert', { wsId, conv }),
-    wsConversationRename: (wsId: string, id: string, title: string) => ipcRenderer.invoke('ws:conversationRename', { wsId, id, title }),
-    wsConversationDelete: (wsId: string, id: string) => ipcRenderer.invoke('ws:conversationDelete', { wsId, id }),
     wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) =>
       ipcRenderer.invoke('ws:tagSet', { wsId, sourceId, rids, tag }),
     wsTagByFilter: (wsId: string, sourceId: number, filters: unknown, search: string | undefined, tag: string | null) =>
@@ -185,26 +197,33 @@ const api = {
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', { url })
   },
 
-  // AI assistant: the agent loop + model I/O run in main; a chat run streams text tokens, tool-call
-  // cards, and done/error over the single 'ai:event' channel. The assistant is Claude, run through the
-  // user's own Claude Code login — no API key crosses this bridge (there is none to store).
-  ai: {
-    getConfig: () => ipcRenderer.invoke('ai:getConfig'),
-    setConfig: (cfg: { model?: string }) => ipcRenderer.invoke('ai:setConfig', cfg),
-    listModels: () => ipcRenderer.invoke('ai:listModels'),
-    chat: (req: { reqId: number; messages: unknown[]; wsCtx: unknown; providerId?: string; model?: string }) =>
-      ipcRenderer.invoke('ai:chat', req),
-    cancel: (reqId: number) => ipcRenderer.invoke('ai:cancel', { reqId }),
-    actionResult: (actionId: string, approved: boolean) => ipcRenderer.invoke('ai:actionResult', { actionId, approved }),
-    // Subscribe to a run's streamed events; returns a disposer (contextBridge can't pass the listener back).
-    onEvent: (cb: (p: unknown) => void) => {
-      const h = (_e: unknown, p: unknown): void => cb(p)
-      ipcRenderer.on('ai:event', h)
-      return () => ipcRenderer.removeListener('ai:event', h)
+  // Terminal-driven MCP surface: the app hosts a localhost MCP server so the analyst's own Claude
+  // Code can drive the open workspace. The renderer publishes which workspace is focused, sets up the
+  // working folder, and refreshes the review panels when a terminal tool mutates the workspace.
+  mcp: {
+    status: () => ipcRenderer.invoke('mcp:status'),
+    // Tell main which workspace the terminal should drive (the active tab). Fire-and-forget.
+    setActiveWorkspace: (ws: unknown) => ipcRenderer.send('mcp:setActiveWorkspace', ws),
+    defaultFolder: () => ipcRenderer.invoke('mcp:defaultFolder'),
+    pickFolder: () => ipcRenderer.invoke('mcp:pickFolder'),
+    setupFolder: (dir?: string) => ipcRenderer.invoke('mcp:setupFolder', dir),
+    openFolder: (dir: string) => ipcRenderer.invoke('mcp:openFolder', dir),
+    // Fires when a terminal tool changed workspace state — the panels reload. Returns a disposer.
+    onMutated: (cb: (p: { wsId?: string; tool: string }) => void) => {
+      const h = (_e: unknown, p: unknown): void => cb(p as { wsId?: string; tool: string })
+      ipcRenderer.on('ws:mutated', h)
+      return () => ipcRenderer.removeListener('ws:mutated', h)
+    },
+    // The agent created/opened a case and wants it on screen. The renderer opens it and republishes
+    // setActiveWorkspace, which is what releases the agent's waiting tool call. Returns a disposer.
+    onOpenRequest: (cb: (p: { wsId: string; dbPath: string; name: string }) => void) => {
+      const h = (_e: unknown, p: unknown): void => cb(p as { wsId: string; dbPath: string; name: string })
+      ipcRenderer.on('ws:open-request', h)
+      return () => ipcRenderer.removeListener('ws:open-request', h)
     }
   },
 
-  // Pop-out windows: open a feature (Constellation / Timeline / AI chat) in its own window. The
+  // Pop-out windows: open a feature (Constellation / Timeline / Case Report) in its own window. The
   // payload travels in the window's URL hash; a popout relays grid actions back to the main window
   // (pivot, build-timeline-source, apply-group, refresh) since it doesn't own the grid/docs itself.
   popout: {

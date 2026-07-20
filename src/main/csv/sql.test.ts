@@ -16,12 +16,12 @@ import {
   buildAiMarkApplyByFilterSql,
   buildTagCountsSql,
   buildSweepScanSql,
-  buildDistinctSql,
   buildDistinctChunkSql,
-  buildDistinctCountSql,
   buildLongestSql,
   buildColumnValuesSql,
   buildStatsSql,
+  buildAggregateSql,
+  buildAggregateCountSql,
   HOST_PARAM_LIMIT,
   MAX_ROWS_LIMIT
 } from './sql'
@@ -469,25 +469,12 @@ describe('buildTagCountsSql (filtered tag rollup)', () => {
 })
 
 describe('drill-down builders', () => {
-  it('distinct: GROUP BY col ORDER BY cnt DESC', () => {
-    const { sql, params } = buildDistinctSql('c0', undefined, 50)
-    expect(sql).toBe('SELECT c0 AS val, COUNT(*) AS cnt FROM data GROUP BY c0 ORDER BY cnt DESC, val ASC LIMIT ?')
-    expect(params).toEqual([50])
-  })
-
   it('distinct chunk: grouped slice of a column bounded by rowid, ANDing filters', () => {
     const { sql, params } = buildDistinctChunkSql('c0', [{ col: 'c1', op: 'eq', value: 'US' }], 0, 1_000_000, 'data_2')
     expect(sql).toBe(
       'SELECT c0 AS val, COUNT(*) AS cnt FROM data_2 WHERE rowid > ? AND rowid <= ? AND c1 = ? GROUP BY c0'
     )
     expect(params).toEqual([0, 1_000_000, 'US'])
-  })
-
-  it('distinct count: COUNT(DISTINCT col), honouring filters', () => {
-    expect(buildDistinctCountSql('c0').sql).toBe('SELECT COUNT(DISTINCT c0) AS n FROM data')
-    const { sql, params } = buildDistinctCountSql('c0', [{ col: 'c1', op: 'eq', value: 'US' }])
-    expect(sql).toBe('SELECT COUNT(DISTINCT c0) AS n FROM data WHERE c1 = ?')
-    expect(params).toEqual(['US'])
   })
 
   it('longest: orders by LENGTH desc and truncates with SUBSTR', () => {
@@ -573,8 +560,7 @@ describe('SQL-injection boundary', () => {
     expect(() => buildQueryRowsSql(cols, { limit: 1, offset: 0, sort: { col: evil, dir: 'asc' } })).toThrow(
       /Invalid column/
     )
-    expect(() => buildDistinctSql(evil, undefined, 10)).toThrow(/Invalid column/)
-    expect(() => buildDistinctCountSql(evil)).toThrow(/Invalid column/)
+    expect(() => buildDistinctChunkSql(evil, undefined, 0, 1, 'data')).toThrow(/Invalid column/)
     expect(() => buildLongestSql(evil)).toThrow(/Invalid column/)
     expect(() => buildColumnValuesSql(evil)).toThrow(/Invalid column/)
     expect(() => buildStatsSql(evil)).toThrow(/Invalid column/)
@@ -583,3 +569,75 @@ describe('SQL-injection boundary', () => {
     ).toThrow(/Invalid column/)
   })
 })
+
+describe('buildAggregateSql', () => {
+  const tcols: ColumnMap[] = [
+    { name: 'c0', original: 'user' },
+    { name: 'c1', original: 'op' },
+    { name: 'c2', original: 'time', time: 'iso' }
+  ]
+
+  it('groups by a column and counts, ordered by count desc', () => {
+    const q = buildAggregateSql(tcols, { col: 'c0', limit: 50, order: 'count' })
+    expect(q.sql).toContain('SELECT c0 AS gv, COUNT(*) AS n FROM data')
+    expect(q.sql).toContain('GROUP BY gv')
+    expect(q.sql).toContain('ORDER BY n DESC, gv ASC')
+    expect(q.sql).toMatch(/LIMIT \?$/)
+    expect(q.params).toEqual([50])
+  })
+
+  it('applies filters to restrict the counted rows', () => {
+    const q = buildAggregateSql(tcols, { col: 'c0', filters: [{ col: 'c1', op: 'eq', value: 'UserLoggedIn' }], limit: 10, order: 'count' })
+    expect(q.sql).toContain('WHERE')
+    expect(q.params).toEqual(['UserLoggedIn', 10])
+  })
+
+  it('buckets a time column into an hour histogram, ordered chronologically on request', () => {
+    const q = buildAggregateSql(tcols, { col: 'c2', colKind: 'iso', bucket: 'hour', limit: 24, order: 'value' })
+    expect(q.sql).toContain("strftime('%Y-%m-%dT%H:00', unixepoch(c2), 'unixepoch') AS gv")
+    expect(q.sql).toContain('ORDER BY gv ASC')
+  })
+
+  it('ignores a bucket on a non-time column (no kind → raw grouping)', () => {
+    const q = buildAggregateSql(tcols, { col: 'c0', bucket: 'hour', limit: 10, order: 'count' })
+    expect(q.sql).toContain('SELECT c0 AS gv')
+    expect(q.sql).not.toContain('strftime')
+  })
+
+  it('cross-tabulates against a second column (2-D pivot)', () => {
+    const q = buildAggregateSql(tcols, { col: 'c2', colKind: 'iso', by: 'c0', bucket: 'hourofday', limit: 100, order: 'count' })
+    expect(q.sql).toContain("strftime('%H'")
+    expect(q.sql).toContain('c0 AS bv')
+    expect(q.sql).toContain('GROUP BY gv, bv')
+  })
+
+  it('rejects a non-whitelisted column (SQL-injection boundary)', () => {
+    expect(() => buildAggregateSql(tcols, { col: 'c0; DROP TABLE data', limit: 1, order: 'count' })).toThrow(/Invalid column/)
+    expect(() => buildAggregateSql(tcols, { col: 'c0', by: 'evil', limit: 1, order: 'count' })).toThrow(/Invalid column/)
+  })
+})
+
+describe('buildAggregateCountSql', () => {
+  const tcols: ColumnMap[] = [
+    { name: 'c0', original: 'user' },
+    { name: 'c1', original: 'op' }
+  ]
+
+  it('counts DISTINCT buckets by wrapping the grouped query (so a truncated result can say "20 of 67")', () => {
+    const q = buildAggregateCountSql(tcols, { col: 'c0' })
+    expect(q.sql).toBe('SELECT COUNT(*) AS n FROM (SELECT c0 AS gv FROM data GROUP BY gv)')
+    expect(q.params).toEqual([])
+  })
+
+  it('counts distinct PAIRS for a 2-D pivot and carries the filter params', () => {
+    const q = buildAggregateCountSql(tcols, { col: 'c0', by: 'c1', filters: [{ col: 'c1', op: 'eq', value: 'login' }] })
+    expect(q.sql).toContain('GROUP BY gv, bv')
+    expect(q.sql).toContain('WHERE')
+    expect(q.params).toEqual(['login'])
+  })
+
+  it('rejects a non-whitelisted column (SQL-injection boundary)', () => {
+    expect(() => buildAggregateCountSql(tcols, { col: 'evil; DROP TABLE data' })).toThrow(/Invalid column/)
+  })
+})
+

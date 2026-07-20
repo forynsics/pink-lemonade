@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ClipboardList, Plus, Save, Trash2, X } from 'lucide-react'
-import type { CsvInvestigation, CsvPlanStep } from '../../state/csvTypes'
+import { ArrowUpCircle, ClipboardList, Lightbulb, Plus, Save, Trash2, X } from 'lucide-react'
+import type { CsvInvestigation, CsvLead, CsvPlanStep } from '../../state/csvTypes'
+import { usePanelWidth } from '../../state/panelWidth'
 
 // The Investigation panel — the analyst-facing view of the AI's persistent working state: an editable
 // PLAN (ordered leads with a pending/active/done status) plus a PROGRESS notes field. Both live in the
@@ -8,11 +9,18 @@ import type { CsvInvestigation, CsvPlanStep } from '../../state/csvTypes'
 // resumes cleanly and the analyst can steer the plan directly. Thin shell: loads on open + refreshKey,
 // edits locally, saves back through ws:investigation* IPC.
 
-const MIN_W = 360
-const MAX_W = 900
 
 type Status = CsvPlanStep['status']
 const NEXT: Record<Status, Status> = { pending: 'active', active: 'done', done: 'pending' }
+/** How a lead's resolution renders. A resolved lead is kept but visibly settled — an answered lead
+ *  left looking open misrepresents the agent's confidence (in either direction). */
+const LEAD_UI: Record<CsvLead['status'], { label: string; cls: string; card: string }> = {
+  open: { label: 'Open', cls: 'text-amber-600 dark:text-amber-400', card: 'border-dashed border-amber-400/50 bg-amber-50/40 dark:border-amber-400/30 dark:bg-amber-400/[0.06]' },
+  refuted: { label: 'Refuted', cls: 'text-citrus-muted dark:text-citrus-night-muted', card: 'border-citrus-border/60 bg-transparent opacity-70 dark:border-citrus-night-border/60' },
+  superseded: { label: 'Superseded', cls: 'text-citrus-muted dark:text-citrus-night-muted', card: 'border-citrus-border/60 bg-transparent opacity-70 dark:border-citrus-night-border/60' },
+  promoted: { label: 'Promoted → event', cls: 'text-emerald-600 dark:text-emerald-400', card: 'border-emerald-500/30 bg-emerald-50/30 dark:border-emerald-400/25 dark:bg-emerald-400/[0.05]' }
+}
+
 const STATUS_UI: Record<Status, { label: string; cls: string }> = {
   pending: { label: '○ To do', cls: 'text-citrus-muted dark:text-citrus-night-muted' },
   active: { label: '◐ Active', cls: 'text-citrus-pink' },
@@ -24,21 +32,30 @@ export function InvestigationPanel({
   onClose,
   wsId,
   refreshKey,
-  onSaved
+  onSaved,
+  onPivot,
+  onPromoted
 }: {
   open: boolean
   onClose: () => void
   wsId: string | null
-  /** Bump to reload after the assistant updates the plan/progress. */
+  /** Bump to reload after the agent updates the plan/progress/leads. */
   refreshKey: number
   /** Called after a successful save (so a shared refresh counter can bump). */
   onSaved?: () => void
+  /** Jump the grid to a lead's grounding rows. */
+  onPivot?: (sourceId: number, rids: number[]) => void
+  /** Called after a lead is promoted to an event (so the Constellation refreshes). */
+  onPromoted?: () => void
 }): JSX.Element | null {
   const [plan, setPlan] = useState<CsvPlanStep[]>([])
   const [notes, setNotes] = useState('')
+  const [leads, setLeads] = useState<CsvLead[]>([])
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [dirty, setDirty] = useState(false)
-  const [width, setWidth] = useState(440)
+  // Persisted + viewport-relative: this panel used to reopen at a fixed width every time,
+  // which is why it always needed resizing (see state/panelWidth).
+  const { width, setWidth, clamp } = usePanelWidth({ key: 'pink-lemonade:panel-w:investigation', min: 360, max: 900, defaultFraction: 0.32 })
   const dirtyRef = useRef(false)
   dirtyRef.current = dirty
 
@@ -57,10 +74,30 @@ export function InvestigationPanel({
     setDirty(false)
   }, [wsId])
 
-  // Reload on open + when the assistant changes it — but never clobber unsaved local edits.
+  // Reload on open + when the agent changes it — but never clobber unsaved local edits.
   useEffect(() => {
     if (open && !dirtyRef.current) void reload()
   }, [open, reload, refreshKey])
+
+  // Leads reload independently of the plan's dirty state (they're not edited inline here).
+  const reloadLeads = useCallback(async (): Promise<void> => {
+    setLeads(wsId ? await window.api.csv.wsLeadList(wsId) : [])
+  }, [wsId])
+  useEffect(() => {
+    if (open) void reloadLeads()
+  }, [open, reloadLeads, refreshKey])
+
+  const dismissLead = async (id: string): Promise<void> => {
+    if (!wsId) return
+    await window.api.csv.wsLeadDelete(wsId, id)
+    await reloadLeads()
+  }
+  const promoteLead = async (id: string): Promise<void> => {
+    if (!wsId) return
+    await window.api.csv.wsLeadPromote(wsId, id)
+    await reloadLeads()
+    onPromoted?.() // the lead is now an event — refresh the Constellation
+  }
 
   const markDirty = (): void => setDirty(true)
   const setStep = (i: number, patch: Partial<CsvPlanStep>): void => {
@@ -90,7 +127,7 @@ export function InvestigationPanel({
     e.preventDefault()
     const startX = e.clientX
     const startW = width
-    const onMove = (ev: MouseEvent): void => setWidth(Math.min(MAX_W, Math.max(MIN_W, startW + (startX - ev.clientX))))
+    const onMove = (ev: MouseEvent): void => setWidth(clamp(startW + (startX - ev.clientX)))
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -151,7 +188,7 @@ export function InvestigationPanel({
             </div>
             {plan.length === 0 ? (
               <div className="rounded-md border border-dashed border-citrus-border/70 px-3 py-4 text-center text-[12px] text-citrus-muted dark:border-citrus-night-border/70 dark:text-citrus-night-muted">
-                The Assistant builds this plan — or add your own steps.
+                Your AI agent builds this plan — or add your own steps.
               </div>
             ) : (
               <ul className="flex flex-col gap-1.5">
@@ -176,6 +213,81 @@ export function InvestigationPanel({
                     <button onClick={() => removeStep(i)} title="Remove step" className="mt-1 shrink-0 rounded p-1 text-citrus-muted hover:text-red-500 dark:text-citrus-night-muted">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Leads (AI hypotheses — unproven, grounded in rows, kept OUT of the Constellation until promoted) */}
+          <div className="border-t border-citrus-border/60 px-3 py-3 dark:border-citrus-night-border/60">
+            <div className="mb-2 flex items-center gap-1.5">
+              <Lightbulb className="w-3.5 h-3.5 text-amber-500" />
+              <span className="text-[11px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">Leads · unproven</span>
+              {leads.length > 0 && (
+                <span className="text-[10px] text-citrus-muted dark:text-citrus-night-muted">
+                  · {leads.filter((l) => l.status === 'open').length} open of {leads.length}
+                </span>
+              )}
+            </div>
+            {leads.length === 0 ? (
+              <div className="rounded-md border border-dashed border-citrus-border/70 px-3 py-3 text-center text-[11px] text-citrus-muted dark:border-citrus-night-border/70 dark:text-citrus-night-muted">
+                Your AI agent records hypotheses here — inferences it suspects but hasn’t confirmed. Promote one to an event once evidence proves it.
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {leads.map((l) => (
+                  <li key={l.id} className={`rounded-md border px-2.5 py-2 ${LEAD_UI[l.status].card}`}>
+                    <div className="mb-0.5 flex items-center gap-1.5">
+                      <span className={`text-[9px] font-bold uppercase tracking-wide ${LEAD_UI[l.status].cls}`}>{LEAD_UI[l.status].label}</span>
+                    </div>
+                    <div className={`text-[12px] font-semibold text-citrus-dark dark:text-citrus-night-text ${l.status === 'refuted' ? 'line-through opacity-70' : ''}`}>{l.statement}</div>
+                    {l.resolution && (
+                      <div className="mt-0.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+                        <span className="font-semibold">Resolved:</span> {l.resolution}
+                      </div>
+                    )}
+                    {l.whyUncertain && (
+                      <div className="mt-0.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+                        <span className="font-semibold">Uncertain:</span> {l.whyUncertain}
+                      </div>
+                    )}
+                    {l.nextStep && (
+                      <div className="mt-0.5 text-[11px] text-citrus-muted dark:text-citrus-night-muted">
+                        <span className="font-semibold">Next:</span> {l.nextStep}
+                      </div>
+                    )}
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {l.grounding.map((g) => (
+                        <button
+                          key={g.id}
+                          onClick={() => onPivot?.(g.sourceId, g.rids)}
+                          title={`Jump to ${g.rids.length} row(s) in ${g.sourceName}`}
+                          className="inline-flex items-center gap-1 rounded border border-citrus-border px-1.5 py-0.5 text-[10px] text-citrus-muted hover:border-citrus-pink/50 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-muted"
+                        >
+                          <span className="max-w-[140px] truncate">
+                            {g.sourceName}: <span className="font-mono">{g.matched}</span>
+                          </span>
+                          <span>· {g.count}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className={`mt-1.5 flex items-center gap-2 ${l.status === 'open' ? '' : 'hidden'}`}>
+                      <button
+                        onClick={() => void promoteLead(l.id)}
+                        title="Promote to a proven event (its grounding becomes evidence)"
+                        className="inline-flex items-center gap-1 rounded border border-emerald-500/40 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                      >
+                        <ArrowUpCircle className="w-3 h-3" /> Promote to event
+                      </button>
+                      <button
+                        onClick={() => void dismissLead(l.id)}
+                        title="Dismiss this lead"
+                        className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold text-citrus-muted hover:text-red-500 dark:text-citrus-night-muted"
+                      >
+                        <X className="w-3 h-3" /> Dismiss
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>

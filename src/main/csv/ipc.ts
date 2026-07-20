@@ -58,16 +58,15 @@ export function registerCsvIpc(): void {
     ) => {
       const f = normalizeFilters(filters)
       const s = normalizeSearch(search)
-      try {
-        const count = await dbw.count(tabId, reqId, f, s ?? '', (p) => {
-          if (!e.sender.isDestroyed()) {
-            e.sender.send('csv:count-progress', { tabId, reqId, count: p.count, scanned: p.scanned, max: p.max })
-          }
-        })
-        return count == null ? { canceled: true } : { count }
-      } catch {
-        return { canceled: true }
-      }
+      // A null count means this request was SUPERSEDED by a newer one (→ canceled). A real error is a
+      // different thing and must surface — swallowing it as `canceled` made a failed filtered count
+      // read as "nothing here", which in a forensics tool is a wrong answer, not an absent one.
+      const count = await dbw.count(tabId, reqId, f, s ?? '', (p) => {
+        if (!e.sender.isDestroyed()) {
+          e.sender.send('csv:count-progress', { tabId, reqId, count: p.count, scanned: p.scanned, max: p.max })
+        }
+      })
+      return count == null ? { canceled: true } : { count }
     }
   )
 
@@ -263,10 +262,6 @@ export function registerCsvIpc(): void {
   ipcMain.handle('ws:aiMarkClear', (_e, { wsId, sourceId }: { wsId: string; sourceId: number }) =>
     dbw.call('clearAiMarks', wsId, sourceId).then(() => null)
   )
-  // Findings (constellation substrate) — the renderer lists/clears them; the AI writes via record_finding.
-  ipcMain.handle('ws:findingList', (_e, { wsId }: { wsId: string }) => dbw.call('listFindings', wsId))
-  ipcMain.handle('ws:findingDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteFinding', wsId, id).then(() => null))
-  ipcMain.handle('ws:findingClear', (_e, { wsId }: { wsId: string }) => dbw.call('clearFindings', wsId).then(() => null))
   // Events (the Artifact Constellation) — the renderer lists/clears them; the AI writes via record_event.
   ipcMain.handle('ws:eventList', (_e, { wsId }: { wsId: string }) => dbw.call('listEvents', wsId))
   ipcMain.handle('ws:eventDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteEvent', wsId, id).then(() => null))
@@ -361,6 +356,42 @@ export function registerCsvIpc(): void {
   ipcMain.handle('ws:iocDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteIoc', wsId, id).then(() => null))
   ipcMain.handle('ws:iocClear', (_e, { wsId }: { wsId: string }) => dbw.call('clearIocs', wsId).then(() => null))
 
+  // Leads (AI hypotheses): read + the analyst's review actions (dismiss, clear, promote-to-event).
+  ipcMain.handle('ws:leadList', (_e, { wsId }: { wsId: string }) => dbw.call('listLeads', wsId))
+  ipcMain.handle('ws:leadDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteLead', wsId, id).then(() => null))
+  ipcMain.handle('ws:leadClear', (_e, { wsId }: { wsId: string }) => dbw.call('clearLeads', wsId).then(() => null))
+  ipcMain.handle('ws:leadPromote', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('promoteLead', wsId, id))
+
+  // Case Report: the adjudication surface. Verdicts are the ANALYST's — there is deliberately no
+  // agent-facing setter, only a read (list_case_report), so the agent can act on a rejection
+  // without being able to overrule one.
+  ipcMain.handle('ws:caseReport', (_e, { wsId }: { wsId: string }) => dbw.call('listCaseReport', wsId))
+  ipcMain.handle(
+    'ws:caseReview',
+    (_e, { wsId, kind, id, verdict, reason }: { wsId: string; kind: string; id: string; verdict: string; reason?: string | null }) =>
+      dbw.call('setFindingReview', wsId, kind, id, verdict, reason ?? null, 'analyst')
+  )
+
+  // Negative findings (proven absences + evidence gaps).
+  ipcMain.handle('ws:negativeList', (_e, { wsId }: { wsId: string }) => dbw.call('listNegatives', wsId))
+  ipcMain.handle('ws:negativeDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteNegative', wsId, id).then(() => null))
+
+  // Systems & Accounts. The list is the derived spine (source groups + event attribution) overlaid
+  // with curated records, so it is never empty just because nobody has curated anything yet.
+  ipcMain.handle('ws:entityList', (_e, { wsId }: { wsId: string }) => dbw.call('listEntities', wsId))
+  // The panel is the analyst's hand — the agent never reaches this handler, it goes through runTool.
+  ipcMain.handle('ws:entityUpsert', (_e, { wsId, patch }: { wsId: string; patch: unknown }) => dbw.call('upsertEntity', wsId, patch, [], 'analyst'))
+  ipcMain.handle('ws:entityDelete', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('deleteEntity', wsId, id).then(() => null))
+  ipcMain.handle('ws:entityAliasAdd', (_e, { wsId, id, alias }: { wsId: string; id: string; alias: string }) =>
+    dbw.call('addEntityAlias', wsId, id, alias)
+  )
+  ipcMain.handle('ws:entityLink', (_e, { wsId, kind, primary, other, same, reason }: { wsId: string; kind: string; primary: string; other: string; same: boolean; reason?: string }) =>
+    dbw.call('linkEntities', wsId, kind, primary, other, same, reason ?? null, 'analyst')
+  )
+  ipcMain.handle('ws:entityAliasRemove', (_e, { wsId, id, alias }: { wsId: string; id: string; alias: string }) =>
+    dbw.call('removeEntityAlias', wsId, id, alias).then(() => null)
+  )
+
   // Investigation plan + progress notes (the AI's persistent, analyst-editable working state).
   ipcMain.handle('ws:investigationGet', (_e, { wsId }: { wsId: string }) => dbw.call('getInvestigation', wsId))
   ipcMain.handle('ws:investigationSetPlan', (_e, { wsId, plan }: { wsId: string; plan: unknown[] }) =>
@@ -370,18 +401,6 @@ export function registerCsvIpc(): void {
     dbw.call('setInvestigationNotes', wsId, notes).then(() => null)
   )
 
-  // AI conversation history (saved chat transcripts, per workspace).
-  ipcMain.handle('ws:conversationList', (_e, { wsId }: { wsId: string }) => dbw.call('listConversations', wsId))
-  ipcMain.handle('ws:conversationGet', (_e, { wsId, id }: { wsId: string; id: string }) => dbw.call('getConversation', wsId, id))
-  ipcMain.handle('ws:conversationUpsert', (_e, { wsId, conv }: { wsId: string; conv: unknown }) =>
-    dbw.call('upsertConversation', wsId, conv)
-  )
-  ipcMain.handle('ws:conversationRename', (_e, { wsId, id, title }: { wsId: string; id: string; title: string }) =>
-    dbw.call('renameConversation', wsId, id, title).then(() => null)
-  )
-  ipcMain.handle('ws:conversationDelete', (_e, { wsId, id }: { wsId: string; id: string }) =>
-    dbw.call('deleteConversation', wsId, id).then(() => null)
-  )
   ipcMain.handle(
     'ws:tagSet',
     (_e, { wsId, sourceId, rids, tag }: { wsId: string; sourceId: number; rids: number[]; tag: string | null }) =>
@@ -403,6 +422,12 @@ export function registerCsvIpc(): void {
       dbw.call('tagByFilter', wsId, sourceId, normalizeFilters(filters), normalizeSearch(search), typeof tag === 'string' ? tag : null)
   )
 
+  // The AI agent's SQL history for a case — what it ran, what was refused, and what came back.
+  // Read-only surface: the analyst reviews the trail, nothing edits it.
+  ipcMain.handle('ws:agentSqlLog', (_e, { wsId, limit }: { wsId: string; limit?: number }) =>
+    dbw.call('listAgentSql', wsId, limit ?? 200)
+  )
+
   // Workspace storage folder (used as the Open-Workspace default + where new workspaces are saved).
   ipcMain.handle('ws:getDir', () => dbw.call('getWorkspaceDir'))
   ipcMain.handle('ws:setDir', (_e, { dir }: { dir: string }) => dbw.call('setWorkspaceDir', dir))
@@ -411,6 +436,24 @@ export function registerCsvIpc(): void {
     const opts = {
       properties: ['openDirectory' as const, 'createDirectory' as const],
       defaultPath: await dbw.call<string>('getWorkspaceDir')
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+
+  // Evidence root: the one tree the AI agent may import from. Analyst-set only — deliberately no
+  // agent-facing setter, or the containment it provides would be theatre.
+  ipcMain.handle('ws:getEvidenceRoot', () => dbw.call('getEvidenceRoot'))
+  ipcMain.handle('ws:setEvidenceRoot', (_e, { dir }: { dir: string | null }) =>
+    dbw.call('setEvidenceRoot', typeof dir === 'string' && dir ? dir : null)
+  )
+  ipcMain.handle('ws:pickEvidenceRoot', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const current = await dbw.call<string | null>('getEvidenceRoot')
+    const opts = {
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+      title: 'Choose the evidence folder your AI agent may import from',
+      ...(current ? { defaultPath: current } : {})
     }
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
@@ -630,13 +673,25 @@ export function normalizeFilters(filters?: Filter[]): Filter[] | undefined {
       if (deltaSec > 0) out.push({ col: f.col, op: 'timearound', value: String(f.value ?? ''), tkind, deltaSec })
     } else if (f.op === 'timerange') {
       const tkind = f.tkind === 'iso' || f.tkind === 'epoch_ms' ? f.tkind : 'epoch_s'
-      const num = (v: unknown): number | undefined => {
-        if (v == null) return undefined
+      // Bounds are epoch SECONDS, but accept an ISO-8601 string too: find_rows' time_from/time_to do,
+      // and demanding epoch here silently dropped the whole clause — turning a filtered query into an
+      // unfiltered one that returned plausible-looking wrong numbers.
+      // A bound that was SUPPLIED but cannot be parsed must fail loudly. Dropping it silently turns a
+      // filtered query into an unfiltered one (or a half-open range), and the caller gets a
+      // plausible-looking wrong count with no signal — in a forensics tool that is the worst outcome,
+      // because a wrongly-empty or wrongly-broad result is indistinguishable from a true one.
+      const num = (v: unknown, side: 'from' | 'to'): number | undefined => {
+        if (v == null || v === '') return undefined
         const n = Number(v)
-        return Number.isFinite(n) ? n : undefined
+        if (Number.isFinite(n)) return n
+        const ms = Date.parse(String(v))
+        if (Number.isFinite(ms)) return Math.floor(ms / 1000)
+        throw new Error(
+          `timerange "${side}" is not a valid time: ${JSON.stringify(v)}. Pass epoch SECONDS (e.g. 1700000000) or an ISO-8601 timestamp (e.g. "2023-11-14T22:13:20Z").`
+        )
       }
-      const from = num(f.from)
-      const to = num(f.to)
+      const from = num(f.from, 'from')
+      const to = num(f.to, 'to')
       if (from != null || to != null) out.push({ col: f.col, op: 'timerange', tkind, from, to })
     } else {
       const op = f.op === 'eq' ? 'eq' : f.op === 'neq' ? 'neq' : f.op === 'nlike' ? 'nlike' : 'like'

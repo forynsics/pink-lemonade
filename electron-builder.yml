@@ -6,18 +6,11 @@ directories:
 files:
   - out/**
   - package.json
-  # Do NOT ship Anthropic's platform binaries (claude.exe et al.). The Claude Code provider spawns the
-  # user's OWN installed `claude` (their Claude subscription) via pathToClaudeCodeExecutable — we only
-  # bundle the SDK's JS harness. The `-*` suffix matches the per-OS binary packages, not the SDK itself.
-  - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
-# Native/executable + ESM artifacts can't run from inside the asar archive, so they're unpacked:
-#  - better-sqlite3: a native .node binary (Windows-ABI rebuild on a Windows runner is a later task).
-#  - the Claude Agent SDK is ESM + dynamically imported, so its JS must live on the real fs, not in asar.
-# NOTE: this packaged path is unverified end-to-end — confirm with a real `dist` build that a run resolves
-# and spawns the user's installed `claude` before relying on it.
+# The app no longer spawns Claude Code itself — the analyst's OWN `claude` connects to the localhost MCP
+# server (src/main/ai/mcp). So there's no Anthropic SDK/binary to bundle or exclude here.
+# better-sqlite3 is a native .node binary and can't run from inside the asar archive, so it's unpacked.
 asarUnpack:
   - "**/node_modules/better-sqlite3/**"
-  - "**/node_modules/@anthropic-ai/claude-agent-sdk/**"
 win:
   icon: build/icon.ico
   target:

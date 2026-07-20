@@ -26,7 +26,7 @@ export function epochToDtLocal(sec: number): string {
   return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 19)
 }
 
-/** Compact UTC label for a chip: "2025-03-25 18:04Z". */
+/** Compact UTC label for a chip: "2023-11-14 18:04Z". */
 export function epochToLabel(sec: number): string {
   const d = new Date(sec * 1000)
   return Number.isNaN(d.getTime()) ? String(sec) : `${d.toISOString().slice(0, 16).replace('T', ' ')}Z`
@@ -43,7 +43,7 @@ export function cellTimeToEpoch(value: string, tkind: TimeKind): number | undefi
   if (s === '') return undefined
   if (tkind === 'epoch_s') return Number.isFinite(Number(s)) ? Math.floor(Number(s)) : undefined
   if (tkind === 'epoch_ms') return Number.isFinite(Number(s)) ? Math.floor(Number(s) / 1000) : undefined
-  // iso: "2025-03-25 18:04:40.954 +00:00" → "2025-03-25T18:04:40.954+00:00"; offset-less → +Z
+  // iso: "2023-11-14 18:04:40.954 +00:00" → "2023-11-14T18:04:40.954+00:00"; offset-less → +Z
   let iso = s.replace(/^(\d{4}-\d{2}-\d{2})[ T]/, '$1T').replace(/\s+([+-]\d{2}:?\d{2}|Z)$/i, '$1')
   if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(iso)) iso += 'Z'
   const ms = Date.parse(iso)

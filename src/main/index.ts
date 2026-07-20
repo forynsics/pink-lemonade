@@ -6,11 +6,30 @@ import { existsSync } from 'fs'
 import { basename } from 'path'
 import { registerCsvIpc } from './csv/ipc'
 import { registerEnrichIpc } from './enrich/ipc'
-import { registerAiIpc } from './ai/ipc'
+import { registerMcpBridge, startMcp, stopMcpServer } from './ai/mcp/bridge'
 import { initDbWorker, call as dbCall } from './csv/dbClient'
 
 // The primary application window — popouts forward their pivots back to it.
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * Lock a window to its own bundle. Defense in depth on top of contextIsolation/sandbox/nodeIntegration:
+ * real external links already go through the validated `shell:openExternal` IPC (https only), so the
+ * renderer never legitimately opens a new window or navigates to a remote origin. Deny both — a stray
+ * `<a target=_blank>` / `window.open`, or a compromised renderer, can neither spawn an unguarded page
+ * nor drive the app off its bundle onto an attacker origin.
+ */
+function hardenWindow(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  win.webContents.on('will-navigate', (e, url) => {
+    // Allow only the app's own origin: file:// in prod, the electron-vite dev server in dev. Hash
+    // changes (the popout payload, in-app routing) don't fire will-navigate, so this only sees real
+    // navigations.
+    const allowed = url.startsWith('file:') || (devUrl != null && url.startsWith(devUrl))
+    if (!allowed) e.preventDefault()
+  })
+}
 
 function createWindow(): void {
   // Dev: the running binary is electron.exe, so set the window/taskbar icon explicitly. Prod: the
@@ -35,6 +54,7 @@ function createWindow(): void {
     }
   })
 
+  hardenWindow(win)
   win.on('ready-to-show', () => win.show())
   mainWindow = win
   win.on('closed', () => {
@@ -79,6 +99,7 @@ function createPopoutWindow(payload: unknown): void {
       nodeIntegration: false
     }
   })
+  hardenWindow(win)
   win.on('ready-to-show', () => win.show())
   win.webContents.setVisualZoomLevelLimits(1, 3)
   const devUrl = process.env['ELECTRON_RENDERER_URL']
@@ -172,29 +193,52 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-app.whenReady().then(() => {
-  initDbWorker() // the DB runs in a worker thread so slow queries never freeze the UI
-  void dbCall('sweepStaleTempDbs') // clear any temp CSV dbs left by a prior crash
-  registerCsvIpc()
-  registerEnrichIpc() // threat-intel/enrichment surface (cache DB + providers live in the worker)
-  registerAiIpc() // AI assistant surface (model I/O + agent loop run in main; tools reuse the proxies)
-  buildMenu()
-  createWindow()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// Single-instance: a second launch must NOT start a competing DB worker or fight for the MCP server's
+// fixed port. The first instance keeps the lock; any later launch fails it, focuses the existing
+// window, and quits. (A stale .mcp.json pointing at a drifted port used to be caused by exactly this
+// kind of contention — now it can't happen.)
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
   })
-})
+
+  app.whenReady().then(() => {
+    initDbWorker() // the DB runs in a worker thread so slow queries never freeze the UI
+    void dbCall('sweepStaleTempDbs') // clear any temp CSV dbs left by a prior crash
+    registerCsvIpc()
+    registerEnrichIpc() // threat-intel/enrichment surface (cache DB + providers live in the worker)
+    registerMcpBridge() // terminal-driven surface: status query + active-workspace publish
+    void startMcp().catch((e) => console.error('MCP server failed to start:', e)) // localhost MCP for the analyst's own Claude Code
+    buildMenu()
+    createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+}
 
 // Best-effort cleanup of connections + temp dbs (also swept on next startup if this doesn't finish).
+// Guarded by the lock: a second instance that bailed early never started the worker/server, so it
+// must not fire these (the DB proxy would reject with "worker not started").
 app.on('before-quit', () => {
+  if (!gotSingleInstanceLock) return
+  void stopMcpServer()
   void dbCall('closeAll')
   void dbCall('enrichClose')
   void dbCall('wlClose')
 })
 
 app.on('window-all-closed', () => {
-  void dbCall('closeAll')
-  void dbCall('enrichClose')
-  void dbCall('wlClose')
+  if (gotSingleInstanceLock) {
+    void dbCall('closeAll')
+    void dbCall('enrichClose')
+    void dbCall('wlClose')
+  }
   if (process.platform !== 'darwin') app.quit()
 })

@@ -7,21 +7,6 @@ export interface AiTool {
   parameters: object
 }
 
-/** A tool call the model requested. */
-export interface AiToolCall {
-  id: string
-  name: string
-  args: unknown
-}
-
-/** The single internal message format (user/assistant history sent from the renderer):
- *  - system/user carry plain text.
- *  - assistant may carry text and/or tool calls.
- *  - tool carries one tool's result, tied back to the call by toolCallId. */
-export type AiMsg =
-  | { role: 'system' | 'user'; content: string }
-  | { role: 'assistant'; content?: string; toolCalls?: AiToolCall[] }
-  | { role: 'tool'; toolCallId: string; content: string }
 
 export interface WsColumn {
   /** Positional SQL id (c0..cN) — what filters must reference. */
@@ -30,9 +15,11 @@ export interface WsColumn {
   original: string
   /** Detected time kind, if any ('iso' | 'epoch_s' | 'epoch_ms'). */
   time?: string
+  /** True when values are numbers — ORDER BY must compare numerically (0, 1, 2, … not 0, 1, 10). */
+  numeric?: boolean
 }
 
-/** The active-workspace context the renderer sends with each chat turn. The agent's grid tools key
+/** The active-workspace context the renderer publishes for the MCP agent (setActiveWorkspace). The agent's grid tools key
  *  off this (tabId = `${wsId}:${sourceId}`); the schema lets the model plan queries against real
  *  columns without ever ingesting rows. */
 /** One source (imported artifact/CSV) in the active workspace. */
@@ -64,7 +51,7 @@ export interface WsCtx {
   intelDbPath?: string
 }
 
-/** A state-changing action the assistant proposes; the user approves/rejects before it runs. */
+/** A state-changing action the agent proposes; gated by the agent's own permission prompt. */
 export interface PendingAction {
   kind: 'tag' | 'group'
   summary: string
@@ -81,6 +68,18 @@ export interface PendingAction {
 export interface ToolDeps {
   /** Ask the user to approve a state-changing action; resolves true if approved. */
   requestApproval?: (action: PendingAction) => Promise<boolean>
+  /**
+   * Show a workspace in the app and resolve once the renderer has it active — the handoff behind
+   * create_case/use_workspace/import_evidence.
+   *
+   * This has to be awaited rather than fired-and-forgotten. Every other tool reads the workspace
+   * context the RENDERER publishes, so a tool that returned as soon as the open was *requested*
+   * would let the agent's next call land on the previous workspace. Resolves the context the
+   * renderer actually published, so the caller can report what is really open.
+   */
+  showWorkspace?: (ws: { wsId: string; dbPath: string; name: string }) => Promise<WsCtx>
+  /** Resolve once freshly imported sources are visible in the context the tools read (see bridge.ts). */
+  syncSources?: (wsId: string, sourceIds: number[]) => Promise<WsCtx>
 }
 
 /** Per-run triage-coverage accumulator. The engine/agent-runner owns one per run, threads it into
@@ -88,28 +87,16 @@ export interface ToolDeps {
  *  then uses it to nudge the model toward any UNTOUCHED source before it concludes. Source of truth is
  *  the live data — this only tracks what the agent has actually looked at this run. */
 export interface CoverageTracker {
+  /** When this run began. Lets get_investigation_state tell work that PREDATES the session from
+   *  work the agent just did — without it, calling update_plan once made the tool claim to be
+   *  resuming an investigation it had started seconds earlier. */
+  startedAt: number
   /** sourceIds examined with a data-reading tool this run (describe_workspace alone does NOT count). */
   examined: Set<number>
+  /** sourceIds that RETURNED ROWS to a cross-source search this run. Weaker than `examined` — the
+   *  agent saw some of this source's data without opening it — but not nothing, and reporting these
+   *  as "never touched" sent it back to re-read sources it had already built findings from. */
+  seenInSearch: Set<number>
   /** How many events the agent has concluded this run — a signal that it's triaging (not just chatting). */
   recordedEvents: number
-}
-
-/** Events the engine streams to the renderer over the single `ai:event` channel. */
-export type AgentEvent =
-  | { type: 'token'; delta: string }
-  | { type: 'tool'; phase: 'start' | 'done' | 'error'; id: string; name: string; args?: unknown; card?: string; result?: unknown; message?: string }
-  | { type: 'action'; actionId: string; kind: string; summary: string; detail?: string; tag?: string; count?: number; sourceId?: number; group?: string | null }
-  /** The model this run resolved to, from the SDK's init message — the only reliable way to know
-   *  what's actually serving the run, since we usually send no model and let Claude Code decide. */
-  | { type: 'model'; model: string }
-  | { type: 'done'; truncated?: boolean }
-  | { type: 'error'; message?: string }
-
-export interface ChatRequest {
-  reqId: number
-  /** User/assistant turn history from the renderer (no system prompt — the engine prepends it). */
-  messages: AiMsg[]
-  wsCtx: WsCtx
-  providerId?: string
-  model?: string
 }

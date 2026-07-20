@@ -18,7 +18,7 @@ const ev = (id: string, label: string, evidence: CsvEventEvidence[] = [], descri
   description,
   technique: null,
   createdAt: 0,
-  actor: 'ai',
+  actor: 'ai', hosts: [], uncertainty: null,
   users: [],
   evidence
 })

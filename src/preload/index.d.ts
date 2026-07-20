@@ -3,6 +3,8 @@ export interface CsvColumn {
   name: string
   original: string
   time?: TimeKind
+  /** Values are numbers — sort must compare numerically. Decided at ingest. */
+  numeric?: boolean
 }
 export interface CsvOpenResult {
   tabId: string
@@ -56,27 +58,10 @@ export interface CsvRowsResult {
   /** Positional rowid of each row (aligned with `rows`) — row identity for tags + scroll-to-row. */
   rids: number[]
 }
-/** A row's AI-accountability mark: rid = positional rowid, note = what the assistant asserted. */
+/** A row's AI-accountability mark: rid = positional rowid, note = what the agent asserted. */
 export interface CsvAiMark {
   rid: number
   note: string | null
-}
-/** Where a finding was validated to appear: one per source it was found in. */
-export interface CsvFindingHit {
-  sourceId: number
-  sourceName: string
-  count: number
-  rids: number[]
-}
-/** A finding (constellation node): a validated indicator/artifact + its per-source presence. */
-export interface CsvFinding {
-  id: string
-  value: string
-  kind: string | null
-  label: string | null
-  note: string | null
-  createdAt: number
-  hits: CsvFindingHit[]
 }
 /** One time column's epoch-second span over an evidence item (kind = the source's column header). */
 export interface CsvEvidenceSpan {
@@ -99,6 +84,8 @@ export interface CsvEventEvidence {
   /** Epoch-second envelope across the spans; null when undated. */
   tsMin: number | null
   tsMax: number | null
+  /** The agent's per-row rationale for this evidence item; null when none. */
+  why?: string | null
 }
 /** An event (Artifact Constellation node): an action that transpired + its corroborating evidence. */
 export interface CsvEvent {
@@ -109,6 +96,13 @@ export interface CsvEvent {
   createdAt: number
   /** Who authored this event's interpretation — 'analyst' events are badged + protected from AI overwrite. */
   actor: 'ai' | 'analyst'
+  /** What is UNSETTLED about this event, in words. Evidence proves it OCCURRED; this says what the
+   *  occurrence does not settle — a contested attribution on an otherwise certain execution. Null
+   *  means nothing was contested, NOT that the reading is confirmed. */
+  uncertainty: string | null
+  /** Host(s) this happened on, derived from the group of every source its evidence cites. An ARRAY
+   *  because a lateral-movement event legitimately has evidence on both ends of the connection. */
+  hosts: string[]
   /** User account(s) the event involves (curated attribution) — fills the Timeline's User column. */
   users: string[]
   evidence: CsvEventEvidence[]
@@ -121,6 +115,88 @@ export interface CsvIoc {
   context: string | null
   createdAt: number
 }
+/** A LEAD: an AI hypothesis/inference (unproven), grounded in real rows, shown in the Investigation
+ *  panel for the analyst to pursue, promote to an event, or dismiss. */
+export interface CsvLeadGrounding {
+  id: number
+  sourceId: number
+  sourceName: string
+  matched: string
+  count: number
+  rids: number[]
+  tsMin: number | null
+  tsMax: number | null
+}
+export interface CsvLead {
+  id: string
+  statement: string
+  whyUncertain: string | null
+  nextStep: string | null
+  createdAt: number
+  /** open | refuted | superseded | promoted. A resolved lead is KEPT (a ruled-out hypothesis is a
+   *  durable record); only its rendering changes. */
+  status: 'open' | 'refuted' | 'superseded' | 'promoted'
+  resolution: string | null
+  resolvedAt: number | null
+  supersededBy: string | null
+  promotedEventId: string | null
+  grounding: CsvLeadGrounding[]
+}
+/**
+ * One adjudicable claim in the Case Report — an event, lead, proven absence, evidence gap or entity
+ * verdict, plus what the analyst decided about it. Assembled on read from the stores that hold the
+ * claims; the verdict is the only thing this view owns.
+ */
+export interface CsvCaseReportItem {
+  kind: 'event' | 'lead' | 'negative' | 'entity'
+  id: string
+  title: string
+  detail: string | null
+  hosts: string[]
+  actor: 'ai' | 'analyst'
+  verdict: 'pending' | 'approved' | 'rejected'
+  reason: string | null
+  reviewedAt: number | null
+  support: number
+  flags: string[]
+}
+/**
+ * A SYSTEM or ACCOUNT in the case — a subject that carries state, as opposed to an IOC you would hunt.
+ *
+ * `origin` and `collected` are INDEPENDENT. The pairing that matters most is evidenced + not collected:
+ * a host the data names but whose triage package nobody ever pulled. That's a collection request.
+ */
+export interface CsvEntity {
+  id: string
+  kind: 'system' | 'account'
+  name: string
+  /** evidenced = the case's own data (or cited grounding) backs it; asserted = someone added it. */
+  origin: 'evidenced' | 'asserted'
+  status: 'compromised' | 'suspected' | 'cleared' | 'unknown'
+  role: string | null
+  notes: string | null
+  /** Do we hold this entity's data? Derived from the sources — never stored, so it can't drift. */
+  collected: boolean
+  eventCount: number
+  evidenced: boolean
+  aliases: string[]
+  groundingCount: number
+  /** HOW we concluded we hold its data: 'group' (it IS a source group), 'shortName' (an FQDN whose
+   *  short name matches one — an inference), 'alias' (a confirmed alias is one). Null when we don't. */
+  collectedVia: 'group' | 'shortName' | 'alias' | null
+  /** Who added it. Null when the entity came out of the case data rather than from a person/agent. */
+  actor: 'ai' | 'analyst' | null
+  /** Null when nothing has been curated — i.e. the entity exists only in the derived spine. */
+  createdAt: number | null
+  updatedAt: number | null
+}
+export interface CsvEntityPatch {
+  kind: 'system' | 'account'
+  name: string
+  status?: CsvEntity['status']
+  role?: string | null
+  notes?: string | null
+}
 /** One step of the AI investigation plan (an analyst-editable to-do/lead). */
 export interface CsvPlanStep {
   text: string
@@ -132,23 +208,11 @@ export interface CsvInvestigation {
   notes: string
   updatedAt: number | null
 }
-/** A saved AI conversation's metadata (no turns) — drives the history list. */
-export interface CsvConversationMeta {
-  id: string
-  title: string
-  createdAt: number
-  updatedAt: number
-  turnCount: number
-}
-/** A full saved AI conversation, with its opaque renderer-side turns. */
-export interface CsvConversation extends CsvConversationMeta {
-  turns: unknown[]
-}
 /** A row's tag in a source: rid = positional rowid, tag = one of the tag category ids. */
 export interface CsvRowTag {
   rid: number
   tag: string
-  /** Provenance: null for the analyst's own tags, 'ai' for assistant-applied ones. */
+  /** Provenance: null for the analyst's own tags, 'ai' for agent-applied ones. */
   actor?: string | null
 }
 /** Live progress of a chunked match count (Scale #2). */
@@ -221,15 +285,19 @@ export interface CsvApi {
     fields: Array<{ path: string; displayName: string }>
   ) => Promise<CsvColumn[]>
   wsBuildTimeline: (wsId: string, header: string[], rows: string[][]) => Promise<SourceInfo | null>
+  wsAgentSqlLog: (
+    wsId: string,
+    limit?: number
+  ) => Promise<Array<{ id: number; ranAt: number; sql: string; outcome: 'ok' | 'refused' | 'error'; rowCount?: number; elapsedMs?: number; detail?: string | null }>>
   wsGetDir: () => Promise<string>
   wsSetDir: (dir: string) => Promise<string>
   wsPickDir: () => Promise<string | null>
+  wsGetEvidenceRoot: () => Promise<string | null>
+  wsSetEvidenceRoot: (dir: string | null) => Promise<string | null>
+  wsPickEvidenceRoot: () => Promise<string | null>
   wsTagList: (wsId: string, sourceId: number) => Promise<CsvRowTag[]>
   wsAiMarkList: (wsId: string, sourceId: number) => Promise<CsvAiMark[]>
   wsAiMarkClear: (wsId: string, sourceId: number) => Promise<null>
-  wsFindingList: (wsId: string) => Promise<CsvFinding[]>
-  wsFindingDelete: (wsId: string, id: string) => Promise<null>
-  wsFindingClear: (wsId: string) => Promise<null>
   wsEventList: (wsId: string) => Promise<CsvEvent[]>
   wsEventDelete: (wsId: string, id: string) => Promise<null>
   wsEventClear: (wsId: string) => Promise<null>
@@ -254,17 +322,35 @@ export interface CsvApi {
   wsIocEventLinks: (wsId: string) => Promise<Array<{ iocId: string; eventIds: string[] }>>
   wsIocDelete: (wsId: string, id: string) => Promise<null>
   wsIocClear: (wsId: string) => Promise<null>
+  wsLeadList: (wsId: string) => Promise<CsvLead[]>
+  wsLeadDelete: (wsId: string, id: string) => Promise<null>
+  wsLeadClear: (wsId: string) => Promise<null>
+  /** Promote a lead to a real event (its grounding becomes evidence). Returns the new event id. */
+  wsLeadPromote: (wsId: string, id: string) => Promise<string | null>
+  /** Systems + Accounts: the derived spine overlaid with curated records. */
+  /** The whole case as one adjudicable list — events, leads, negatives, entity verdicts. */
+  wsCaseReport: (wsId: string) => Promise<CsvCaseReportItem[]>
+  /** Set an analyst verdict on a claim. Rejecting requires a reason (enforced in the store). */
+  wsCaseReview: (wsId: string, kind: string, id: string, verdict: string, reason?: string | null) => Promise<{ ok: boolean; error?: string }>
+  wsEntityList: (wsId: string) => Promise<CsvEntity[]>
+  /** Create or update a curated entity. Returns its id, or null if the name/kind was unusable. */
+  wsEntityUpsert: (wsId: string, patch: CsvEntityPatch) => Promise<string | null>
+  /** Removes the CURATED record; an entity the case's own data names survives in the derived spine. */
+  wsEntityDelete: (wsId: string, id: string) => Promise<null>
+  wsEntityAliasAdd: (wsId: string, id: string, alias: string) => Promise<boolean>
+  /** Record that two names ARE (or are NOT) the same entity. Merging folds the other record in. */
+  wsEntityLink: (
+    wsId: string,
+    kind: 'system' | 'account',
+    primary: string,
+    other: string,
+    same: boolean,
+    reason?: string
+  ) => Promise<{ linked: boolean; id: string; merged: boolean; aliases: string[] } | null>
+  wsEntityAliasRemove: (wsId: string, id: string, alias: string) => Promise<null>
   wsInvestigationGet: (wsId: string) => Promise<CsvInvestigation>
   wsInvestigationSetPlan: (wsId: string, plan: CsvPlanStep[]) => Promise<null>
   wsInvestigationSetNotes: (wsId: string, notes: string) => Promise<null>
-  wsConversationList: (wsId: string) => Promise<CsvConversationMeta[]>
-  wsConversationGet: (wsId: string, id: string) => Promise<CsvConversation | null>
-  wsConversationUpsert: (
-    wsId: string,
-    conv: { id: string; title?: string; turns: unknown[] }
-  ) => Promise<{ updatedAt: number } | null>
-  wsConversationRename: (wsId: string, id: string, title: string) => Promise<null>
-  wsConversationDelete: (wsId: string, id: string) => Promise<null>
   wsTagSet: (wsId: string, sourceId: number, rids: number[], tag: string | null) => Promise<null>
   wsTagByFilter: (
     wsId: string,
@@ -381,6 +467,8 @@ export interface EnrichProgress {
   total: number
   current: string
   fromCache: boolean
+  /** The row that just finished — main emits it so the grid can render results live as they land. */
+  row?: EnrichResultRow
 }
 export interface EnrichBulkStats {
   cacheHits: number
@@ -468,38 +556,27 @@ export interface WatchlistApi {
   replace: (id: number, text: string) => Promise<{ added: number; skipped: string[] }>
 }
 
-// ---- AI assistant ----
-export interface AiProviderInfo {
-  id: string
-  name: string
-  ready: boolean
-  detail: string
-}
-export interface AiConfig {
-  provider: string
-  model: string
-  providers: AiProviderInfo[]
-}
-/** A model choice offered in Settings. An empty id means "use the Claude Code default". */
-export interface ClaudeModelOption {
-  id: string
-  label: string
-  hint: string
-}
-/** One column of the active workspace source, as the agent context sends it. */
+// ---- Workspace context (published to the terminal-driven MCP surface) ----
+/** One column of the active workspace source. */
 export interface AiWsColumn {
   name: string
   original: string
   time?: string
 }
-/** The active-workspace context the renderer sends with each chat turn. */
+/** One source of the active workspace. */
 export interface AiWsSource {
   sourceId: number
   tabId: string
   name: string
   columns: AiWsColumn[]
   rowCount: number
+  /** Analyst-assigned grouping label (host/system/origin); null = ungrouped. */
+  group?: string | null
+  /** True for a derived source (the materialized Timeline) — main excludes it from the agent's triage
+   *  coverage (ai/coverage.ts). Set by the renderer; both ends relied on it while the contract omitted it. */
+  derived?: boolean
 }
+/** The focused workspace the renderer publishes so the terminal drives what the analyst has open. */
 export interface AiWsCtx {
   hasWorkspace: boolean
   wsId?: string
@@ -508,52 +585,39 @@ export interface AiWsCtx {
   sources: AiWsSource[]
   intelDbPath?: string
 }
-/** A turn in the chat history the renderer keeps (user prompts + the model's final replies). */
-export interface AiChatMessage {
-  role: 'user' | 'assistant'
-  content: string
+
+/** Status of the localhost MCP server the analyst's own Claude Code connects to. */
+export interface McpStatus {
+  running: boolean
+  port: number | null
+  token: string | null
+  url: string | null
+  error?: string
 }
-export type AiEventPayload =
-  | { reqId: number; type: 'token'; delta: string }
-  | {
-      reqId: number
-      type: 'tool'
-      phase: 'start' | 'done' | 'error'
-      id: string
-      name: string
-      args?: unknown
-      card?: string
-      result?: unknown
-      message?: string
-    }
-  | { reqId: number; type: 'action'; actionId: string; kind: string; summary: string; detail?: string; tag?: string; count?: number }
-  | { reqId: number; type: 'model'; model: string }
-  | { reqId: number; type: 'done'; truncated?: boolean }
-  | { reqId: number; type: 'error'; message?: string }
-export interface AiChatRequest {
-  reqId: number
-  messages: AiChatMessage[]
-  wsCtx: AiWsCtx
-  providerId?: string
-  model?: string
+export interface McpProvisionResult {
+  dir: string
+  port: number | null
 }
-export interface AiApi {
-  getConfig: () => Promise<AiConfig>
-  setConfig: (cfg: { model?: string }) => Promise<{ ok: boolean }>
-  listModels: () => Promise<ClaudeModelOption[]>
-  chat: (req: AiChatRequest) => Promise<{ ok: boolean }>
-  cancel: (reqId: number) => Promise<null>
-  actionResult: (actionId: string, approved: boolean) => Promise<null>
-  onEvent: (cb: (p: AiEventPayload) => void) => () => void
+export interface McpApi {
+  status: () => Promise<McpStatus>
+  /** Publish the focused workspace so the terminal drives what the analyst has open. */
+  setActiveWorkspace: (ws: AiWsCtx) => void
+  defaultFolder: () => Promise<string>
+  pickFolder: () => Promise<string | null>
+  setupFolder: (dir?: string) => Promise<McpProvisionResult>
+  openFolder: (dir: string) => Promise<null>
+  /** A terminal tool changed workspace state — reload the review panels. Returns a disposer. */
+  onMutated: (cb: (p: { wsId?: string; tool: string }) => void) => () => void
+  onOpenRequest: (cb: (p: { wsId: string; dbPath: string; name: string }) => void) => () => void
 }
 
 /** A message a popout relays to the main window, which owns the grid + workspace doc state. */
 export type PopoutMessage =
   | { type: 'pivot'; wsId: string; sourceId: number; rids: number[] }
-  | { type: 'pivotValue'; wsId: string; value: string; source?: string }
   | { type: 'buildTimeline'; wsId: string; header: string[]; rows: string[][] }
   | { type: 'applyGroup'; wsId: string; sourceId: number; group: string | null }
-  | { type: 'refresh'; wsId: string; what: 'findings' | 'tags' | 'iocs' | 'investigation' }
+  | { type: 'refresh'; wsId: string; what: 'events' | 'tags' | 'iocs' | 'investigation' }
+  | { type: 'openClaim'; wsId: string; kind: string; id: string }
 export interface PopoutApi {
   open: (kind: string, payload: unknown) => Promise<null>
   relay: (msg: PopoutMessage) => void
@@ -570,7 +634,7 @@ export interface Api {
   saveFile: (content: string, defaultName?: string) => Promise<string | null>
   csv: CsvApi
   enrich: EnrichApi
-  ai: AiApi
+  mcp: McpApi
   popout: PopoutApi
   watchlist: WatchlistApi
 }

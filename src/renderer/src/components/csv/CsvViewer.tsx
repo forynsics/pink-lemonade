@@ -16,18 +16,17 @@ export interface CsvViewerHandle {
   toggleTagFilter: (tag: TagId) => void
   excludeTagFilter: (tag: TagId) => void
   clearTagFilter: () => void
-  /** Reload tag markers from disk — used after the AI assistant tags rows in this source. */
+  /** Reload tag markers from disk — used after the AI agent tags rows in this source. */
   reloadTags: () => void
-  /** Filter + highlight the grid to rows containing `value` — a keyword pivot from the chat. */
-  focusValue: (value: string) => void
-  /** Restrict the grid to exactly these rowids — the pivot to a constellation event's evidence. */
-  focusRids: (rids: number[]) => void
 }
 
 /** What the grid needs to render a source — satisfied by a workspace source view (or any table). */
 export interface CsvViewSource {
   tabId: string // query key: a source key `<wsId>:<sourceId>`
   sourceName: string
+  /** The source's group (host/system it came from), shown ahead of the filename so you can tell
+   *  WHICH machine's copy of a shared filename you are looking at. Null when ungrouped. */
+  group?: string | null
   columns: CsvColumn[]
   rowCount: number
   dbPath: string
@@ -52,6 +51,9 @@ import { JsonExtractDialog } from './JsonExtractDialog'
 const SEARCH_DEBOUNCE_MS = 250
 
 /** Heuristic: do the currently-loaded cells of a column look numeric? (drives sort mode) */
+// Prefer the flag decided at INGEST over sniffing the loaded page: a page-based guess makes a
+// column sort numerically on one screen and alphabetically on the next. looksNumeric remains the
+// fallback for workspaces created before the flag existed, which have no stored answer.
 function looksNumeric(rows: string[][], colIdx: number): boolean {
   let seen = 0
   for (const r of rows) {
@@ -105,7 +107,7 @@ export function CsvViewer({
   /** Clear the pending pivot once consumed (so it doesn't re-open on the next render). */
   onConsumePendingSweep?: () => void
   /** Set when a pivot targets THIS source — focuses specific evidence rows (rids) or a value. */
-  pendingFocus?: { value?: string; rids?: number[]; token: number }
+  pendingFocus?: { rids?: number[]; token: number }
   onConsumePendingFocus?: () => void
   /** Pivot to a source's exact evidence rows — wired for the materialized Timeline source, whose rows
    *  carry a hidden (sourceId, rids) address. Double-clicking a row calls this. */
@@ -248,8 +250,8 @@ export function CsvViewer({
     setExtractCol(null)
   }
   const [tags, setTags] = useState<Map<number, string>>(new Map())
-  // AI-accountability marks (✨): rowid → the note the assistant left. Its own dimension (separate
-  // from intent tags), so the analyst can filter the grid to exactly what the assistant flagged.
+  // AI-accountability marks (✨): rowid → the note the agent left. Its own dimension (separate
+  // from intent tags), so the analyst can filter the grid to exactly what the agent flagged.
   const [aiMarks, setAiMarks] = useState<Map<number, string | null>>(new Map())
   const reloadTags = useCallback(async (): Promise<void> => {
     if (!taggable) {
@@ -359,7 +361,7 @@ export function CsvViewer({
     [taggable, wsId, sourceId, filters, search, reloadTags]
   )
 
-  // Remove every AI ✨ mark from this source (a "reset the assistant's marks" action). Two-click
+  // Remove every AI ✨ mark from this source (a "reset the agent's marks" action). Two-click
   // confirm — a native confirm() can't be used in the sandboxed renderer.
   const [confirmClearMarks, setConfirmClearMarks] = useState(false)
   const clearAiMarks = useCallback(async (): Promise<void> => {
@@ -446,7 +448,11 @@ export function CsvViewer({
   function toggleSort(col: string): void {
     setSort((s) => {
       // Rows arrive in original column order; index by the name's numeric suffix, not display pos.
-      if (s?.col !== col) return { col, dir: 'asc', numeric: looksNumeric(rows, Number(col.slice(1))) }
+      const numericFor = (id: string): boolean => {
+        const meta = doc.columns.find((c) => c.name === id)
+        return meta?.numeric ?? looksNumeric(rows, Number(id.slice(1)))
+      }
+      if (s?.col !== col) return { col, dir: 'asc', numeric: numericFor(col) }
       if (s.dir === 'asc') return { ...s, dir: 'desc' }
       return undefined // third click clears the sort
     })
@@ -581,31 +587,24 @@ export function CsvViewer({
   const excludedTags = (excTagFilter?.op === 'tag' ? excTagFilter.tags : []) as TagId[]
   hasTagFilterRef.current = activeTags.length > 0 || excludedTags.length > 0
 
-  // The active source exposes its tag-filter controls and reports its tag rollup to the sidebar.
-  const focusValue = useCallback((value: string): void => {
-    const v = String(value ?? '')
-    setSearchInput(v)
-    setSearch(v) // immediate (skip the debounce) so the pivot lands at once
-  }, [])
   // Show EXACTLY a set of rows (a constellation event's evidence) — a rowid filter, not a keyword.
   const focusRids = useCallback((rids: number[]): void => {
     setSearchInput('')
     setSearch('')
     setFilters((prev) => [...prev.filter((f) => f.op !== 'rids'), { op: 'rids', rids }])
   }, [])
-  // A constellation "jump to evidence" / chat pivot landed on this source → focus it, then clear.
+  // A constellation "jump to evidence" pivot landed on this source → focus its rows, then clear.
   const focusToken = pendingFocus?.token
   useEffect(() => {
     if (!pendingFocus) return
     if (pendingFocus.rids) focusRids(pendingFocus.rids)
-    else if (pendingFocus.value != null) focusValue(pendingFocus.value)
     onConsumePendingFocus?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusToken])
   useImperativeHandle(
     apiRef,
-    () => ({ toggleTagFilter, excludeTagFilter, clearTagFilter, reloadTags: () => void reloadTags(), focusValue, focusRids }),
-    [toggleTagFilter, excludeTagFilter, clearTagFilter, reloadTags, focusValue, focusRids]
+    () => ({ toggleTagFilter, excludeTagFilter, clearTagFilter, reloadTags: () => void reloadTags() }),
+    [toggleTagFilter, excludeTagFilter, clearTagFilter, reloadTags]
   )
   const activeTagsKey = `${activeTags.join(',')}|${excludedTags.join(',')}`
   // The rollup must reflect the *view* predicate (column filters + search) but NOT the tag filter —
@@ -661,7 +660,20 @@ export function CsvViewer({
   return (
     <div className="csv-viewer flex flex-col flex-1 min-w-0 min-h-0 bg-citrus-card dark:bg-citrus-night-card">
       <div className="flex items-center gap-3 px-3 py-2 text-xs border-b border-citrus-border dark:border-citrus-night-border">
-        <span className="font-bold text-citrus-dark dark:text-citrus-night-text truncate max-w-[280px]">
+        {/* The host this artifact came from, ahead of the filename — different machines legitimately
+            hold the SAME filename, so the name alone doesn't say which copy is on screen. */}
+        {doc.group && (
+          <span
+            className="shrink-0 rounded border border-citrus-border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-citrus-muted dark:border-citrus-night-border dark:text-citrus-night-muted"
+            title={`Host / group: ${doc.group}`}
+          >
+            {doc.group}
+          </span>
+        )}
+        <span
+          className="font-bold text-citrus-dark dark:text-citrus-night-text truncate max-w-[280px]"
+          title={doc.group ? `${doc.group} / ${doc.sourceName}` : doc.sourceName}
+        >
           {doc.sourceName}
         </span>
         <span className="text-citrus-muted dark:text-citrus-night-muted font-mono">

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sun, Moon, Loader2, Info, Bot, Network, Fingerprint, Clock, ClipboardList, Crosshair, Search, Radar, Sparkles } from 'lucide-react'
+import { Sun, Moon, Loader2, Info, Network, Fingerprint, Clock, ClipboardList, Crosshair, Search, Radar, Sparkles, TerminalSquare, Monitor, ClipboardCheck } from 'lucide-react'
 import { Logo } from './components/Logo'
-import { AiPanel } from './components/ai/AiPanel'
 import { ConstellationPanel } from './components/ai/ConstellationPanel'
 import { TimelinePanel } from './components/ai/TimelinePanel'
 import { InvestigationPanel } from './components/ai/InvestigationPanel'
 import { GlobalSightingsPanel } from './components/csv/GlobalSightingsPanel'
 import { FindInFilesPanel } from './components/csv/FindInFilesPanel'
 import { IocPanel } from './components/ai/IocPanel'
+import { EntityPanel } from './components/ai/EntityPanel'
+import { CaseReportPanel } from './components/ai/CaseReportPanel'
 import { ToolPalette } from './components/ToolPalette'
 import { ScratchEditor } from './components/ScratchEditor'
 import { DocTabs } from './components/DocTabs'
@@ -18,6 +19,7 @@ import { IntelSweepTargetDialog, type SweepTargetWorkspace } from './components/
 import { FolderImportDialog, type FolderFile } from './components/csv/FolderImportDialog'
 import { WorkspaceSidebar } from './components/csv/WorkspaceSidebar'
 import { EnrichmentView } from './components/enrich/EnrichmentView'
+import { ConnectPanel } from './components/mcp/ConnectPanel'
 import { getById, defaultOptions } from './tools/registry'
 import { classifyIndicator } from './tools/ioc/classify'
 import {
@@ -34,9 +36,8 @@ import {
   type WorkspaceDoc,
   type WorkspaceSource
 } from './state/documents'
-import type { AiWsCtx, EnrichItem } from './state/enrichTypes'
+import type { AiWsCtx, EnrichItem, McpStatus } from './state/enrichTypes'
 import { TIMELINE_SOURCE_MARKER } from './state/timeline'
-import { loadAiPrefs, saveAiPrefs } from './state/ai'
 import { loadTheme, saveTheme, type Theme } from './state/theme'
 import { addRecent, loadRecent, removeRecent, saveRecent, type RecentFile } from './state/recent'
 import type { ToolOptions } from './tools/types'
@@ -58,6 +59,13 @@ function initialDocs(): DocsState {
 
 /** True for Excel workbooks we ingest sheet-by-sheet (legacy binary .xls isn't supported). */
 const isXlsx = (path: string): boolean => /\.xls[xm]$/i.test(path)
+
+/** Electron wraps a main-process throw as "Error invoking remote method 'x': Error: <real message>".
+ *  Strip that plumbing so the analyst reads the actual reason, not the IPC channel name. */
+function ipcMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e)
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^Error:\s*/, '')
+}
 
 export default function App(): JSX.Element {
   const [{ docs, activeId }, setState] = useState<DocsState>(initialDocs)
@@ -88,16 +96,19 @@ export default function App(): JSX.Element {
   const [home, setHome] = useState<boolean>(true)
   // About dialog (app name, version, license).
   const [about, setAbout] = useState(false)
-  // AI assistant pull-out (right-side chat). Open state is remembered across launches.
-  const [aiOpen, setAiOpen] = useState<boolean>(() => loadAiPrefs().open)
-  useEffect(() => {
-    saveAiPrefs({ ...loadAiPrefs(), open: aiOpen })
-  }, [aiOpen])
   // Constellation panel (the case graph of validated findings).
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
   const [constellationOpen, setConstellationOpen] = useState(false)
   const [timelineOpen, setTimelineOpen] = useState(false)
-  const [findingsRev, setFindingsRev] = useState(0) // bump to reload events after the AI records one
+  const [eventsRev, setEventsRev] = useState(0) // bump to reload events after the AI records one
   const [iocOpen, setIocOpen] = useState(false)
+  const [entityOpen, setEntityOpen] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportRev, setReportRev] = useState(0)
+  const [focusEvent, setFocusEvent] = useState<{ id: string; token: number } | null>(null)
+  const focusTokenR = useRef(0) // the Case Report reflects every store, so any write bumps it
+  const [entityRev, setEntityRev] = useState(0) // bump to reload Systems/Accounts
   const [iocRev, setIocRev] = useState(0) // bump to reload the IOC catalog after the AI records one
   const [investigationOpen, setInvestigationOpen] = useState(false)
   const [investigationRev, setInvestigationRev] = useState(0) // bump to reload the plan/notes after the AI updates them
@@ -106,7 +117,7 @@ export default function App(): JSX.Element {
   const [sightingsRev, setSightingsRev] = useState(0)
   const [findInFilesOpen, setFindInFilesOpen] = useState(false)
   // Cross-source pivot: jump the grid to a value's rows in a (possibly different) source.
-  const [pendingFocus, setPendingFocus] = useState<{ wsDocId: string; sourceId: number; value?: string; rids?: number[]; token: number } | null>(null)
+  const [pendingFocus, setPendingFocus] = useState<{ wsDocId: string; sourceId: number; rids?: number[]; token: number } | null>(null)
   const focusTokenRef = useRef(0)
   // Path to the seamless default intel DB (resolved once from main).
   const [enrichDefault, setEnrichDefault] = useState('')
@@ -126,8 +137,14 @@ export default function App(): JSX.Element {
   const sweepTokenRef = useRef(0)
   // The configurable workspace storage folder (Open-Workspace default + where new workspaces save).
   const [workspaceDir, setWorkspaceDirState] = useState('')
+  // The evidence folder the AI agent may import from — the ONLY tree it can read. Empty until the
+  // analyst picks one, and while it's empty the agent's imports refuse (fail closed by design).
+  const [evidenceRoot, setEvidenceRootState] = useState<string | null>(null)
+  // Why a folder choice was refused (the workspace/evidence folders may not overlap).
+  const [folderError, setFolderError] = useState<string | null>(null)
   useEffect(() => {
     void window.api.csv.wsGetDir().then(setWorkspaceDirState)
+    void window.api.csv.wsGetEvidenceRoot().then(setEvidenceRootState)
   }, [])
 
   useEffect(() => {
@@ -159,10 +176,14 @@ export default function App(): JSX.Element {
 
   // May be undefined when no tabs are open (fresh start / closed the last tab) → Home screen shows.
   const active = docs.find((d) => d.id === activeId)
+  // Live view of the docs for the long-lived main→renderer listeners (the MCP mutation/open-request
+  // subscriptions register once, so reading `docs` from their closure would see the first render's).
+  const docsRef = useRef(docs)
+  docsRef.current = docs
   // The Constellation / Timeline / Investigation / IOC surfaces are workspace-scoped — they read a
   // single workspace's events/findings/plan. Their toggles live in the workspace Search bar (so they
   // only exist where they have something to show); this flag keeps an already-open docked panel from
-  // lingering after you switch to a non-workspace tab. The Assistant stays available everywhere.
+  // lingering after you switch to a non-workspace tab. The agent surfaces stay available everywhere.
   const inWorkspace = !home && active?.kind === 'workspace'
 
   function updateActive(fn: (d: PinkDoc) => PinkDoc): void {
@@ -379,7 +400,10 @@ export default function App(): JSX.Element {
   /** Open an existing workspace db by path (activating it if already open — no duplicate tabs).
    *  Matches regardless of needsReopen: a restored-but-not-yet-reopened tab is still the same
    *  workspace, so we just activate it (the auto-reopen effect fires once it's the active doc). */
-  async function openWorkspaceByPath(dbPath: string): Promise<void> {
+  //  `wsId` is supplied when the AI agent asked for this open: main already created/registered the
+  //  workspace under that id and is waiting for us to publish it back, so minting a fresh one here
+  //  would leave the agent waiting forever on an id nobody ever reports.
+  async function openWorkspaceByPath(dbPath: string, wsId?: string): Promise<void> {
     const existing = docs.find((d) => d.kind === 'workspace' && d.dbPath === dbPath)
     if (existing) {
       setHome(false)
@@ -387,7 +411,7 @@ export default function App(): JSX.Element {
       return
     }
     try {
-      const info = await window.api.csv.wsOpen(newId(), dbPath)
+      const info = await window.api.csv.wsOpen(wsId ?? newId(), dbPath)
       const doc = createWorkspaceDoc(info)
       setHome(false)
       setState((s) => ({ docs: [...s.docs, doc], activeId: doc.id }))
@@ -406,7 +430,32 @@ export default function App(): JSX.Element {
   async function changeWorkspaceDir(): Promise<void> {
     const dir = await window.api.csv.wsPickDir()
     if (!dir) return
-    setWorkspaceDirState(await window.api.csv.wsSetDir(dir))
+    try {
+      setFolderError(null)
+      setWorkspaceDirState(await window.api.csv.wsSetDir(dir))
+    } catch (e) {
+      // Main REFUSES a folder that overlaps the evidence root. Show why — silently doing nothing
+      // after the analyst picked a folder reads as a broken button.
+      setFolderError(ipcMessage(e))
+    }
+  }
+
+  /** Pick the evidence folder the AI agent may import from (analyst-only — the agent has no setter). */
+  async function changeEvidenceRoot(): Promise<void> {
+    const dir = await window.api.csv.wsPickEvidenceRoot()
+    if (!dir) return
+    try {
+      setFolderError(null)
+      setEvidenceRootState(await window.api.csv.wsSetEvidenceRoot(dir))
+    } catch (e) {
+      setFolderError(ipcMessage(e))
+    }
+  }
+
+  /** Clear it back to unset, which makes the agent's evidence imports refuse again. */
+  async function clearEvidenceRoot(): Promise<void> {
+    setFolderError(null)
+    setEvidenceRootState(await window.api.csv.wsSetEvidenceRoot(null))
   }
 
   function openRecent(f: RecentFile): void {
@@ -578,7 +627,7 @@ export default function App(): JSX.Element {
       })
       // The DB is now open → events (constellation) can be (re)loaded. The panel reads them when it
       // sees a new refreshKey, fixing "the constellation is empty after restart until I poke it".
-      setFindingsRev((r) => r + 1)
+      setEventsRev((r) => r + 1)
     } catch {
       patchWorkspaceById(doc.id, { reopenFailed: true })
     } finally {
@@ -789,10 +838,13 @@ export default function App(): JSX.Element {
     patchScratch({ steps })
   }
 
-  // The active-workspace context handed to the AI assistant with each turn — read live so a tab/
+  // The active-workspace context published to the AI agent (over MCP) — read live so a tab/
   // source switch is reflected. When no workspace source is active the agent's grid tools report so.
+  // A workspace with NO sources still counts as open. The agent creates an empty case and then
+  // imports into it, so reporting "no workspace" until the first source landed would make the case
+  // it just created invisible to it — and its own import_evidence call would refuse.
   function aiWsCtx(): AiWsCtx {
-    if (!home && active?.kind === 'workspace' && active.sources.length > 0) {
+    if (!home && active?.kind === 'workspace') {
       return {
         hasWorkspace: true,
         wsId: active.wsId,
@@ -803,7 +855,7 @@ export default function App(): JSX.Element {
           sourceId: s.sourceId,
           tabId: srcKey(active.wsId, s.sourceId),
           name: s.name,
-          columns: s.columns.map((c) => ({ name: c.name, original: c.original, time: c.time })),
+          columns: s.columns.map((c) => ({ name: c.name, original: c.original, time: c.time, numeric: c.numeric })),
           rowCount: s.rowCount,
           group: s.group ?? null,
           derived: s.originalPath === TIMELINE_SOURCE_MARKER
@@ -811,6 +863,79 @@ export default function App(): JSX.Element {
       }
     }
     return { hasWorkspace: false, sources: [], intelDbPath: enrichDefault }
+  }
+
+  // Keep the localhost MCP server pointed at the workspace the analyst has focused, so their own
+  // Claude Code terminal drives "what I have open". Republished whenever the active doc changes.
+  useEffect(() => {
+    window.api.mcp.setActiveWorkspace(aiWsCtx())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [home, active, enrichDefault])
+
+  // Poll the MCP server status so the header shows, at a glance, whether the terminal surface is up.
+  useEffect(() => {
+    let alive = true
+    const tick = (): void => {
+      void window.api.mcp.status().then((s) => {
+        if (alive) setMcpStatus(s)
+      })
+    }
+    tick()
+    const id = window.setInterval(tick, 4000)
+    return () => {
+      alive = false
+      window.clearInterval(id)
+    }
+  }, [])
+
+  // The agent created or opened a case and wants the analyst watching it build. Opening it here
+  // republishes the active-workspace context, which is what releases the agent's waiting tool call
+  // (see bridge.ts showWorkspace) — so this listener is load-bearing, not just a nicety.
+  useEffect(() => {
+    return window.api.mcp.onOpenRequest(({ wsId, dbPath }) => {
+      void openWorkspaceByPath(dbPath, wsId)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docs])
+
+  // When a terminal tool mutates the workspace, reload the review panels the agent's output feeds
+  // used to refresh — so the Constellation / Timeline / IOC / Investigation views update live.
+  useEffect(() => {
+    return window.api.mcp.onMutated(({ wsId, tool }) => {
+      // The agent imported evidence: the doc's source list is now stale (the new sources exist only
+      // in the DB). Re-open to pull them in — without this the analyst sees an empty case while the
+      // agent is already querying what it just imported.
+      if (tool === 'import_evidence') {
+        const doc = docsRef.current.find((d) => d.kind === 'workspace' && d.wsId === wsId)
+        if (doc && doc.kind === 'workspace') void reopenWorkspace(doc)
+      }
+      if (tool === 'tag_rows' || tool === 'mark_rows' || tool === 'record_event') tagApiRef.current?.reloadTags()
+      if (tool === 'record_event' || tool === 'set_source_group') setEventsRev((r) => r + 1)
+      if (tool === 'record_ioc') setIocRev((r) => r + 1)
+      // Entities are DERIVED from sources + event attribution as well as curated directly, so an
+      // import or a recorded event can change the list without record_entity ever being called.
+      if (tool === 'record_entity' || tool === 'link_entities' || tool === 'record_event' || tool === 'set_source_group' || tool === 'import_evidence') setEntityRev((r) => r + 1)
+      if (tool === 'update_plan' || tool === 'save_progress' || tool === 'record_lead') setInvestigationRev((r) => r + 1)
+      // The Case Report aggregates events, leads, negatives and entity verdicts, so essentially any
+      // recording tool changes it. Bump broadly rather than enumerate — a stale review queue is worse
+      // than an extra reload.
+      setReportRev((r) => r + 1)
+    })
+  }, [])
+
+  // From the Case Report: jump a claim to its HOME so its citations are visible. An event opens the
+  // Constellation with itself selected (where the clickable evidence lives); a lead opens the
+  // Investigation panel; an entity opens Systems & Accounts. A negative has no graph — its citation is
+  // its coverage, shown inline in the report — so it never reaches here (no button on those rows).
+  function openClaim(item: { kind: string; id: string }): void {
+    if (item.kind === 'event') {
+      setConstellationOpen(true)
+      setFocusEvent({ id: item.id, token: ++focusTokenR.current })
+    } else if (item.kind === 'lead') {
+      setInvestigationOpen(true)
+    } else if (item.kind === 'entity') {
+      setEntityOpen(true)
+    }
   }
 
   // Jump the grid to a constellation event's EXACT evidence rows in a source (by rowid, not a broad
@@ -831,38 +956,34 @@ export default function App(): JSX.Element {
     }))
   }
 
-  // Actions relayed from a detached popout window (Constellation / Timeline / AI chat). The popout
+  // Actions relayed from a detached popout window (Constellation / Timeline / Case Report). The popout
   // carries the wsId since it isn't bound to the active tab; we resolve the doc and apply it here.
   useEffect(() => {
     const off = window.api.popout.onRelay((p) => {
       const msg = p as
         | { type: 'pivot'; wsId: string; sourceId: number; rids: number[] }
-        | { type: 'pivotValue'; wsId: string; value: string; source?: string }
         | { type: 'buildTimeline'; wsId: string; header: string[]; rows: string[][] }
         | { type: 'applyGroup'; wsId: string; sourceId: number; group: string | null }
-        | { type: 'refresh'; wsId: string; what: 'findings' | 'tags' | 'iocs' | 'investigation' }
+        | { type: 'refresh'; wsId: string; what: 'events' | 'tags' | 'iocs' | 'investigation' }
+        | { type: 'openClaim'; wsId: string; kind: string; id: string }
       const doc = docs.find((d) => d.kind === 'workspace' && d.wsId === msg.wsId)
       if (!doc || doc.kind !== 'workspace') return
+      if (msg.type === 'openClaim') {
+        // From the popped-out Case Report: bring the claim's home panel up in the MAIN window.
+        setState((s) => ({ ...s, activeId: doc.id }))
+        openClaim({ kind: msg.kind, id: msg.id })
+        return
+      }
       if (msg.type === 'pivot') {
         setState((s) => ({ ...s, activeId: doc.id }))
         if (doc.activeSourceId !== msg.sourceId) selectSource(doc.id, msg.sourceId)
         setPendingFocus({ wsDocId: doc.id, sourceId: msg.sourceId, rids: msg.rids, token: ++focusTokenRef.current })
-      } else if (msg.type === 'pivotValue') {
-        // Keyword pivot from a popped-out chat: activate the doc, then focus the value in the named
-        // source (or the doc's active source as a fallback).
-        setState((s) => ({ ...s, activeId: doc.id }))
-        const lc = (msg.source ?? '').toLowerCase()
-        const src = msg.source ? doc.sources.find((s) => s.name.toLowerCase() === lc) ?? doc.sources.find((s) => s.name.toLowerCase().includes(lc)) : undefined
-        const sourceId = src ? src.sourceId : doc.activeSourceId
-        if (sourceId == null) return
-        if (doc.activeSourceId !== sourceId) selectSource(doc.id, sourceId)
-        setPendingFocus({ wsDocId: doc.id, sourceId, value: msg.value, token: ++focusTokenRef.current })
       } else if (msg.type === 'buildTimeline') {
         void buildTimelineSourceFor(doc.id, msg.wsId, msg.header, msg.rows)
       } else if (msg.type === 'applyGroup') {
         applyGroupToDoc(msg.wsId, msg.sourceId, msg.group)
       } else if (msg.type === 'refresh') {
-        if (msg.what === 'findings') setFindingsRev((r) => r + 1)
+        if (msg.what === 'events') setEventsRev((r) => r + 1)
         else if (msg.what === 'iocs') setIocRev((r) => r + 1)
         else if (msg.what === 'investigation') setInvestigationRev((r) => r + 1)
         else if (msg.what === 'tags') tagApiRef.current?.reloadTags()
@@ -870,21 +991,6 @@ export default function App(): JSX.Element {
     })
     return off
   }, [docs])
-
-  // A pivot from the chat. Tool cards carry the source name → jump to that source's grid and keyword-
-  // filter (find_rows is a "where does X appear" search); a bare prose indicator filters the open grid.
-  function pivotFromChat(value: string, source?: string): void {
-    if (source && active?.kind === 'workspace') {
-      const lc = source.toLowerCase()
-      const src = active.sources.find((s) => s.name.toLowerCase() === lc) ?? active.sources.find((s) => s.name.toLowerCase().includes(lc))
-      if (src) {
-        if (active.activeSourceId !== src.sourceId) selectSource(active.id, src.sourceId)
-        setPendingFocus({ wsDocId: active.id, sourceId: src.sourceId, value, token: ++focusTokenRef.current })
-        return
-      }
-    }
-    tagApiRef.current?.focusValue(value)
-  }
 
   // Manual handoff: send catalogued IOCs to the active workspace's Intel grid (global or its own).
   function sendIocsToIntel(values: string[]): void {
@@ -904,7 +1010,7 @@ export default function App(): JSX.Element {
         : 'border-citrus-border text-citrus-dark hover:border-citrus-pink/40 hover:text-citrus-pink dark:border-citrus-night-border dark:text-citrus-night-text'
     }`
   // Two groups: the analyst's own tools (Find, Sightings) on the left, then a divider, then the
-  // Assistant's surfaces bracketed under a ✨ label so it's clear which panels the AI produces.
+  // AI agent's surfaces bracketed under a ✨ label so it's clear which panels the agent produces.
   const workspacePanelButtons = (
     <>
       <button className={pillToggle(findInFilesOpen)} onClick={() => setFindInFilesOpen((v) => !v)} title="Search every file for a string">
@@ -919,9 +1025,9 @@ export default function App(): JSX.Element {
       <span className="mx-0.5 h-4 w-px shrink-0 bg-citrus-border dark:bg-citrus-night-border" />
 
       <div className="inline-flex items-center gap-1 rounded-md border border-citrus-pink/25 bg-citrus-pink/5 px-1.5 py-0.5 dark:border-citrus-pink/30 dark:bg-citrus-pink/10">
-        <span className="inline-flex items-center gap-1 pr-0.5 text-[10px] font-bold uppercase tracking-wide text-citrus-pink" title="Panels the AI Assistant produces">
+        <span className="inline-flex items-center gap-1 pr-0.5 text-[10px] font-bold uppercase tracking-wide text-citrus-pink" title="Panels your AI agent produces">
           <Sparkles className="w-3 h-3" />
-          Assistant
+          AI agent
         </span>
         <button className={pillToggle(constellationOpen)} onClick={() => setConstellationOpen((v) => !v)} title="Case graph of findings">
           <Network className="w-3.5 h-3.5" />
@@ -931,13 +1037,21 @@ export default function App(): JSX.Element {
           <Clock className="w-3.5 h-3.5" />
           Timeline
         </button>
-        <button className={pillToggle(investigationOpen)} onClick={() => setInvestigationOpen((v) => !v)} title="The Assistant's plan and progress">
+        <button className={pillToggle(investigationOpen)} onClick={() => setInvestigationOpen((v) => !v)} title="Your AI agent's plan, progress and leads">
           <ClipboardList className="w-3.5 h-3.5" />
           Investigation
         </button>
-        <button className={pillToggle(iocOpen)} onClick={() => setIocOpen((v) => !v)} title="Indicators the Assistant recorded">
+        <button className={pillToggle(iocOpen)} onClick={() => setIocOpen((v) => !v)} title="Indicators your AI agent recorded">
           <Fingerprint className="w-3.5 h-3.5" />
           IOCs
+        </button>
+        <button className={pillToggle(entityOpen)} onClick={() => setEntityOpen((v) => !v)} title="Systems & Accounts">
+          <Monitor className="w-3.5 h-3.5" />
+          Systems &amp; Accounts
+        </button>
+        <button className={pillToggle(reportOpen)} onClick={() => setReportOpen((v) => !v)} title="Approve or reject the case's findings">
+          <ClipboardCheck className="w-3.5 h-3.5" />
+          Case Report
         </button>
       </div>
     </>
@@ -972,16 +1086,27 @@ export default function App(): JSX.Element {
             Global Intel
           </button>
           <button
-            className={`ai-panel__toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
-              aiOpen
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+              connectOpen
                 ? 'border-citrus-pink/50 bg-citrus-pink/10 text-citrus-pink'
                 : 'border-citrus-border text-citrus-dark hover:bg-citrus-sand/60 dark:border-citrus-night-border dark:text-citrus-night-text dark:hover:bg-citrus-night-elev'
             }`}
-            onClick={() => setAiOpen((v) => !v)}
-            title="AI Assistant"
+            onClick={() => setConnectOpen(true)}
+            title={
+              mcpStatus?.running
+                ? `Terminal server running · ${mcpStatus.url}`
+                : mcpStatus?.error
+                  ? `Terminal server error: ${mcpStatus.error}`
+                  : 'Drive from a Claude Code terminal'
+            }
           >
-            <Bot className="w-3.5 h-3.5" />
-            Assistant
+            <TerminalSquare className="w-3.5 h-3.5" />
+            Terminal
+            <span
+              className={`ml-0.5 w-1.5 h-1.5 rounded-full ${
+                mcpStatus?.running ? 'bg-emerald-500' : mcpStatus?.error ? 'bg-red-500' : 'bg-amber-400'
+              }`}
+            />
           </button>
           <button
             className="inline-flex items-center justify-center p-1.5 rounded-full border border-citrus-border text-citrus-muted hover:text-citrus-pink hover:bg-citrus-sand/60 transition-colors dark:border-citrus-night-border dark:text-citrus-night-muted dark:hover:bg-citrus-night-elev"
@@ -1048,6 +1173,10 @@ export default function App(): JSX.Element {
               onNewEnrichment={openEnrichmentTab}
               workspaceDir={workspaceDir}
               onChangeWorkspaceDir={changeWorkspaceDir}
+              evidenceRoot={evidenceRoot}
+              onChangeEvidenceRoot={changeEvidenceRoot}
+              onClearEvidenceRoot={clearEvidenceRoot}
+              folderError={folderError}
               onRemoveRecent={dropRecent}
               onClearRecent={() => {
                 setRecent([])
@@ -1115,6 +1244,7 @@ export default function App(): JSX.Element {
                           doc={{
                             tabId: srcKey(d.wsId, src.sourceId),
                             sourceName: src.name,
+                            group: src.group ?? null,
                             columns: src.columns,
                             rowCount: src.rowCount,
                             dbPath: d.dbPath
@@ -1133,14 +1263,14 @@ export default function App(): JSX.Element {
                           onConsumePendingSweep={() => setPendingSweep(null)}
                           pendingFocus={
                             pendingFocus && pendingFocus.wsDocId === d.id && pendingFocus.sourceId === src.sourceId
-                              ? { value: pendingFocus.value, rids: pendingFocus.rids, token: pendingFocus.token }
+                              ? { rids: pendingFocus.rids, token: pendingFocus.token }
                               : undefined
                           }
                           onConsumePendingFocus={() => setPendingFocus(null)}
                           onPivotEvidence={pivotToEvidence}
                           apiRef={isActiveSource ? tagApiRef : undefined}
                           onTagSummary={isActiveSource ? setTagSummary : undefined}
-                          onEventRecorded={() => setFindingsRev((r) => r + 1)}
+                          onEventRecorded={() => setEventsRev((r) => r + 1)}
                           onSendToEnrichment={(vals) =>
                             sendToEnrichment(
                               vals,
@@ -1164,36 +1294,16 @@ export default function App(): JSX.Element {
             )
           })}
         </main>
-        {/* AI assistant + constellation dock beside the content (in-flow), shrinking the view. */}
-        <AiPanel
-          open={aiOpen}
-          onClose={() => setAiOpen(false)}
-          onPopOut={() => {
-            // Detach the chat into its own window: it carries a snapshot of the active workspace
-            // context and continues the same (localStorage-persisted) transcript. Close the docked
-            // panel so there's a single chat surface driving the run.
-            void window.api.popout.open('ai', { wsCtx: aiWsCtx(), title: active?.kind === 'workspace' ? active.name : undefined })
-            setAiOpen(false)
-          }}
-          getWsCtx={aiWsCtx}
-          scopeId={!home && active?.kind === 'workspace' ? active.wsId : null}
-          onTagsChanged={() => tagApiRef.current?.reloadTags()}
-          onFindingsChanged={() => setFindingsRev((r) => r + 1)}
-          onIocsChanged={() => setIocRev((r) => r + 1)}
-          onInvestigationChanged={() => setInvestigationRev((r) => r + 1)}
-          onApplyGroup={(sid, group) => {
-            // The AI's set_source_group tool already persisted to the db on approval; mirror it into
-            // the active workspace doc so the sidebar + next-turn list_sources reflect it live.
-            if (active?.kind === 'workspace') applyGroupToDoc(active.wsId, sid, group)
-          }}
-          onPivot={pivotFromChat}
-        />
+        <ConnectPanel open={connectOpen} onClose={() => setConnectOpen(false)} />
+        {/* The Constellation / Timeline / IOC / Investigation panels review what the terminal-driven
+            agent produces; they dock beside the content (in-flow), shrinking the view. */}
         <ConstellationPanel
           open={constellationOpen && inWorkspace}
           onClose={() => setConstellationOpen(false)}
+          focusEventId={focusEvent}
           wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
           workspaceName={!home && active?.kind === 'workspace' ? active.name : null}
-          refreshKey={findingsRev}
+          refreshKey={eventsRev}
           iocRefreshKey={iocRev}
           sources={!home && active?.kind === 'workspace' ? active.sources : []}
           onPivot={pivotToEvidence}
@@ -1204,7 +1314,7 @@ export default function App(): JSX.Element {
           onClose={() => setTimelineOpen(false)}
           wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
           workspaceName={!home && active?.kind === 'workspace' ? active.name : null}
-          refreshKey={findingsRev}
+          refreshKey={eventsRev}
           sources={!home && active?.kind === 'workspace' ? active.sources : []}
           onPivot={pivotToEvidence}
           onBuildSource={(header, rows) => {
@@ -1219,12 +1329,28 @@ export default function App(): JSX.Element {
           refreshKey={iocRev}
           onSendToIntel={sendIocsToIntel}
         />
+        <EntityPanel
+          open={entityOpen && inWorkspace}
+          onClose={() => setEntityOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          refreshKey={entityRev}
+        />
+        <CaseReportPanel
+          open={reportOpen && inWorkspace}
+          onClose={() => setReportOpen(false)}
+          wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
+          workspaceName={!home && active?.kind === 'workspace' ? active.name : null}
+          refreshKey={reportRev}
+          onOpen={openClaim}
+        />
         <InvestigationPanel
           open={investigationOpen && inWorkspace}
           onClose={() => setInvestigationOpen(false)}
           wsId={!home && active?.kind === 'workspace' ? active.wsId : null}
           refreshKey={investigationRev}
           onSaved={() => setInvestigationRev((r) => r + 1)}
+          onPivot={pivotToEvidence}
+          onPromoted={() => setEventsRev((r) => r + 1)}
         />
         <GlobalSightingsPanel
           open={globalSightingsOpen && inWorkspace}

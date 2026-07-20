@@ -10,14 +10,14 @@ describe('formatResumeBlock', () => {
 
   it('renders the plan with status markers, notes, and a findings/coverage roll-up', () => {
     const out = formatResumeBlock({
-      plan: [step('Triage DESKTOP-X', 'done'), step('Check rclone exfil', 'active'), step('Review browser history')],
+      plan: [step('Triage HOST-A', 'done'), step('Check rclone exfil', 'active'), step('Review browser history')],
       notes: 'last lead: Compress-Archive ZIP at 19:57; next: confirm rclone target',
       events: 12,
       iocs: 8,
       examined: 14,
       total: 22
     })
-    expect(out).toContain('[x] Triage DESKTOP-X')
+    expect(out).toContain('[x] Triage HOST-A')
     expect(out).toContain('[→] Check rclone exfil')
     expect(out).toContain('[ ] Review browser history')
     expect(out).toContain('last lead: Compress-Archive ZIP')
